@@ -1,4 +1,4 @@
-name: Deploy to EC2
+name: Stylic AI - Deploy to AWS EC2
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   deploy:
-    name: SSH Deploy
+    name: Deploy
     runs-on: ubuntu-latest
 
     steps:
@@ -17,29 +17,28 @@ jobs:
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host:        ${{ secrets.EC2_HOST }}
-          username:    ${{ secrets.EC2_USER }}
-          key:         ${{ secrets.EC2_SSH_KEY }}
-          port:        22
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
           script: |
             set -e
 
-            cd /var/www/stylicai
+            APP_DIR="/home/${{ secrets.EC2_USER }}/stylic-ai"
 
-            echo "── Pulling latest code ──"
+            # Clone repo if it doesn't exist, otherwise pull latest
+            if [ ! -d "$APP_DIR" ]; then
+              git clone https://github.com/harshitgadhiya2024/stylic-new-dashboard.git "$APP_DIR"
+            fi
+
+            cd "$APP_DIR"
             git pull origin main
 
-            echo "── Activating virtualenv ──"
+            # Activate virtualenv and install/update dependencies
             source venv/bin/activate
+            pip install -r requirements.txt --quiet
 
-            echo "── Installing dependencies ──"
-            pip install --upgrade pip
-            pip install -r requirements.txt
+            # Restart the app via systemd
+            sudo systemctl restart stylic-ai
 
-            echo "── Restarting Gunicorn ──"
-            sudo systemctl restart stylicai
-
-            echo "── Reloading Nginx ──"
-            sudo systemctl reload nginx
-
-            echo "✅ Deploy complete"
+            echo "Deployment completed successfully"
