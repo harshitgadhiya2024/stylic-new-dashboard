@@ -69,43 +69,50 @@ async def _run_sync_generator(gen_fn, *args, **kwargs) -> asyncio.Queue:
     "/",
     summary="Get All Model Faces",
     description=(
-        "Returns paginated model faces visible to the authenticated user: "
-        "global defaults (`is_default=True`) **plus** faces created by the user. "
-        "Favorites are listed first, then sorted by creation date (newest first). "
+        "Returns paginated model faces for the authenticated user. "
+        "Fetches all default faces (is_default=True, any user) and all faces created by the user "
+        "(any is_default value), merges them (deduplicating by model_id), then sorts so that "
+        "favorites appear first followed by the rest ordered by creation date (newest first). "
         "Use `page` and `limit` query params to control pagination."
     ),
 )
 def get_model_faces(
-    page:  int = Query(default=1,  ge=1,   description="Page number (1-based)"),
+    page:  int = Query(default=1,  ge=1,        description="Page number (1-based)"),
     limit: int = Query(default=10, ge=1, le=100, description="Number of items per page"),
     current_user: dict = Depends(get_current_user),
 ):
     col     = get_model_faces_collection()
     user_id = current_user["user_id"]
 
-    query = {
-        "$or": [
-            {"is_default": True},
-            {"user_id": user_id},
-        ]
-    }
+    # 1 — all default faces (no user_id condition)
+    default_docs = list(col.find({"is_default": True}))
 
-    total  = col.count_documents(query)
+    # 2 — all faces created by this user (no is_default condition)
+    user_docs = list(col.find({"user_id": user_id}))
+
+    # 3 — merge, deduplicate by model_id (user docs take precedence)
+    seen: dict = {}
+    for doc in default_docs:
+        seen[doc["model_id"]] = doc
+    for doc in user_docs:
+        seen[doc["model_id"]] = doc
+
+    merged = list(seen.values())
+
+    # 4 — sort: favorites first, then newest first
+    merged.sort(key=lambda d: (not d.get("is_favorite", False), d.get("created_at") or ""), )
+
+    # 5 — paginate in Python
+    total  = len(merged)
     skip   = (page - 1) * limit
-
-    docs = (
-        col.find(query)
-        .sort([("is_favorite", -1), ("created_at", -1)])
-        .skip(skip)
-        .limit(limit)
-    )
+    paged  = merged[skip: skip + limit]
 
     return {
         "page":        page,
         "limit":       limit,
         "total":       total,
-        "total_pages": (total + limit - 1) // limit,
-        "data":        [_clean_face(doc) for doc in docs],
+        "total_pages": (total + limit - 1) // limit if total else 1,
+        "data":        [_clean_face(doc) for doc in paged],
     }
 
 
