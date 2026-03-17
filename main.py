@@ -39,6 +39,7 @@ app.include_router(model_face.router)
 
 @app.get("/health", tags=["Health"])
 def health_check():
+    print("Health check")
     return {"status": "ok", "service": "Stylic AI API"}
 
 
