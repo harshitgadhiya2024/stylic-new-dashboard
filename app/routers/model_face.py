@@ -12,6 +12,7 @@ from app.models.model_face import (
     ModelFaceSchema,
 )
 from app.services.ai_face_service import generate_and_upload_face
+from app.services.face_to_model_service import generate_model_face_from_reference
 
 router = APIRouter(prefix="/api/v1/model-faces", tags=["Model Faces"])
 
@@ -58,14 +59,25 @@ def get_model_faces(
     response_model=ModelFaceSchema,
     status_code=status.HTTP_201_CREATED,
     summary="Upload / Create a Model Face",
-    description="Create a new model face entry. Secured — user_id is taken from the auth token.",
+    description=(
+        "Accepts a reference face photo URL. "
+        "Validates that the image contains a real human face (via Gemini), "
+        "then generates a professional model portrait that replicates the reference face "
+        "(via SeedDream), uploads the result to S3, and saves the record in the database. "
+        "Secured — user_id is taken from the auth token."
+    ),
 )
 def create_model_face(
     body: CreateModelFaceRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    now = datetime.now(timezone.utc)
+    # Validate face + generate model portrait + upload to S3
+    generated_face_url = generate_model_face_from_reference(
+        image_url=body.face_url,
+        model_category=body.model_category,
+    )
 
+    now = datetime.now(timezone.utc)
     doc = {
         "model_id":            str(uuid.uuid4()),
         "user_id":             current_user["user_id"],
@@ -75,7 +87,8 @@ def create_model_face(
         "tags":                body.tags,
         "notes":               body.notes,
         "model_used_count":    0,
-        "face_url":            body.face_url,
+        "face_url":            generated_face_url,
+        "reference_face_url":  body.face_url,
         "is_default":          False,
         "is_active":           True,
         "is_favorite":         False,
@@ -84,7 +97,6 @@ def create_model_face(
     }
 
     col = get_model_faces_collection()
-
     try:
         col.insert_one(doc)
     except Exception as exc:

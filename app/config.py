@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     # Gemini AI
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-2.5-flash-image"
+    GEMINI_VISION_MODEL: str = "gemini-2.5-flash"
+
+    # SeedDream / kie.ai
+    SEEDDREAM_API_KEY: str = ""
+    SEEDDREAM_MODEL: str = "seedream/4.5-edit"
+    SEEDDREAM_QUALITY: str = "medium"
+    SEEDDREAM_ASPECT: str = "9:16"
+    SEEDDREAM_MAX_RETRIES: int = 120
+    SEEDDREAM_RETRY_DELAY: int = 5
 
     # App defaults
     APP_NAME: str = "Stylic AI"

@@ -51,6 +51,7 @@ class ModelFaceSchema(BaseModel):
     notes: str = ""
     model_used_count: int = 0
     face_url: str
+    reference_face_url: Optional[str] = None
     is_default: bool = False
     is_active: bool = True
     is_favorite: bool = False
