@@ -47,3 +47,11 @@ def get_credit_history_collection() -> Collection:
     col.create_index("user_id")
     col.create_index("created_at")
     return col
+
+
+def get_backgrounds_collection() -> Collection:
+    col = get_database()["backgrounds"]
+    col.create_index("background_id", unique=True)
+    col.create_index("user_id")
+    col.create_index("is_default")
+    return col
