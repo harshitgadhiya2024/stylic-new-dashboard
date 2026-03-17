@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -19,6 +20,37 @@ def _clean_face(doc: dict) -> dict:
     doc = dict(doc)
     doc.pop("_id", None)
     return doc
+
+
+@router.get(
+    "/",
+    response_model=List[ModelFaceSchema],
+    summary="Get All Model Faces",
+    description=(
+        "Returns all model faces visible to the authenticated user: "
+        "global defaults (`is_default=True`) **plus** faces created by the user. "
+        "Favorites are listed first, then sorted by creation date (newest first)."
+    ),
+)
+def get_model_faces(
+    current_user: dict = Depends(get_current_user),
+):
+    col = get_model_faces_collection()
+    user_id = current_user["user_id"]
+
+    query = {
+        "$or": [
+            {"is_default": True},
+            {"user_id": user_id},
+        ]
+    }
+
+    # is_favorite descending (True=1 first), then created_at descending (newest first)
+    docs = col.find(query).sort(
+        [("is_favorite", -1), ("created_at", -1)]
+    )
+
+    return [_clean_face(doc) for doc in docs]
 
 
 @router.post(
