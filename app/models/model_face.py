@@ -43,7 +43,7 @@ class CreateModelFaceWithAIRequest(BaseModel):
 
 class ModelFaceSchema(BaseModel):
     model_id: str
-    user_id: str
+    user_id: Optional[str] = None
     model_name: str
     model_category: str
     model_configuration: dict = {}
