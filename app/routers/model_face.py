@@ -1,8 +1,10 @@
+import json
 import uuid
 from datetime import datetime, timezone
-from typing import List
+from typing import List, AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 
 from app.database import get_model_faces_collection
 from app.dependencies import get_current_user
@@ -11,8 +13,8 @@ from app.models.model_face import (
     CreateModelFaceWithAIRequest,
     ModelFaceSchema,
 )
-from app.services.ai_face_service import generate_and_upload_face
-from app.services.face_to_model_service import generate_model_face_from_reference
+from app.services.ai_face_service import generate_and_upload_face_stream
+from app.services.face_to_model_service import generate_model_face_from_reference_stream
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
 
 router = APIRouter(prefix="/api/v1/model-faces", tags=["Model Faces"])
@@ -22,6 +24,11 @@ def _clean_face(doc: dict) -> dict:
     doc = dict(doc)
     doc.pop("_id", None)
     return doc
+
+
+def _sse(event: str, data: dict) -> str:
+    """Format a single Server-Sent Event frame."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
 @router.get(
@@ -57,89 +64,99 @@ def get_model_faces(
 
 @router.post(
     "/",
-    response_model=ModelFaceSchema,
-    status_code=status.HTTP_201_CREATED,
-    summary="Upload / Create a Model Face",
+    summary="Upload / Create a Model Face (Streaming)",
     description=(
-        "Accepts a reference face photo URL. "
-        "Validates that the image contains a real human face (via Gemini), "
-        "then generates a professional model portrait that replicates the reference face "
-        "(via SeedDream), uploads the result to S3, and saves the record in the database. "
-        "Secured — user_id is taken from the auth token."
+        "Accepts a reference face photo URL. Streams real-time progress via SSE. "
+        "Validates the image for a real human face (Gemini), generates a professional "
+        "model portrait replicating the reference face (SeedDream), uploads to S3, "
+        "saves to DB, and deducts 2.5 credits in the background. "
+        "Secured — user_id is taken from the auth token. "
+        "Response is `text/event-stream`. Final event `done` contains the full model face record."
     ),
 )
 def create_model_face(
     body: CreateModelFaceRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
 ):
-    # Check credits before starting generation
     check_sufficient_credits(current_user)
 
-    # Validate face + generate model portrait + upload to S3
-    generated_face_url = generate_model_face_from_reference(
-        image_url=body.reference_face_url,
-        model_category=body.model_category,
-    )
+    async def event_stream() -> AsyncGenerator[str, None]:
+        generated_face_url: str | None = None
+        try:
+            for step, message, face_url in generate_model_face_from_reference_stream(
+                image_url=body.reference_face_url,
+                model_category=body.model_category,
+            ):
+                if step == "done":
+                    generated_face_url = face_url
 
-    now = datetime.now(timezone.utc)
-    doc = {
-        "model_id":            str(uuid.uuid4()),
-        "user_id":             current_user["user_id"],
-        "model_name":          body.model_name,
-        "model_category":      body.model_category,
-        "model_configuration": {},
-        "tags":                body.tags,
-        "notes":               body.notes,
-        "model_used_count":    0,
-        "face_url":            generated_face_url,
-        "reference_face_url":  body.reference_face_url,
-        "is_default":          False,
-        "is_active":           True,
-        "is_favorite":         False,
-        "created_at":          now,
-        "updated_at":          now,
-    }
+                    yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
 
-    col = get_model_faces_collection()
-    try:
-        col.insert_one(doc)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save model face: {exc}",
-        )
+                    now = datetime.now(timezone.utc)
+                    doc = {
+                        "model_id":            str(uuid.uuid4()),
+                        "user_id":             current_user["user_id"],
+                        "model_name":          body.model_name,
+                        "model_category":      body.model_category,
+                        "model_configuration": {},
+                        "tags":                body.tags,
+                        "notes":               body.notes,
+                        "model_used_count":    0,
+                        "face_url":            generated_face_url,
+                        "reference_face_url":  body.reference_face_url,
+                        "is_default":          False,
+                        "is_active":           True,
+                        "is_favorite":         False,
+                        "created_at":          now.isoformat(),
+                        "updated_at":          now.isoformat(),
+                    }
 
-    # Deduct credits + record history only after successful DB save
-    deduct_credits_and_record(
-        user=current_user,
-        feature_name="face_generation",
-        generated_face_url=generated_face_url,
-        notes=body.notes or "",
-    )
+                    col = get_model_faces_collection()
+                    col.insert_one({**doc, "created_at": now, "updated_at": now})
 
-    return _clean_face(doc)
+                    yield _sse("done", {"step": "done", "message": "Face generation complete", "data": doc})
+                else:
+                    yield _sse(step, {"step": step, "message": message})
+
+        except HTTPException as exc:
+            yield _sse("error", {"step": "error", "message": exc.detail})
+            return
+        except Exception as exc:
+            yield _sse("error", {"step": "error", "message": str(exc)})
+            return
+
+        if generated_face_url:
+            background_tasks.add_task(
+                deduct_credits_and_record,
+                user=current_user,
+                feature_name="face_generation",
+                generated_face_url=generated_face_url,
+                notes=body.notes or "",
+            )
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post(
     "/generate-with-ai",
-    response_model=ModelFaceSchema,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create Model Face Using AI",
+    summary="Create Model Face Using AI (Streaming)",
     description=(
-        "Generate a realistic portrait image via Gemini AI using the provided face "
-        "configurations (all optional — unset fields use category-appropriate defaults), "
-        "upload it to S3, and save the result in the database. "
-        "beard_length and beard_color are only applied when model_category is 'adult_male'."
+        "Streams real-time progress via SSE. Generates a realistic portrait via Gemini AI "
+        "using the provided face configurations (all optional — unset fields use "
+        "category-appropriate defaults), uploads to S3, saves to DB, and deducts 2.5 credits "
+        "in the background. beard_length and beard_color only apply when model_category is "
+        "'adult_male'. Response is `text/event-stream`. Final event `done` contains the full "
+        "model face record."
     ),
 )
 def create_model_face_with_ai(
     body: CreateModelFaceWithAIRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
 ):
-    # Check credits before starting generation
     check_sufficient_credits(current_user)
 
-    # Convert optional nested model to plain dict of only the explicitly passed fields
     overrides = {}
     if body.face_configurations:
         overrides = {
@@ -148,46 +165,63 @@ def create_model_face_with_ai(
             if v is not None
         }
 
-    # Generate image via Gemini and upload to S3
-    face_url, final_config = generate_and_upload_face(body.model_category, overrides)
+    async def event_stream() -> AsyncGenerator[str, None]:
+        generated_face_url: str | None = None
+        final_config: dict | None = None
+        try:
+            for step, message, face_url, config in generate_and_upload_face_stream(
+                category=body.model_category,
+                overrides=overrides,
+            ):
+                if step == "done":
+                    generated_face_url = face_url
+                    final_config       = config
 
-    now = datetime.now(timezone.utc)
-    doc = {
-        "model_id":            str(uuid.uuid4()),
-        "user_id":             current_user["user_id"],
-        "model_name":          body.model_name,
-        "model_category":      body.model_category,
-        "model_configuration": final_config,
-        "tags":                body.tags or [],
-        "notes":               body.notes or "",
-        "model_used_count":    0,
-        "face_url":            face_url,
-        "reference_face_url":  None,
-        "is_default":          False,
-        "is_active":           True,
-        "is_favorite":         False,
-        "created_at":          now,
-        "updated_at":          now,
-    }
+                    yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
 
-    col = get_model_faces_collection()
-    try:
-        col.insert_one(doc)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save model face: {exc}",
-        )
+                    now = datetime.now(timezone.utc)
+                    doc = {
+                        "model_id":            str(uuid.uuid4()),
+                        "user_id":             current_user["user_id"],
+                        "model_name":          body.model_name,
+                        "model_category":      body.model_category,
+                        "model_configuration": final_config,
+                        "tags":                body.tags or [],
+                        "notes":               body.notes or "",
+                        "model_used_count":    0,
+                        "face_url":            generated_face_url,
+                        "reference_face_url":  None,
+                        "is_default":          False,
+                        "is_active":           True,
+                        "is_favorite":         False,
+                        "created_at":          now.isoformat(),
+                        "updated_at":          now.isoformat(),
+                    }
 
-    # Deduct credits + record history only after successful DB save
-    deduct_credits_and_record(
-        user=current_user,
-        feature_name="face_generation",
-        generated_face_url=face_url,
-        notes=body.notes or "",
-    )
+                    col = get_model_faces_collection()
+                    col.insert_one({**doc, "created_at": now, "updated_at": now})
 
-    return _clean_face(doc)
+                    yield _sse("done", {"step": "done", "message": "Face generation complete", "data": doc})
+                else:
+                    yield _sse(step, {"step": step, "message": message})
+
+        except HTTPException as exc:
+            yield _sse("error", {"step": "error", "message": exc.detail})
+            return
+        except Exception as exc:
+            yield _sse("error", {"step": "error", "message": str(exc)})
+            return
+
+        if generated_face_url:
+            background_tasks.add_task(
+                deduct_credits_and_record,
+                user=current_user,
+                feature_name="face_generation",
+                generated_face_url=generated_face_url,
+                notes=body.notes or "",
+            )
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.patch(

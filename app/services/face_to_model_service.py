@@ -272,7 +272,7 @@ def _download_image(result_url: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public entry point — non-streaming (kept for internal use)
 # ---------------------------------------------------------------------------
 
 def generate_model_face_from_reference(image_url: str, model_category: str) -> str:
@@ -285,20 +285,55 @@ def generate_model_face_from_reference(image_url: str, model_category: str) -> s
     Returns the public S3 URL of the generated model face image.
     Raises HTTPException on any failure.
     """
-    # Step 1 — validate
     face_description = validate_face(image_url)
+    prompt           = _build_generation_prompt(face_description)
+    task_id          = _submit_task(prompt, image_url)
+    result_url       = _poll_task(task_id)
+    img_bytes        = _download_image(result_url)
+    face_id          = str(uuid.uuid4())
+    s3_key           = f"model-faces/{model_category}_{face_id[:8]}.png"
+    return upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
 
-    # Step 2 — generate
-    prompt  = _build_generation_prompt(face_description)
-    task_id = _submit_task(prompt, image_url)
 
-    # Step 3 — poll
+# ---------------------------------------------------------------------------
+# Streaming generator — yields (step, message, face_url | None)
+# ---------------------------------------------------------------------------
+
+from typing import Generator, Tuple, Optional as Opt
+
+
+def generate_model_face_from_reference_stream(
+    image_url: str,
+    model_category: str,
+) -> Generator[Tuple[str, str, Opt[str]], None, None]:
+    """
+    Same pipeline as generate_model_face_from_reference but yields progress
+    tuples at each stage so the caller can stream them to the client.
+
+    Yields: (step, message, face_url)
+      - face_url is None for all steps except the final "done" step.
+
+    Raises HTTPException on any failure (caller must catch and stream the error).
+    """
+    yield ("initialize", "Initializing face generation process", None)
+
+    yield ("validating_image", "Validating reference image", None)
+    face_description = validate_face(image_url)
+    yield ("validating_image_done", "Reference image validated — face detected", None)
+
+    yield ("starting_generation", "Starting face generation", None)
+    yield ("training", "Training face specifications, facial expression, skin overlaying, skin tone management", None)
+
+    prompt     = _build_generation_prompt(face_description)
+    task_id    = _submit_task(prompt, image_url)
     result_url = _poll_task(task_id)
 
-    # Step 4 — download + upload to S3
+    yield ("generated", "Successfully generated face", None)
+
+    yield ("uploading", "Uploading generated face to storage", None)
     img_bytes = _download_image(result_url)
     face_id   = str(uuid.uuid4())
     s3_key    = f"model-faces/{model_category}_{face_id[:8]}.png"
     s3_url    = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
 
-    return s3_url
+    yield ("done", "Face generation complete", s3_url)

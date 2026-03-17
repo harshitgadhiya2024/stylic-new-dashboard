@@ -5,6 +5,7 @@ Generates a portrait image from face configuration and uploads it to S3.
 
 import io
 import uuid
+from typing import Generator, Tuple, Optional as Opt
 
 from fastapi import HTTPException, status
 
@@ -188,7 +189,7 @@ def generate_and_upload_face(category: str, overrides: dict) -> tuple[str, dict]
     Full pipeline: build config → generate image → upload to S3.
     Returns (face_url, final_configuration).
     """
-    config   = build_configuration(category, overrides)
+    config    = build_configuration(category, overrides)
     img_bytes = generate_face_image(config)
 
     face_id  = str(uuid.uuid4())
@@ -196,3 +197,41 @@ def generate_and_upload_face(category: str, overrides: dict) -> tuple[str, dict]
     face_url = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
 
     return face_url, config
+
+
+# ---------------------------------------------------------------------------
+# Streaming generator — yields (step, message, face_url | None, config | None)
+# ---------------------------------------------------------------------------
+
+def generate_and_upload_face_stream(
+    category: str,
+    overrides: dict,
+) -> Generator[Tuple[str, str, Opt[str], Opt[dict]], None, None]:
+    """
+    Same pipeline as generate_and_upload_face but yields progress tuples
+    at each stage so the caller can stream them to the client.
+
+    Yields: (step, message, face_url, config)
+      - face_url and config are None for all steps except the final "done" step.
+
+    Raises HTTPException on any failure.
+    """
+    yield ("initialize", "Initializing face generation process", None, None)
+
+    yield ("validating_config", "Validating face configurations", None, None)
+    config = build_configuration(category, overrides)
+    yield ("validating_config_done", "Face configurations validated", None, None)
+
+    yield ("starting_generation", "Starting face generation", None, None)
+    yield ("training", "Training face specifications, facial expression, skin overlaying, skin tone management", None, None)
+
+    img_bytes = generate_face_image(config)
+
+    yield ("generated", "Successfully generated face", None, None)
+
+    yield ("uploading", "Uploading generated face to storage", None, None)
+    face_id  = str(uuid.uuid4())
+    s3_key   = f"model-faces/{category}_{face_id[:8]}.png"
+    face_url = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+
+    yield ("done", "Face generation complete", face_url, config)
