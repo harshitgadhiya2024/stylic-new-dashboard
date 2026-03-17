@@ -1,13 +1,31 @@
+# ── Web framework ─────────────────────────────────────────────────────────
 fastapi
 uvicorn[standard]
+gunicorn
+python-multipart
+
+# ── Data validation ────────────────────────────────────────────────────────
 pydantic[email]
 pydantic-settings
+
+# ── Database (MongoDB) ────────────────────────────────────────────────────
 pymongo[srv]
+
+# ── Environment ────────────────────────────────────────────────────────────
 python-dotenv
+
+# ── Authentication & Security ─────────────────────────────────────────────
 python-jose[cryptography]
 passlib[argon2]
+firebase-admin
+
+# ── AWS S3 ────────────────────────────────────────────────────────────────
 boto3
+
+# ── OTP / 2FA ─────────────────────────────────────────────────────────────
 pyotp
 qrcode[pil]
-python-multipart
-firebase-admin
+
+# ── AI Image Generation ───────────────────────────────────────────────────
+google-genai
+Pillow
