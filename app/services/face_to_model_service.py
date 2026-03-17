@@ -316,24 +316,31 @@ def generate_model_face_from_reference_stream(
     Raises HTTPException on any failure (caller must catch and stream the error).
     """
     yield ("initialize", "Initializing face generation process", None)
+    time.sleep(1)
 
     yield ("validating_image", "Validating reference image", None)
     face_description = validate_face(image_url)
+    time.sleep(0.5)
     yield ("validating_image_done", "Reference image validated — face detected", None)
+    time.sleep(1)
 
     yield ("starting_generation", "Starting face generation", None)
+    time.sleep(1)
     yield ("training", "Training face specifications, facial expression, skin overlaying, skin tone management", None)
 
     prompt     = _build_generation_prompt(face_description)
     task_id    = _submit_task(prompt, image_url)
     result_url = _poll_task(task_id)
+    time.sleep(0.5)
 
     yield ("generated", "Successfully generated face", None)
+    time.sleep(1)
 
     yield ("uploading", "Uploading generated face to storage", None)
     img_bytes = _download_image(result_url)
     face_id   = str(uuid.uuid4())
     s3_key    = f"model-faces/{model_category}_{face_id[:8]}.png"
     s3_url    = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    time.sleep(0.5)
 
     yield ("done", "Face generation complete", s3_url)

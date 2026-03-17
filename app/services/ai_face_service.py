@@ -4,6 +4,7 @@ Generates a portrait image from face configuration and uploads it to S3.
 """
 
 import io
+import time
 import uuid
 from typing import Generator, Tuple, Optional as Opt
 
@@ -217,21 +218,28 @@ def generate_and_upload_face_stream(
     Raises HTTPException on any failure.
     """
     yield ("initialize", "Initializing face generation process", None, None)
+    time.sleep(1)
 
     yield ("validating_config", "Validating face configurations", None, None)
     config = build_configuration(category, overrides)
+    time.sleep(0.5)
     yield ("validating_config_done", "Face configurations validated", None, None)
+    time.sleep(1)
 
     yield ("starting_generation", "Starting face generation", None, None)
+    time.sleep(1)
     yield ("training", "Training face specifications, facial expression, skin overlaying, skin tone management", None, None)
 
     img_bytes = generate_face_image(config)
+    time.sleep(0.5)
 
     yield ("generated", "Successfully generated face", None, None)
+    time.sleep(1)
 
     yield ("uploading", "Uploading generated face to storage", None, None)
     face_id  = str(uuid.uuid4())
     s3_key   = f"model-faces/{category}_{face_id[:8]}.png"
     face_url = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    time.sleep(0.5)
 
     yield ("done", "Face generation complete", face_url, config)
