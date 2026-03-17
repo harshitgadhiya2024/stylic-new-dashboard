@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+pydantic[email]
+pydantic-settings
+pymongo[srv]
+python-dotenv
+python-jose[cryptography]
+passlib[argon2]
+boto3
+pyotp
+qrcode[pil]
+python-multipart
+firebase-admin

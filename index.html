@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Get Firebase ID Token</title>
+</head>
+<body>
+  <h2>Get Firebase ID Token for Testing</h2>
+
+  <button id="googleLogin">Sign in with Google</button>
+
+  <hr>
+
+  <p><strong>Your ID Token (copy this):</strong></p>
+  <textarea id="token" rows="10" cols="80"
+    placeholder="Token will appear here..."></textarea>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getAuth, signInWithPopup, GoogleAuthProvider }
+      from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+
+    // Your Firebase Config
+    const firebaseConfig = {
+      apiKey: "AIzaSyB7UcMayXneMB_EeT0LEb40hcizt-w-pcE",
+      authDomain: "stylic-ai-d1ee0.firebaseapp.com",
+      projectId: "stylic-ai-d1ee0",
+      storageBucket: "stylic-ai-d1ee0.firebasestorage.app",
+      messagingSenderId: "647012685786",
+      appId: "1:647012685786:web:bad7bedaf0baadcdff12e3",
+      measurementId: "G-8G0HTDL0K9"
+    };
+
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const provider = new GoogleAuthProvider();
+
+    // Button Click Listener
+    document.getElementById("googleLogin").addEventListener("click", async () => {
+      try {
+        const result = await signInWithPopup(auth, provider);
+        const user = result.user;
+
+        const token = await user.getIdToken();
+        document.getElementById("token").value = token;
+
+        console.log("ID Token:", token);
+      } catch (error) {
+        console.error(error);
+        alert("Error: " + error.message);
+      }
+    });
+  </script>
+</body>
+</html>

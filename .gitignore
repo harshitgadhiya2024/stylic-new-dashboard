@@ -1,0 +1,52 @@
+# Environment variables — never commit secrets
+.env
+.env.*
+!.env.example
+
+# Firebase service account key
+*.json
+!face_catalog.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Testing / temp files
+testing.txt
+testing.py
+
+# Model face images (large binary files)
+model_faces/*.png
+model_faces/*.jpg
+model_faces/*.jpeg

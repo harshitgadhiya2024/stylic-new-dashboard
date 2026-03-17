@@ -1,0 +1,48 @@
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    # MongoDB
+    MONGO_URI: str = "mongodb://localhost:27017"
+    MONGO_DB_NAME: str = "stylicai"
+
+    # JWT
+    JWT_SECRET_KEY: str = "change-this-secret-in-production"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # SMTP (Hostinger)
+    SMTP_SERVER: str = "smtp.hostinger.com"
+    SMTP_PORT: int = 587
+    SMTP_EMAIL: str = ""
+    SMTP_PASSWORD: str = ""
+
+    # AWS S3
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_REGION: str = "us-east-1"
+    AWS_S3_BUCKET_NAME: str = ""
+
+    # Firebase (Google Sign-In)
+    FIREBASE_SERVICE_ACCOUNT_KEY: str = "./stylic-ai-d1ee0-firebase-adminsdk-fbsvc-a4a36772f6.json"
+
+    # Gemini AI
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.5-flash-image"
+
+    # App defaults
+    APP_NAME: str = "Stylic AI"
+    DEFAULT_CREDITS: int = 5
+    DEFAULT_PLAN: str = "free"
+    OTP_EXPIRE_MINUTES: int = 10
+
+    # Server
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+    DEBUG: bool = True
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+
+settings = Settings()
