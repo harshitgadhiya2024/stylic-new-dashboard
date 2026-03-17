@@ -39,3 +39,11 @@ def get_model_faces_collection() -> Collection:
     col.create_index("user_id")
     col.create_index("model_category")
     return col
+
+
+def get_credit_history_collection() -> Collection:
+    col = get_database()["credit_history"]
+    col.create_index("history_id", unique=True)
+    col.create_index("user_id")
+    col.create_index("created_at")
+    return col

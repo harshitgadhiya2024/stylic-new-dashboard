@@ -13,6 +13,7 @@ from app.models.model_face import (
 )
 from app.services.ai_face_service import generate_and_upload_face
 from app.services.face_to_model_service import generate_model_face_from_reference
+from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
 
 router = APIRouter(prefix="/api/v1/model-faces", tags=["Model Faces"])
 
@@ -71,6 +72,9 @@ def create_model_face(
     body: CreateModelFaceRequest,
     current_user: dict = Depends(get_current_user),
 ):
+    # Check credits before starting generation
+    check_sufficient_credits(current_user)
+
     # Validate face + generate model portrait + upload to S3
     generated_face_url = generate_model_face_from_reference(
         image_url=body.reference_face_url,
@@ -105,6 +109,14 @@ def create_model_face(
             detail=f"Failed to save model face: {exc}",
         )
 
+    # Deduct credits + record history only after successful DB save
+    deduct_credits_and_record(
+        user=current_user,
+        feature_name="face_generation",
+        generated_face_url=generated_face_url,
+        notes=body.notes or "",
+    )
+
     return _clean_face(doc)
 
 
@@ -124,6 +136,9 @@ def create_model_face_with_ai(
     body: CreateModelFaceWithAIRequest,
     current_user: dict = Depends(get_current_user),
 ):
+    # Check credits before starting generation
+    check_sufficient_credits(current_user)
+
     # Convert optional nested model to plain dict of only the explicitly passed fields
     overrides = {}
     if body.face_configurations:
@@ -147,6 +162,7 @@ def create_model_face_with_ai(
         "notes":               body.notes or "",
         "model_used_count":    0,
         "face_url":            face_url,
+        "reference_face_url":  None,
         "is_default":          False,
         "is_active":           True,
         "is_favorite":         False,
@@ -162,6 +178,14 @@ def create_model_face_with_ai(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to save model face: {exc}",
         )
+
+    # Deduct credits + record history only after successful DB save
+    deduct_credits_and_record(
+        user=current_user,
+        feature_name="face_generation",
+        generated_face_url=face_url,
+        notes=body.notes or "",
+    )
 
     return _clean_face(doc)
 
