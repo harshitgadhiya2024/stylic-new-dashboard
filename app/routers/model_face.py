@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, AsyncGenerator
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
 from app.database import get_model_faces_collection
@@ -67,18 +67,20 @@ async def _run_sync_generator(gen_fn, *args, **kwargs) -> asyncio.Queue:
 
 @router.get(
     "/",
-    response_model=List[ModelFaceSchema],
     summary="Get All Model Faces",
     description=(
-        "Returns all model faces visible to the authenticated user: "
+        "Returns paginated model faces visible to the authenticated user: "
         "global defaults (`is_default=True`) **plus** faces created by the user. "
-        "Favorites are listed first, then sorted by creation date (newest first)."
+        "Favorites are listed first, then sorted by creation date (newest first). "
+        "Use `page` and `limit` query params to control pagination."
     ),
 )
 def get_model_faces(
+    page:  int = Query(default=1,  ge=1,   description="Page number (1-based)"),
+    limit: int = Query(default=10, ge=1, le=100, description="Number of items per page"),
     current_user: dict = Depends(get_current_user),
 ):
-    col = get_model_faces_collection()
+    col     = get_model_faces_collection()
     user_id = current_user["user_id"]
 
     query = {
@@ -88,12 +90,23 @@ def get_model_faces(
         ]
     }
 
-    # is_favorite descending (True=1 first), then created_at descending (newest first)
-    docs = col.find(query).sort(
-        [("is_favorite", -1), ("created_at", -1)]
+    total  = col.count_documents(query)
+    skip   = (page - 1) * limit
+
+    docs = (
+        col.find(query)
+        .sort([("is_favorite", -1), ("created_at", -1)])
+        .skip(skip)
+        .limit(limit)
     )
 
-    return [_clean_face(doc) for doc in docs]
+    return {
+        "page":        page,
+        "limit":       limit,
+        "total":       total,
+        "total_pages": (total + limit - 1) // limit,
+        "data":        [_clean_face(doc) for doc in docs],
+    }
 
 
 @router.post(
