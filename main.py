@@ -37,9 +37,18 @@ app.include_router(user.router)
 app.include_router(model_face.router)
 
 
+@app.get("/", tags=["Root"])
+def root():
+    return {
+        "service": "Stylic AI API",
+        "version": "1.0.0",
+        "status": "running",
+        "docs": "/docs",
+    }
+
+
 @app.get("/health", tags=["Health"])
 def health_check():
-    print("Health check")
     return {"status": "ok", "service": "Stylic AI API"}
 
 
