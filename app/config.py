@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # SeedDream / kie.ai
     SEEDDREAM_API_KEY: str = ""
     SEEDDREAM_MODEL: str = "seedream/4.5-edit"
-    SEEDDREAM_QUALITY: str = "medium"
+    SEEDDREAM_QUALITY: str = "basic"
     SEEDDREAM_ASPECT: str = "9:16"
     SEEDDREAM_MAX_RETRIES: int = 120
     SEEDDREAM_RETRY_DELAY: int = 5

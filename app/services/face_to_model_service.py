@@ -196,7 +196,7 @@ def _submit_task(prompt: str, image_url: str) -> str:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"SeedDream task submission failed: {exc}",
         )
-
+    print(resp.json())
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise HTTPException(
