@@ -9,8 +9,8 @@ from fastapi.responses import StreamingResponse
 
 from app.database import get_backgrounds_collection
 from app.dependencies import get_current_user
-from app.models.background import CreateBackgroundRequest
-from app.services.background_service import generate_background_stream
+from app.models.background import CreateBackgroundRequest, CreateBackgroundWithAIRequest
+from app.services.background_service import generate_background_stream, generate_background_with_ai_stream
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
 
 router = APIRouter(prefix="/api/v1/backgrounds", tags=["Backgrounds"])
@@ -127,6 +127,88 @@ async def create_background(
                 deduct_credits_and_record,
                 user=current_user,
                 feature_name="background_generation",
+                generated_face_url=generated_bg_url,
+                notes=body.notes or "",
+            )
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@router.post(
+    "/generate-with-ai",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create Background Using AI (Streaming)",
+    description=(
+        "Generates a professional fashion photoshoot background from a text description "
+        "using Gemini AI (9:16 aspect ratio). Streams real-time progress via SSE. "
+        "Uploads the result to S3, saves to DB, and deducts 2.5 credits in the background. "
+        "Secured — user_id is taken from the auth token. "
+        "Response is `text/event-stream`. Final event `done` contains the full background record. "
+        "Expected duration: 20-30 seconds."
+    ),
+)
+async def create_background_with_ai(
+    body: CreateBackgroundWithAIRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
+    check_sufficient_credits(current_user)
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        generated_bg_url: str | None = None
+
+        queue = await _run_sync_generator(
+            generate_background_with_ai_stream,
+            body.background_name,
+            body.background_configuration,
+        )
+
+        while True:
+            kind, payload = await queue.get()
+
+            if kind == "end":
+                break
+
+            if kind == "err":
+                exc = payload
+                msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
+                yield _sse("error", {"step": "error", "message": msg})
+                return
+
+            step, message, result_url = payload
+
+            if step == "done":
+                generated_bg_url = result_url
+                yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
+
+                now = datetime.now(timezone.utc)
+                doc = {
+                    "background_id":   str(uuid.uuid4()),
+                    "user_id":         current_user["user_id"],
+                    "background_type": body.background_name,
+                    "background_name": body.background_name,
+                    "background_url":  generated_bg_url,
+                    "count":           0,
+                    "tags":            body.tags or [],
+                    "notes":           body.notes or "",
+                    "is_default":      False,
+                    "is_active":       True,
+                    "created_at":      now.isoformat(),
+                    "updated_at":      now.isoformat(),
+                }
+
+                col = get_backgrounds_collection()
+                col.insert_one({**doc, "created_at": now, "updated_at": now})
+
+                yield _sse("done", {"step": "done", "message": "Background generation complete", "data": doc})
+            else:
+                yield _sse(step, {"step": step, "message": message})
+
+        if generated_bg_url:
+            background_tasks.add_task(
+                deduct_credits_and_record,
+                user=current_user,
+                feature_name="background_generation_ai",
                 generated_face_url=generated_bg_url,
                 notes=body.notes or "",
             )

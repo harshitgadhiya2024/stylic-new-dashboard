@@ -1,17 +1,12 @@
 """
 Background generation service.
 
-Pipeline:
-  1. Initialize process.
-  2. Validate the provided background_url (reachable image).
-  3. Submit a SeedDream 4.5-edit task to enhance / recompose the background.
-  4. Poll until complete.
-  5. Download the generated image bytes.
-  6. Upload to S3 and return the public URL.
+Two pipelines:
+  A) generate_background_stream        — reference URL → SeedDream enhancement
+  B) generate_background_with_ai_stream — text config  → Gemini image generation
 
-The public entry point `generate_background_stream` is a synchronous generator
-that yields (step, message, result_url | None) tuples so the router can stream
-SSE events in real-time via the thread-pool pattern.
+Both are synchronous generators that yield (step, message, result_url | None)
+tuples for real-time SSE streaming via the thread-pool pattern.
 """
 
 import io
@@ -216,6 +211,119 @@ def generate_background_stream(
     bg_id     = str(uuid.uuid4())
     s3_key    = f"backgrounds/generated_{bg_id[:8]}.png"
     s3_url    = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    time.sleep(0.5)
+
+    yield ("done", "Background generation complete", s3_url)
+
+
+# ---------------------------------------------------------------------------
+# Gemini AI background generation
+# ---------------------------------------------------------------------------
+
+def _generate_background_image_with_gemini(
+    background_name: str,
+    background_configuration: str,
+) -> bytes:
+    """
+    Call Gemini to generate a 9:16 background image from a text description.
+    Returns raw PNG bytes.
+    """
+    try:
+        from google import genai
+        from google.genai import types as gtypes
+        from PIL import Image
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Missing dependency: {exc}. Run: pip install google-genai Pillow",
+        )
+
+    readable_name = background_name.replace("_", " ").strip()
+
+    prompt = (
+        f"Generate a highly realistic, professional fashion photoshoot background image.\n\n"
+        f"Background name: {readable_name}\n"
+        f"Background description and configuration: {background_configuration}\n\n"
+        f"[REQUIREMENTS]\n"
+        f"- Professional studio or location photography quality\n"
+        f"- Clean, distraction-free background suitable for placing a fashion model in front\n"
+        f"- No people, models, mannequins, or text in the image\n"
+        f"- High resolution, photorealistic, cinematic quality\n"
+        f"- Seamless, well-lit environment with natural depth\n"
+        f"- Colors and lighting should complement fashion photography\n\n"
+        f"Do not add any text, watermarks, or overlays on the image."
+    )
+
+    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+
+    contents = [
+        gtypes.Content(
+            role="user",
+            parts=[gtypes.Part.from_text(text=prompt)],
+        )
+    ]
+    cfg = gtypes.GenerateContentConfig(
+        response_modalities=["IMAGE", "TEXT"],
+        image_config=gtypes.ImageConfig(aspect_ratio="9:16"),
+    )
+
+    try:
+        response = client.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=contents,
+            config=cfg,
+        )
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.data:
+                img = Image.open(io.BytesIO(part.inline_data.data))
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="PNG")
+                return buf.getvalue()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gemini background generation failed: {exc}",
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail="Gemini returned no image data for background generation.",
+    )
+
+
+def generate_background_with_ai_stream(
+    background_name:          str,
+    background_configuration: str,
+) -> Generator[Tuple[str, str, Optional[str]], None, None]:
+    """
+    Gemini AI pipeline as a synchronous generator.
+    Yields (step, message, result_url | None).
+
+    Designed to run in a thread-pool executor via _run_sync_generator.
+    Expected duration: 20-30 seconds.
+    """
+    yield ("initialize", "Initializing background generation process", None)
+    time.sleep(1)
+
+    yield ("validating_config", "Validating background configurations", None)
+    time.sleep(0.5)
+    yield ("validating_config_done", "Background configurations validated", None)
+    time.sleep(1)
+
+    yield ("starting_generation", "Starting background generation", None)
+    time.sleep(1)
+    yield ("processing", "Processing background — generating composition, lighting, color palette and environment", None)
+
+    img_bytes = _generate_background_image_with_gemini(background_name, background_configuration)
+    time.sleep(0.5)
+
+    yield ("generated", "Successfully generated background", None)
+    time.sleep(1)
+
+    yield ("uploading", "Uploading generated background to storage", None)
+    bg_id  = str(uuid.uuid4())
+    s3_key = f"backgrounds/ai_{bg_id[:8]}.png"
+    s3_url = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
     time.sleep(0.5)
 
     yield ("done", "Background generation complete", s3_url)

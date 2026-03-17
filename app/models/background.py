@@ -10,6 +10,13 @@ class CreateBackgroundRequest(BaseModel):
     notes:           Optional[str]       = ""
 
 
+class CreateBackgroundWithAIRequest(BaseModel):
+    background_name:          str
+    background_configuration: str
+    tags:                     Optional[List[str]] = []
+    notes:                    Optional[str]       = ""
+
+
 class BackgroundSchema(BaseModel):
     background_id:   str
     user_id:         Optional[str] = None
