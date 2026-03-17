@@ -3,7 +3,7 @@
     "face_id": "495c3a0f-c5a1-4a42-97b7-80932b332552",
     "category": "adult_female",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_female_495c3a0f.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "heart",
       "jawline_type": "delicate",
@@ -31,7 +31,7 @@
     "face_id": "2ed69216-db78-4eb4-94d0-c5837846a301",
     "category": "adult_female",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_female_2ed69216.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "square",
       "jawline_type": "defined",
@@ -59,7 +59,7 @@
     "face_id": "ede1758d-cd8d-4b03-a7f5-8e4593d883e4",
     "category": "adult_female",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_female_ede1758d.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "round",
       "jawline_type": "soft",
@@ -115,7 +115,7 @@
     "face_id": "ab535def-6103-45c6-84a5-9f9366684e35",
     "category": "adult_female",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_female_ab535def.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "diamond",
       "jawline_type": "sharp",
@@ -143,7 +143,7 @@
     "face_id": "2d14610b-4732-4b94-a798-829209dd43d9",
     "category": "adult_female",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_female_2d14610b.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "oval",
       "jawline_type": "pointed",
@@ -171,7 +171,7 @@
     "face_id": "268c74a3-0158-4252-a2a8-78846299554b",
     "category": "adult_female",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_female_268c74a3.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "oblong",
       "jawline_type": "oval",
@@ -199,7 +199,7 @@
     "face_id": "b3fd7c23-a90d-4fb0-ac99-22405cfa9df1",
     "category": "adult_female",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_female_b3fd7c23.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "heart",
       "jawline_type": "soft",
@@ -227,7 +227,7 @@
     "face_id": "508ef59f-1e89-46f0-84d0-e2fa15f19d60",
     "category": "adult_male",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_male_508ef59f.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "heart",
       "jawline_type": "pointed",
@@ -255,7 +255,7 @@
     "face_id": "4807da78-c55d-46e5-b2a9-e413abe01212",
     "category": "adult_male",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_male_4807da78.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "oblong",
       "jawline_type": "angular",
@@ -311,7 +311,7 @@
     "face_id": "5a50c742-77ae-422f-b749-1d6fd67819f1",
     "category": "adult_male",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_male_5a50c742.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "oval",
       "jawline_type": "lean",
@@ -339,7 +339,7 @@
     "face_id": "3366ac40-2b69-45b2-9d5f-20aead5de7d1",
     "category": "adult_male",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_male_3366ac40.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "round",
       "jawline_type": "soft",
@@ -367,7 +367,7 @@
     "face_id": "43676e9c-ad38-4ee5-9559-d7957abc80fc",
     "category": "adult_male",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_male_43676e9c.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "diamond",
       "jawline_type": "sharp",
@@ -395,7 +395,7 @@
     "face_id": "629c24b0-a057-4f42-bc75-23e27f2c778a",
     "category": "adult_male",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_male_629c24b0.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "oval",
       "jawline_type": "defined",
@@ -423,7 +423,7 @@
     "face_id": "5acdea23-89e6-42f5-b0e9-f17d9223dd06",
     "category": "adult_male",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_male_5acdea23.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "square",
       "jawline_type": "strong",
@@ -451,7 +451,7 @@
     "face_id": "e4c68c12-54c2-48ad-b116-e1a67dad9a0c",
     "category": "kid_boy",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_boy_e4c68c12.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "square",
       "jawline_type": "defined",
@@ -479,7 +479,7 @@
     "face_id": "a25291c7-afa6-449b-ad4a-2137dbec2aab",
     "category": "kid_boy",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_boy_a25291c7.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "heart",
       "jawline_type": "soft",
@@ -507,7 +507,7 @@
     "face_id": "6bc2e80d-e831-473d-b36a-647a67e766c3",
     "category": "kid_boy",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_boy_6bc2e80d.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "oval",
       "jawline_type": "soft",
@@ -535,7 +535,7 @@
     "face_id": "3a45e6af-9d67-4a4d-8335-afcd749e0162",
     "category": "kid_boy",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_boy_3a45e6af.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "oval",
       "jawline_type": "soft",
@@ -563,7 +563,7 @@
     "face_id": "1df8f84f-6895-4b5a-a1cc-82401bead129",
     "category": "kid_boy",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_boy_1df8f84f.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "oblong",
       "jawline_type": "angular",
@@ -591,7 +591,7 @@
     "face_id": "15ffafc6-64be-47ce-9a4e-45b8d6be9daf",
     "category": "kid_boy",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_boy_15ffafc6.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "round",
       "jawline_type": "soft",
@@ -619,7 +619,7 @@
     "face_id": "3caaf627-5485-4b18-8997-3732acf48301",
     "category": "kid_boy",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_boy_3caaf627.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "heart",
       "jawline_type": "delicate",
@@ -675,7 +675,7 @@
     "face_id": "3d76cc34-dbfc-4a21-8c34-fbabbfb1f183",
     "category": "kid_girl",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_girl_3d76cc34.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "heart",
       "jawline_type": "delicate",
@@ -703,7 +703,7 @@
     "face_id": "8b8ad0d8-1b87-4b37-9b3d-196d584b3479",
     "category": "kid_girl",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_girl_8b8ad0d8.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "oval",
       "jawline_type": "soft",
@@ -731,7 +731,7 @@
     "face_id": "6a0889a5-e1a6-4431-9b65-66b161d61ddd",
     "category": "kid_girl",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_girl_6a0889a5.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "round",
       "jawline_type": "soft",
@@ -759,7 +759,7 @@
     "face_id": "3eb3d4e4-a992-4e9a-9ec0-5254b7a2a9d6",
     "category": "kid_girl",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_girl_3eb3d4e4.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "oval",
       "jawline_type": "delicate",
@@ -787,7 +787,7 @@
     "face_id": "06fd317d-e64b-4a32-b7f3-830f1cc77b72",
     "category": "kid_girl",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_girl_06fd317d.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "heart",
       "jawline_type": "soft",
@@ -815,7 +815,7 @@
     "face_id": "658c565b-a9c3-4a7b-9ef8-a8e56d95e0ad",
     "category": "kid_girl",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_girl_658c565b.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "round",
       "jawline_type": "soft",
@@ -843,7 +843,7 @@
     "face_id": "3e90b53c-54b1-42b6-a1c3-b67e531a0acf",
     "category": "kid_girl",
     "face_url": "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/kid_girl_3e90b53c.png",
-    "is_default": false,
+    "is_default": true,
     "configuration": {
       "face_shape": "oval",
       "jawline_type": "soft",

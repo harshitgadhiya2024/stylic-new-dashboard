@@ -115,7 +115,7 @@ def build_documents(raw: list[dict]) -> list[dict]:
             "notes":               "",
             "model_used_count":    0,
             "face_url":            entry.get("face_url", ""),
-            "is_default":          entry.get("is_default", False),
+            "is_default":          entry.get("is_default", True),
             "is_active":           entry.get("is_active", True),
             "is_favorite":         False,
             "created_at":          created_at,
