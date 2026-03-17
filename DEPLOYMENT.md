@@ -264,8 +264,8 @@ jobs:
 > **Note:** The `ubuntu` user needs passwordless sudo for `systemctl`. Add this on the server:
 >
 > ```bash
-> echo "ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart stylicai, /bin/systemctl reload nginx" \
->   | sudo tee /etc/sudoers.d/stylicai-deploy
+> echo "ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart stylicai, /bin/systemctl reload nginx" 
+sudo tee /etc/sudoers.d/stylicai-deploy
 > ```
 
 ---
