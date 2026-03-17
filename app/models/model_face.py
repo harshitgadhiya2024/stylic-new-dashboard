@@ -28,7 +28,7 @@ class FaceConfiguration(BaseModel):
 class CreateModelFaceRequest(BaseModel):
     model_name: str
     model_category: str
-    face_url: str
+    reference_face_url: str
     tags: Optional[list[str]] = []
     notes: Optional[str] = ""
 

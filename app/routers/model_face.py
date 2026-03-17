@@ -73,7 +73,7 @@ def create_model_face(
 ):
     # Validate face + generate model portrait + upload to S3
     generated_face_url = generate_model_face_from_reference(
-        image_url=body.face_url,
+        image_url=body.reference_face_url,
         model_category=body.model_category,
     )
 
@@ -88,7 +88,7 @@ def create_model_face(
         "notes":               body.notes,
         "model_used_count":    0,
         "face_url":            generated_face_url,
-        "reference_face_url":  body.face_url,
+        "reference_face_url":  body.reference_face_url,
         "is_default":          False,
         "is_active":           True,
         "is_favorite":         False,
