@@ -41,7 +41,7 @@ DEBLUR_MAX_SIZE   = None   # disabled — process at full original resolution fo
 
 # ── API CONFIG ────────────────────────────────────────────────────────────────
 
-API_KEY      = "aee9b2af00e40357bceaa62011da5879"
+API_KEY      = os.getenv("SEEDDREAM_API_KEY", "")
 CREATE_URL   = "https://api.kie.ai/api/v1/jobs/createTask"
 STATUS_URL   = "https://api.kie.ai/api/v1/jobs/recordInfo"
 MODEL        = "seedream/4.5-edit"
@@ -58,8 +58,8 @@ OUTPUT_DIR   = f"./photoshoot_output/{RUN_ID}"
 # ── S3 CONFIG ─────────────────────────────────────────────────────────────────
 # All local images are uploaded here first so the SeedDream API gets public URLs.
 
-AWS_ACCESS_KEY_ID     = os.getenv("AWS_ACCESS_KEY_ID", "")      # ← set in environment
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")  # ← set in environment
+AWS_ACCESS_KEY_ID     = os.getenv("AWS_ACCESS_KEY_ID", "")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
 S3_BUCKET             = "aavishailabs-uploads-prod"
 S3_REGION             = "eu-north-1"
 S3_PREFIX             = "seeddream-inputs"            # folder prefix inside the bucket

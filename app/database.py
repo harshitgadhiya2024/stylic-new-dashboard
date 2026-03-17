@@ -55,3 +55,16 @@ def get_backgrounds_collection() -> Collection:
     col.create_index("user_id")
     col.create_index("is_default")
     return col
+
+
+def get_photoshoots_collection() -> Collection:
+    col = get_database()["photoshoots"]
+    col.create_index("photoshoot_id", unique=True)
+    col.create_index("user_id")
+    col.create_index("status")
+    col.create_index("created_at")
+    return col
+
+
+def get_poses_collection() -> Collection:
+    return get_database()["poses_data"]
