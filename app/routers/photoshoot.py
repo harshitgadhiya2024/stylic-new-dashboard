@@ -67,6 +67,7 @@ def create_photoshoot(
     doc = {
         "photoshoot_id":    photoshoot_id,
         "user_id":          user_id,
+        "sku_id":           body.sku_id or "",
         "input_parameter": {
             "front_garment_image":            body.front_garment_image,
             "back_garment_image":             body.back_garment_image or "",
@@ -92,7 +93,6 @@ def create_photoshoot(
             "model_id":                       body.model_id,
             "lighting_style":                 body.lighting_style,
             "ornaments":                      body.ornaments or "",
-            "sku_id":                         body.sku_id or "",
         },
         "output_images":      [],
         "failed_poses":       [],
