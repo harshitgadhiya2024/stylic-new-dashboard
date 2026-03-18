@@ -407,22 +407,36 @@ def _get_deblur_restorer():
 
 def _deblur_bytes(image_bytes: bytes, label: str = "") -> bytes:
     """Deblur image bytes using GFPGAN. Returns sharpened bytes or original if deblur fails."""
+    logger.info("[deblur][%s] ── Deblur START — input size: %d bytes", label, len(image_bytes))
+
+    logger.info("[deblur][%s] Acquiring deblur restorer (loading models if first time)...", label)
     restorer = _get_deblur_restorer()
     if restorer is None:
-        logger.warning("[%s] Deblur skipped — restorer not available", label)
+        logger.warning("[deblur][%s] Restorer not available — skipping deblur, returning original", label)
         return image_bytes
+
+    logger.info("[deblur][%s] Restorer ready", label)
+
     try:
         import cv2
         import numpy as np
 
+        logger.info("[deblur][%s] Decoding image bytes with OpenCV...", label)
         img_array = np.frombuffer(image_bytes, dtype=np.uint8)
         img       = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         if img is None:
-            logger.warning("[%s] Deblur skipped — could not decode image", label)
+            logger.warning("[deblur][%s] cv2 could not decode image — skipping deblur, returning original", label)
             return image_bytes
 
-        logger.info("[%s] Running deblur inference (waiting for CPU slot)...", label)
+        h, w = img.shape[:2]
+        logger.info("[deblur][%s] Image decoded — resolution: %dx%d", label, w, h)
+
+        logger.info("[deblur][%s] Waiting for CPU inference slot (serialised lock)...", label)
+        t_start = time.time()
         with _deblur_infer_lock:
+            wait_s = round(time.time() - t_start, 2)
+            logger.info("[deblur][%s] CPU slot acquired (waited %.2fs) — starting GFPGAN enhance...", label, wait_s)
+            infer_start = time.time()
             _, _, sharp = restorer.enhance(
                 img,
                 has_aligned=False,
@@ -430,12 +444,21 @@ def _deblur_bytes(image_bytes: bytes, label: str = "") -> bytes:
                 paste_back=True,
                 weight=0.5,
             )
-        logger.info("[%s] Deblur inference complete", label)
+            infer_s = round(time.time() - infer_start, 2)
+        logger.info("[deblur][%s] GFPGAN enhance complete — inference took %.2fs", label, infer_s)
 
+        sharp_h, sharp_w = sharp.shape[:2]
+        logger.info("[deblur][%s] Output resolution: %dx%d", label, sharp_w, sharp_h)
+
+        logger.info("[deblur][%s] Encoding sharpened image to PNG bytes...", label)
         _, encoded = cv2.imencode(".png", sharp)
-        return encoded.tobytes()
+        result_bytes = encoded.tobytes()
+        logger.info("[deblur][%s] ── Deblur DONE — output size: %d bytes", label, len(result_bytes))
+        return result_bytes
+
     except Exception as exc:
-        logger.error("[%s] Deblur failed: %s — returning original", label, exc)
+        logger.error("[deblur][%s] Deblur FAILED with error: %s", label, exc, exc_info=True)
+        logger.warning("[deblur][%s] Falling back to original (unsharpened) image", label)
         return image_bytes
 
 
