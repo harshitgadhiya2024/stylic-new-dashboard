@@ -143,14 +143,18 @@ def resolve_pose_prompts(
 ) -> List[str]:
     logger.info("[poses] Resolving poses — option=%s", which_pose_option)
     if which_pose_option == "default":
-        return _fetch_default_pose_prompts(poses_ids)
+        result = _fetch_default_pose_prompts(poses_ids)
     elif which_pose_option == "custom":
         result = [_generate_pose_prompt_from_image(url) for url in poses_images]
         logger.info("[poses] %d custom pose prompts generated via Gemini", len(result))
-        return result
     else:
         logger.info("[poses] Using %d user-provided pose prompts directly", len(poses_prompts))
-        return list(poses_prompts)
+        result = list(poses_prompts)
+
+    for i, prompt in enumerate(result, 1):
+        logger.info("[poses] Pose #%d prompt:\n%s", i, prompt)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -452,13 +456,14 @@ def _process_one_pose(
     pose_label = f"pose-{pose_idx:02d}"
     image_id   = str(uuid.uuid4())
     logger.info("[%s] ── Starting pose pipeline ──────────────────────", pose_label)
-    logger.info("[%s] Prompt preview: %.120s...", pose_label, pose_prompt)
+    logger.info("[%s] Pose prompt:\n%s", pose_label, pose_prompt)
 
     # 2.3 — build generation prompt
     logger.info("[%s] Building SeedDream generation prompt...", pose_label)
     has_back = bool(req_snapshot.get("back_garment_image", ""))
     prompt   = _build_photoshoot_prompt(pose_prompt, has_back, req_snapshot)
-    logger.info("[%s] Prompt built (%d chars, back_image=%s)", pose_label, len(prompt), has_back)
+    logger.info("[%s] Generation prompt built (%d chars, back_image=%s)", pose_label, len(prompt), has_back)
+    logger.info("[%s] Generation prompt:\n%s", pose_label, prompt)
 
     # 2.4-2.5 — submit task
     task_id = _submit_task(prompt, image_urls, pose_label)
