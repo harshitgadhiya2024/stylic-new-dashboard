@@ -25,7 +25,7 @@ class UserSchema(BaseModel):
     is_public_to_explore: bool = True
     language: str = "English"
     time_zone: Optional[str] = ""
-    credits: int = 5
+    credits: float = 5.0
     plan: str = ""
     auth_provider: str = "email"
     notifications: NotificationPreferences = Field(default_factory=NotificationPreferences)
