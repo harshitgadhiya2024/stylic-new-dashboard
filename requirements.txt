@@ -32,13 +32,3 @@ Pillow
 
 # ── Photoshoot / Image processing ─────────────────────────────────────────
 requests
-opencv-python-headless
-numpy
-
-# ── Deblur pipeline (GFPGAN + Real-ESRGAN) ────────────────────────────────
-gfpgan
-basicsr
-facexlib
-realesrgan
-torch
-torchvision

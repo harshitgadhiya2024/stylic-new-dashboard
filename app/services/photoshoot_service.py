@@ -23,7 +23,6 @@ Responsibilities:
 import io
 import json
 import logging
-import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,7 +30,6 @@ from datetime import datetime, timezone
 from typing import List
 
 import requests
-from PIL import Image
 
 logger = logging.getLogger("photoshoot")
 
@@ -314,152 +312,6 @@ def _download_bytes(url: str, label: str = "") -> bytes:
             time.sleep(3)
 
 
-def _resize_image(original_bytes: bytes, max_dimension: int) -> bytes:
-    img = Image.open(io.BytesIO(original_bytes)).convert("RGB")
-    w, h = img.size
-    scale = max_dimension / max(w, h)
-    if scale < 1.0:
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-
-# Deblur globals — loaded once, shared across threads via a lock
-_deblur_restorer   = None
-_deblur_load_lock  = threading.Lock()
-_deblur_infer_lock = threading.Lock()
-
-
-def _get_deblur_restorer():
-    global _deblur_restorer
-    if _deblur_restorer is not None:
-        return _deblur_restorer
-    with _deblur_load_lock:
-        if _deblur_restorer is not None:
-            return _deblur_restorer
-        logger.info("[deblur] Loading GFPGAN + Real-ESRGAN pipeline (first call)...")
-        try:
-            import importlib, subprocess, sys, urllib.request, os
-
-            for pkg, mod in [
-                ("gfpgan", "gfpgan"), ("basicsr", "basicsr"),
-                ("facexlib", "facexlib"), ("realesrgan", "realesrgan"),
-            ]:
-                try:
-                    importlib.import_module(mod)
-                except ImportError:
-                    logger.info("[deblur] Installing missing package: %s", pkg)
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", pkg])
-
-            try:
-                import torchvision.transforms.functional_tensor  # noqa
-            except (ImportError, ModuleNotFoundError):
-                import torchvision.transforms.functional as _ftf
-                sys.modules["torchvision.transforms.functional_tensor"] = _ftf
-
-            from gfpgan import GFPGANer
-            from basicsr.archs.rrdbnet_arch import RRDBNet
-            from realesrgan import RealESRGANer
-
-            weights_dir  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "weights")
-            os.makedirs(weights_dir, exist_ok=True)
-
-            gfpgan_path  = os.path.join(weights_dir, "GFPGANv1.4.pth")
-            esrgan_path  = os.path.join(weights_dir, "RealESRGAN_x2plus.pth")
-
-            if not os.path.exists(gfpgan_path):
-                logger.info("[deblur] Downloading GFPGANv1.4.pth weights...")
-                urllib.request.urlretrieve(
-                    "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth",
-                    gfpgan_path,
-                )
-                logger.info("[deblur] GFPGANv1.4.pth downloaded")
-            if not os.path.exists(esrgan_path):
-                logger.info("[deblur] Downloading RealESRGAN_x2plus.pth weights...")
-                urllib.request.urlretrieve(
-                    "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth",
-                    esrgan_path,
-                )
-                logger.info("[deblur] RealESRGAN_x2plus.pth downloaded")
-
-            bg_upsampler = RealESRGANer(
-                scale=2,
-                model_path=esrgan_path,
-                model=RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
-                              num_block=23, num_grow_ch=32, scale=2),
-                tile=512, tile_pad=16, pre_pad=0, half=False, device="cpu",
-            )
-            _deblur_restorer = GFPGANer(
-                model_path=gfpgan_path,
-                upscale=2,
-                arch="clean",
-                channel_multiplier=2,
-                bg_upsampler=bg_upsampler,
-                device="cpu",
-            )
-            logger.info("[deblur] GFPGAN + Real-ESRGAN pipeline ready")
-        except Exception as exc:
-            logger.error("[deblur] Failed to load deblur pipeline: %s — will skip deblur", exc)
-            _deblur_restorer = None
-    return _deblur_restorer
-
-
-def _deblur_bytes(image_bytes: bytes, label: str = "") -> bytes:
-    """Deblur image bytes using GFPGAN. Returns sharpened bytes or original if deblur fails."""
-    logger.info("[deblur][%s] ── Deblur START — input size: %d bytes", label, len(image_bytes))
-
-    logger.info("[deblur][%s] Acquiring deblur restorer (loading models if first time)...", label)
-    restorer = _get_deblur_restorer()
-    if restorer is None:
-        logger.warning("[deblur][%s] Restorer not available — skipping deblur, returning original", label)
-        return image_bytes
-
-    logger.info("[deblur][%s] Restorer ready", label)
-
-    try:
-        import cv2
-        import numpy as np
-
-        logger.info("[deblur][%s] Decoding image bytes with OpenCV...", label)
-        img_array = np.frombuffer(image_bytes, dtype=np.uint8)
-        img       = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        if img is None:
-            logger.warning("[deblur][%s] cv2 could not decode image — skipping deblur, returning original", label)
-            return image_bytes
-
-        h, w = img.shape[:2]
-        logger.info("[deblur][%s] Image decoded — resolution: %dx%d", label, w, h)
-
-        logger.info("[deblur][%s] Waiting for CPU inference slot (serialised lock)...", label)
-        t_start = time.time()
-        with _deblur_infer_lock:
-            wait_s = round(time.time() - t_start, 2)
-            logger.info("[deblur][%s] CPU slot acquired (waited %.2fs) — starting GFPGAN enhance...", label, wait_s)
-            infer_start = time.time()
-            _, _, sharp = restorer.enhance(
-                img,
-                has_aligned=False,
-                only_center_face=False,
-                paste_back=True,
-                weight=0.5,
-            )
-            infer_s = round(time.time() - infer_start, 2)
-        logger.info("[deblur][%s] GFPGAN enhance complete — inference took %.2fs", label, infer_s)
-
-        sharp_h, sharp_w = sharp.shape[:2]
-        logger.info("[deblur][%s] Output resolution: %dx%d", label, sharp_w, sharp_h)
-
-        logger.info("[deblur][%s] Encoding sharpened image to PNG bytes...", label)
-        _, encoded = cv2.imencode(".png", sharp)
-        result_bytes = encoded.tobytes()
-        logger.info("[deblur][%s] ── Deblur DONE — output size: %d bytes", label, len(result_bytes))
-        return result_bytes
-
-    except Exception as exc:
-        logger.error("[deblur][%s] Deblur FAILED with error: %s", label, exc, exc_info=True)
-        logger.warning("[deblur][%s] Falling back to original (unsharpened) image", label)
-        return image_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -492,53 +344,24 @@ def _process_one_pose(
     task_id = _submit_task(prompt, image_urls, pose_label)
 
     # 2.6 — poll until done
-    result_url_4k = _poll_task(task_id, pose_label)
-    logger.info("[%s] 4K result URL received", pose_label)
+    result_url = _poll_task(task_id, pose_label)
+    logger.info("[%s] Result URL received", pose_label)
 
-    # 2.7 — download 4K image
-    bytes_4k = _download_bytes(result_url_4k, pose_label)
+    # 2.7 — download original image
+    image_bytes = _download_bytes(result_url, pose_label)
 
-    # 2.8 — resize to 2K and 1K
-    logger.info("[%s] Resizing 4K → 2K...", pose_label)
-    bytes_2k = _resize_image(bytes_4k, 2048)
-    logger.info("[%s] Resizing 4K → 1K...", pose_label)
-    bytes_1k = _resize_image(bytes_4k, 1024)
-    logger.info("[%s] Resize complete", pose_label)
-
-    # 2.9-2.11 — deblur all three sizes
-    logger.info("[%s] Deblurring 1K image...", pose_label)
-    deblurred_1k = _deblur_bytes(bytes_1k, f"{pose_label}/1k")
-    logger.info("[%s] Deblurring 2K image...", pose_label)
-    deblurred_2k = _deblur_bytes(bytes_2k, f"{pose_label}/2k")
-    logger.info("[%s] Deblurring 4K image...", pose_label)
-    deblurred_4k = _deblur_bytes(bytes_4k, f"{pose_label}/4k")
-
-    # Upload all 6 images to S3
-    prefix = f"photoshoots/{photoshoot_id}/{image_id}"
-    logger.info("[%s] Uploading 6 images to S3 (prefix=%s)...", pose_label, prefix)
-
-    url_4k_orig = upload_bytes_to_s3(bytes_4k,      f"{prefix}_4k.png",           "image/png")
-    logger.info("[%s] Uploaded 4K original", pose_label)
-    url_2k_orig = upload_bytes_to_s3(bytes_2k,      f"{prefix}_2k.png",           "image/png")
-    logger.info("[%s] Uploaded 2K original", pose_label)
-    url_1k_orig = upload_bytes_to_s3(bytes_1k,      f"{prefix}_1k.png",           "image/png")
-    logger.info("[%s] Uploaded 1K original", pose_label)
-    url_4k_dblr = upload_bytes_to_s3(deblurred_4k,  f"{prefix}_4k_deblurred.png", "image/png")
-    logger.info("[%s] Uploaded 4K deblurred", pose_label)
-    url_2k_dblr = upload_bytes_to_s3(deblurred_2k,  f"{prefix}_2k_deblurred.png", "image/png")
-    logger.info("[%s] Uploaded 2K deblurred", pose_label)
-    url_1k_dblr = upload_bytes_to_s3(deblurred_1k,  f"{prefix}_1k_deblurred.png", "image/png")
-    logger.info("[%s] Uploaded 1K deblurred", pose_label)
+    # Upload single image to S3
+    prefix    = f"photoshoots/{photoshoot_id}/{image_id}"
+    s3_key    = f"{prefix}.png"
+    logger.info("[%s] Uploading image to S3 (key=%s)...", pose_label, s3_key)
+    image_url = upload_bytes_to_s3(image_bytes, s3_key, "image/png")
+    logger.info("[%s] Uploaded to S3: %s", pose_label, image_url)
 
     logger.info("[%s] ── Pose pipeline COMPLETE ─────────────────────", pose_label)
     return {
         "image_id":    image_id,
         "pose_prompt": pose_prompt,
-        "images": {
-            "1k": [url_1k_orig, url_1k_dblr],
-            "2k": [url_2k_orig, url_2k_dblr],
-            "4k": [url_4k_orig, url_4k_dblr],
-        },
+        "image_url":   image_url,
     }
 
 
