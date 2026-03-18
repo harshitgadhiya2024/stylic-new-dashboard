@@ -203,12 +203,42 @@ def _build_photoshoot_prompt(
     op_type  = req.get("one_piece_garment_type", "")
     op_spec  = req.get("one_piece_garment_specification", "")
     fitting  = req.get("fitting", "regular fit")
+    gender   = req.get("gender", "").strip().lower()
 
-    upper_line     = f"- Upper: {ug_type}{f' — {ug_spec}' if ug_spec else ''}" if ug_type else ""
-    lower_line     = f"- Lower: {lg_type}{f' — {lg_spec}' if lg_spec else ''}" if lg_type else ""
-    onepiece_line  = f"- One-piece: {op_type}{f' — {op_spec}' if op_spec else ''}" if op_type else ""
+    upper_line    = f"- Upper: {ug_type}{f' — {ug_spec}' if ug_spec else ''}" if ug_type else ""
+    lower_line    = f"- Lower: {lg_type}{f' — {lg_spec}' if lg_spec else ''}" if lg_type else ""
+    onepiece_line = f"- One-piece: {op_type}{f' — {op_spec}' if op_spec else ''}" if op_type else ""
 
     garment_lines = "\n".join(filter(None, [upper_line, lower_line, onepiece_line]))
+
+    # ── Footwear instruction ──────────────────────────────────────────────────
+    # Derive appropriate footwear from the garment style so the AI picks
+    # something that naturally complements the outfit.
+    all_garment_text = " ".join(filter(None, [
+        ug_type, ug_spec, lg_type, lg_spec, op_type, op_spec, fitting
+    ])).lower()
+
+    footwear_instruction = (
+        "Choose footwear that naturally complements and matches the outfit style, "
+        "color palette, and formality level shown in the garment reference image. "
+        "Examples: heels / sandals for formal/ethnic wear, sneakers / loafers for casual, "
+        "boots for western/denim, flats for relaxed everyday wear. "
+        "Footwear must look realistic, well-fitted, and appropriate for the overall look."
+    )
+
+    # ── Female accessory instruction (purse / handbag) ────────────────────────
+    female_accessory_instruction = ""
+    if gender == "female":
+        female_accessory_instruction = (
+            "\n\n[ACCESSORIES — FEMALE]\n"
+            "Evaluate the outfit style from the garment reference image:\n"
+            "- If the outfit is formal, ethnic, party-wear, or occasion-wear → add a stylish PURSE "
+            "  (clutch or small structured bag) that complements the garment's color and style.\n"
+            "- If the outfit is casual, western, denim, or everyday wear → add a HANDBAG "
+            "  (tote, sling, or shoulder bag) that matches the outfit's vibe.\n"
+            "- The bag must look natural in the model's hand or on her shoulder, matching the "
+            "  overall color palette. Do NOT add a bag if the pose makes it physically impossible."
+        )
 
     return f"""{image_ref}
 
@@ -227,6 +257,9 @@ Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {
 Use EXACT background from reference. Match: all objects, colors, lighting, shadows, depth. No alterations.
 
 [POSE] {pose}
+
+[FOOTWEAR]
+{footwear_instruction}{female_accessory_instruction}
 
 [STYLE] Lighting: {req.get('lighting_style', 'natural light')} | Ornaments: {req.get('ornaments', 'none')}
 
