@@ -405,11 +405,25 @@ def _get_deblur_restorer():
     return _deblur_restorer
 
 
+def preload_deblur_restorer() -> None:
+    """
+    Call once at application startup (lifespan) to load GFPGAN + Real-ESRGAN
+    into memory. Subsequent calls to _deblur_bytes() will reuse the cached
+    restorer without any loading overhead.
+    """
+    logger.info("[deblur] Preloading deblur pipeline at startup...")
+    restorer = _get_deblur_restorer()
+    if restorer is not None:
+        logger.info("[deblur] Deblur pipeline preloaded and ready")
+    else:
+        logger.warning("[deblur] Deblur pipeline could not be loaded at startup — deblur will be skipped")
+
+
 def _deblur_bytes(image_bytes: bytes, label: str = "") -> bytes:
     """Deblur image bytes using GFPGAN. Returns sharpened bytes or original if deblur fails."""
     logger.info("[deblur][%s] ── Deblur START — input size: %d bytes", label, len(image_bytes))
 
-    logger.info("[deblur][%s] Acquiring deblur restorer (loading models if first time)...", label)
+    logger.info("[deblur][%s] Acquiring deblur restorer (preloaded at startup)...", label)
     restorer = _get_deblur_restorer()
     if restorer is None:
         logger.warning("[deblur][%s] Restorer not available — skipping deblur, returning original", label)

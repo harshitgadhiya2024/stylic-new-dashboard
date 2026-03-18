@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -6,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, user, model_face, background, photoshoot
 from app.firebase_config import get_firebase_app
 from app.config import settings
+from app.services.photoshoot_service import preload_deblur_restorer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,14 +15,24 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+logger = logging.getLogger("main")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Firebase
     try:
         get_firebase_app()
-        print("[Firebase] Admin SDK initialized.")
+        logger.info("[startup] Firebase Admin SDK initialized.")
     except RuntimeError as exc:
-        print(exc)
+        logger.warning("[startup] Firebase init skipped: %s", exc)
+
+    # Deblur pipeline — load in a thread so the async event loop isn't blocked
+    logger.info("[startup] Loading deblur pipeline in background thread...")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, preload_deblur_restorer)
+    logger.info("[startup] Deblur pipeline load complete.")
+
     yield
 
 
