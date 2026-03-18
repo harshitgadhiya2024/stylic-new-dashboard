@@ -92,6 +92,7 @@ def create_photoshoot(
             "model_id":                       body.model_id,
             "lighting_style":                 body.lighting_style,
             "ornaments":                      body.ornaments or "",
+            "sku_id":                         body.sku_id or "",
         },
         "output_images":      [],
         "failed_poses":       [],

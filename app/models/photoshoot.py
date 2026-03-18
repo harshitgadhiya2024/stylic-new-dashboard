@@ -28,3 +28,4 @@ class CreatePhotoshootRequest(BaseModel):
     model_id:                     str
     lighting_style:               str
     ornaments:                    Optional[str]  = ""
+    sku_id:                       Optional[str]  = ""
