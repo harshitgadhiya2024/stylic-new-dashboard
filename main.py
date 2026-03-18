@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -5,6 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, user, model_face, background, photoshoot
 from app.firebase_config import get_firebase_app
 from app.config import settings
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 
 @asynccontextmanager
