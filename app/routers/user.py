@@ -44,7 +44,7 @@ def _clean_user(user: dict) -> dict:
     response_model=UserSchema,
     summary="Get My Profile",
 )
-def get_me(current_user: dict = Depends(get_current_user)):
+async def get_me(current_user: dict = Depends(get_current_user)):
     return _clean_user(current_user)
 
 
@@ -53,21 +53,17 @@ def get_me(current_user: dict = Depends(get_current_user)):
     response_model=UserSchema,
     summary="Update My Profile",
 )
-def update_me(body: UpdateUserRequest, current_user: dict = Depends(get_current_user)):
+async def update_me(body: UpdateUserRequest, current_user: dict = Depends(get_current_user)):
     updates: dict = {"updated_at": datetime.now(timezone.utc)}
 
     for field, value in body.model_dump(exclude_unset=True).items():
         if field == "notifications" and isinstance(value, dict):
-            # Partial update: write only the keys the caller actually sent,
-            # using dot-notation so untouched notification keys are preserved.
             for notif_key, notif_val in value.items():
                 if notif_val is not None:
                     updates[f"notifications.{notif_key}"] = notif_val
         elif value is not None:
             updates[field] = value
 
-    # Auto-regenerate user_name if first_name, last_name, or phone_number changed
-    # and the caller did not explicitly supply a new user_name
     if body.user_name is None and any(
         f in updates for f in ("first_name", "last_name", "phone_number")
     ):
@@ -83,12 +79,12 @@ def update_me(body: UpdateUserRequest, current_user: dict = Depends(get_current_
         )
 
     col = get_users_collection()
-    col.update_one(
+    await col.update_one(
         {"user_id": current_user["user_id"]},
         {"$set": updates},
     )
 
-    updated = col.find_one({"user_id": current_user["user_id"]})
+    updated = await col.find_one({"user_id": current_user["user_id"]})
     return _clean_user(updated)
 
 
@@ -97,9 +93,9 @@ def update_me(body: UpdateUserRequest, current_user: dict = Depends(get_current_
     response_model=MessageResponse,
     summary="Delete My Account (Soft Delete)",
 )
-def delete_me(current_user: dict = Depends(get_current_user)):
+async def delete_me(current_user: dict = Depends(get_current_user)):
     col = get_users_collection()
-    col.update_one(
+    await col.update_one(
         {"user_id": current_user["user_id"]},
         {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}},
     )
@@ -115,7 +111,7 @@ def delete_me(current_user: dict = Depends(get_current_user)):
     response_model=MessageResponse,
     summary="Change Password",
 )
-def change_password(body: ChangePasswordRequest, current_user: dict = Depends(get_current_user)):
+async def change_password(body: ChangePasswordRequest, current_user: dict = Depends(get_current_user)):
     if current_user.get("auth_provider") == "google":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -123,7 +119,7 @@ def change_password(body: ChangePasswordRequest, current_user: dict = Depends(ge
         )
 
     col = get_users_collection()
-    user = col.find_one({"user_id": current_user["user_id"]})
+    user = await col.find_one({"user_id": current_user["user_id"]})
 
     if not verify_password(body.old_password, user.get("password", "")):
         raise HTTPException(
@@ -135,7 +131,7 @@ def change_password(body: ChangePasswordRequest, current_user: dict = Depends(ge
     if err:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=err)
 
-    col.update_one(
+    await col.update_one(
         {"user_id": current_user["user_id"]},
         {
             "$set": {
@@ -157,7 +153,7 @@ def change_password(body: ChangePasswordRequest, current_user: dict = Depends(ge
     summary="Change Email – Step 1: Send OTP to New Email",
     description="Send a verification OTP to the new email address. Call verify-otp to confirm the change.",
 )
-def change_email(
+async def change_email(
     body: ChangeEmailRequest,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
@@ -170,14 +166,14 @@ def change_email(
             detail="New email is the same as the current email.",
         )
 
-    if col.find_one({"email": body.new_email}):
+    if await col.find_one({"email": body.new_email}):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This email is already in use by another account.",
         )
 
     otp = generate_otp()
-    save_otp(
+    await save_otp(
         email=body.new_email,
         otp=otp,
         purpose="change_email",
@@ -196,7 +192,7 @@ def change_email(
     response_model=MessageResponse,
     summary="Change Email – Resend OTP",
 )
-def change_email_resend_otp(
+async def change_email_resend_otp(
     body: ChangeEmailRequest,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
@@ -209,14 +205,14 @@ def change_email_resend_otp(
             detail="New email is the same as the current email.",
         )
 
-    if col.find_one({"email": body.new_email}):
+    if await col.find_one({"email": body.new_email}):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This email is already in use by another account.",
         )
 
     otp = generate_otp()
-    save_otp(
+    await save_otp(
         email=body.new_email,
         otp=otp,
         purpose="change_email",
@@ -232,11 +228,11 @@ def change_email_resend_otp(
     response_model=UserSchema,
     summary="Change Email – Step 2: Verify OTP & Update Email",
 )
-def change_email_verify_otp(
+async def change_email_verify_otp(
     body: VerifyEmailChangeRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    record = verify_otp(email=body.new_email, otp=body.otp, purpose="change_email")
+    record = await verify_otp(email=body.new_email, otp=body.otp, purpose="change_email")
 
     if record.get("user_id") != current_user["user_id"]:
         raise HTTPException(
@@ -246,19 +242,19 @@ def change_email_verify_otp(
 
     col = get_users_collection()
 
-    if col.find_one({"email": body.new_email}):
+    if await col.find_one({"email": body.new_email}):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This email is already in use by another account.",
         )
 
-    col.update_one(
+    await col.update_one(
         {"user_id": current_user["user_id"]},
         {"$set": {"email": body.new_email, "updated_at": datetime.now(timezone.utc)}},
     )
-    consume_otp(body.new_email, "change_email")
+    await consume_otp(body.new_email, "change_email")
 
-    updated = col.find_one({"user_id": current_user["user_id"]})
+    updated = await col.find_one({"user_id": current_user["user_id"]})
     return _clean_user(updated)
 
 
@@ -271,7 +267,7 @@ def change_email_verify_otp(
     summary="Upload File to S3",
     description="Upload a file (image, PDF, video) and receive a public URL.",
 )
-def upload_file(
+async def upload_file(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
 ):
@@ -282,6 +278,6 @@ def upload_file(
         )
 
     user_id = current_user["user_id"]
-    url = upload_file_to_s3(file, folder=f"users/{user_id}")
+    url = await upload_file_to_s3(file, folder=f"users/{user_id}")
 
     return {"success": True, "url": url}

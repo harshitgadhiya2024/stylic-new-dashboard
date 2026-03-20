@@ -9,12 +9,13 @@ Pipeline:
   5. Upload to S3 and return the public URL.
 """
 
+import asyncio
 import io
 import json
-import time
 import uuid
+from typing import AsyncGenerator, Tuple, Optional as Opt
 
-import requests
+import httpx
 from fastapi import HTTPException, status
 
 from app.config import settings
@@ -25,7 +26,7 @@ from app.services.s3_service import upload_bytes_to_s3
 # Step 1 — Gemini: validate face presence
 # ---------------------------------------------------------------------------
 
-def validate_face(image_url: str) -> str:
+async def validate_face(image_url: str) -> str:
     """
     Downloads the image and asks Gemini whether it contains a clear human face.
     Returns a brief appearance description on success.
@@ -41,8 +42,9 @@ def validate_face(image_url: str) -> str:
         )
 
     try:
-        img_resp = requests.get(image_url, timeout=30)
-        img_resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30) as client:
+            img_resp = await client.get(image_url)
+            img_resp.raise_for_status()
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -50,7 +52,7 @@ def validate_face(image_url: str) -> str:
         )
 
     img_bytes = img_resp.content
-    content_type = img_resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+    content_type = img_resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
     if content_type not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
         content_type = "image/jpeg"
 
@@ -74,9 +76,11 @@ def validate_face(image_url: str) -> str:
         "- Face is turned away and features are not visible"
     )
 
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    try:
-        response = client.models.generate_content(
+    loop = asyncio.get_event_loop()
+
+    def _call_gemini():
+        g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        return g_client.models.generate_content(
             model=settings.GEMINI_VISION_MODEL,
             contents=[
                 gtypes.Content(
@@ -92,6 +96,9 @@ def validate_face(image_url: str) -> str:
                 temperature=0,
             ),
         )
+
+    try:
+        response = await loop.run_in_executor(None, _call_gemini)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -173,7 +180,7 @@ _CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
 _STATUS_URL  = "https://api.kie.ai/api/v1/jobs/recordInfo"
 
 
-def _submit_task(prompt: str, image_url: str) -> str:
+async def _submit_task(prompt: str, image_url: str) -> str:
     payload = json.dumps({
         "model": settings.SEEDDREAM_MODEL,
         "input": {
@@ -189,14 +196,15 @@ def _submit_task(prompt: str, image_url: str) -> str:
     }
 
     try:
-        resp = requests.post(_CREATE_URL, headers=headers, data=payload, timeout=30)
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(_CREATE_URL, headers=headers, content=payload)
+            resp.raise_for_status()
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"SeedDream task submission failed: {exc}",
         )
-    print(resp.json())
+
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise HTTPException(
@@ -206,17 +214,17 @@ def _submit_task(prompt: str, image_url: str) -> str:
     return task_id
 
 
-def _poll_task(task_id: str) -> str:
+async def _poll_task(task_id: str) -> str:
     headers = {"Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}"}
 
     for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
         try:
-            resp = requests.get(
-                f"{_STATUS_URL}?taskId={task_id}",
-                headers=headers,
-                timeout=30,
-            )
-            resp.raise_for_status()
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(
+                    f"{_STATUS_URL}?taskId={task_id}",
+                    headers=headers,
+                )
+                resp.raise_for_status()
             data   = resp.json().get("data", {})
             state  = data.get("state")
 
@@ -235,12 +243,12 @@ def _poll_task(task_id: str) -> str:
                     detail="SeedDream image generation task failed.",
                 )
 
-            time.sleep(settings.SEEDDREAM_RETRY_DELAY)
+            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
 
         except HTTPException:
             raise
         except Exception:
-            time.sleep(settings.SEEDDREAM_RETRY_DELAY)
+            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
 
     raise HTTPException(
         status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -252,30 +260,27 @@ def _poll_task(task_id: str) -> str:
 # Step 4 — Download generated image bytes
 # ---------------------------------------------------------------------------
 
-def _download_image(result_url: str) -> bytes:
+async def _download_image(result_url: str) -> bytes:
     for attempt in range(1, 4):
         try:
-            resp = requests.get(result_url, stream=True, timeout=(10, 60))
-            resp.raise_for_status()
-            buf = io.BytesIO()
-            for chunk in resp.iter_content(65536):
-                if chunk:
-                    buf.write(chunk)
-            return buf.getvalue()
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.get(result_url)
+                resp.raise_for_status()
+            return resp.content
         except Exception as exc:
             if attempt == 3:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail=f"Failed to download generated image: {exc}",
                 )
-            time.sleep(3)
+            await asyncio.sleep(3)
 
 
 # ---------------------------------------------------------------------------
 # Public entry point — non-streaming (kept for internal use)
 # ---------------------------------------------------------------------------
 
-def generate_model_face_from_reference(image_url: str, model_category: str) -> str:
+async def generate_model_face_from_reference(image_url: str, model_category: str) -> str:
     """
     Full pipeline:
       1. Validate face in image_url via Gemini.
@@ -285,62 +290,57 @@ def generate_model_face_from_reference(image_url: str, model_category: str) -> s
     Returns the public S3 URL of the generated model face image.
     Raises HTTPException on any failure.
     """
-    face_description = validate_face(image_url)
+    face_description = await validate_face(image_url)
     prompt           = _build_generation_prompt(face_description)
-    task_id          = _submit_task(prompt, image_url)
-    result_url       = _poll_task(task_id)
-    img_bytes        = _download_image(result_url)
+    task_id          = await _submit_task(prompt, image_url)
+    result_url       = await _poll_task(task_id)
+    img_bytes        = await _download_image(result_url)
     face_id          = str(uuid.uuid4())
     s3_key           = f"model-faces/{model_category}_{face_id[:8]}.png"
-    return upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    return await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
 
 
 # ---------------------------------------------------------------------------
-# Streaming generator — yields (step, message, face_url | None)
+# Async streaming generator — yields (step, message, face_url | None)
 # ---------------------------------------------------------------------------
 
-from typing import Generator, Tuple, Optional as Opt
-
-
-def generate_model_face_from_reference_stream(
+async def generate_model_face_from_reference_stream(
     image_url: str,
     model_category: str,
-) -> Generator[Tuple[str, str, Opt[str]], None, None]:
+) -> AsyncGenerator[Tuple[str, str, Opt[str]], None]:
     """
     Same pipeline as generate_model_face_from_reference but yields progress
     tuples at each stage so the caller can stream them to the client.
 
     Yields: (step, message, face_url)
       - face_url is None for all steps except the final "done" step.
-
-    Raises HTTPException on any failure (caller must catch and stream the error).
     """
     yield ("initialize", "Initializing face generation process", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("validating_image", "Validating reference image", None)
-    face_description = validate_face(image_url)
-    time.sleep(0.5)
+    face_description = await validate_face(image_url)
+    await asyncio.sleep(0.5)
     yield ("validating_image_done", "Reference image validated — face detected", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("starting_generation", "Starting face generation", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
     yield ("training", "Training face specifications, facial expression, skin overlaying, skin tone management", None)
 
     prompt     = _build_generation_prompt(face_description)
-    task_id    = _submit_task(prompt, image_url)
-    result_url = _poll_task(task_id)
-    time.sleep(0.5)
+    task_id    = await _submit_task(prompt, image_url)
+    result_url = await _poll_task(task_id)
+    await asyncio.sleep(0.5)
 
     yield ("generated", "Successfully generated face", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("uploading", "Uploading generated face to storage", None)
-    img_bytes = _download_image(result_url)
+    img_bytes = await _download_image(result_url)
     face_id   = str(uuid.uuid4())
     s3_key    = f"model-faces/{model_category}_{face_id[:8]}.png"
-    s3_url    = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
-    time.sleep(0.5)
+    s3_url    = await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    await asyncio.sleep(0.5)
 
     yield ("done", "Face generation complete", s3_url)

@@ -111,10 +111,10 @@ def _new_user_doc(
     summary="Register – Step 1: Send OTP",
     description="Validate email & password, then send a 6-digit OTP to the provided email.",
 )
-def register(body: RegisterRequest, background_tasks: BackgroundTasks):
+async def register(body: RegisterRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
 
-    if col.find_one({"email": body.email}):
+    if await col.find_one({"email": body.email}):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="An account with this email already exists.",
@@ -125,7 +125,7 @@ def register(body: RegisterRequest, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=err)
 
     otp = generate_otp()
-    save_otp(
+    await save_otp(
         email=body.email,
         otp=otp,
         purpose="register",
@@ -149,13 +149,13 @@ def register(body: RegisterRequest, background_tasks: BackgroundTasks):
     response_model=TokenResponse,
     summary="Register – Step 2: Verify OTP & Create Account",
 )
-def register_verify_otp(body: VerifyOTPRequest):
-    record = verify_otp(email=body.email, otp=body.otp, purpose="register")
+async def register_verify_otp(body: VerifyOTPRequest):
+    record = await verify_otp(email=body.email, otp=body.otp, purpose="register")
 
     hashed_password = record.get("hashed_password", "")
     col = get_users_collection()
 
-    if col.find_one({"email": body.email}):
+    if await col.find_one({"email": body.email}):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Account already exists.",
@@ -169,8 +169,8 @@ def register_verify_otp(body: VerifyOTPRequest):
         last_name=record.get("last_name", ""),
         phone_number=record.get("phone_number", ""),
     )
-    col.insert_one(user_doc)
-    consume_otp(body.email, "register")
+    await col.insert_one(user_doc)
+    await consume_otp(body.email, "register")
 
     return _build_token_response(user_doc)
 
@@ -180,15 +180,15 @@ def register_verify_otp(body: VerifyOTPRequest):
     response_model=MessageResponse,
     summary="Register – Resend OTP",
 )
-def register_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
+async def register_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
-    if col.find_one({"email": body.email}):
+    if await col.find_one({"email": body.email}):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Account already exists. Please log in.",
         )
 
-    existing = get_pending_otp(email=body.email, purpose="register")
+    existing = await get_pending_otp(email=body.email, purpose="register")
     hashed_password = existing.get("hashed_password", "") if existing else ""
 
     if not hashed_password:
@@ -198,7 +198,7 @@ def register_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTask
         )
 
     otp = generate_otp()
-    save_otp(
+    await save_otp(
         email=body.email,
         otp=otp,
         purpose="register",
@@ -224,9 +224,9 @@ def register_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTask
     summary="Login – Step 1: Validate Credentials & Send OTP",
     description="Validate email & password, then send a 6-digit OTP to the provided email.",
 )
-def login(body: LoginRequest, background_tasks: BackgroundTasks):
+async def login(body: LoginRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
-    user = col.find_one({"email": body.email, "is_active": True})
+    user = await col.find_one({"email": body.email, "is_active": True})
 
     if not user:
         raise HTTPException(
@@ -247,7 +247,7 @@ def login(body: LoginRequest, background_tasks: BackgroundTasks):
         )
 
     otp = generate_otp()
-    save_otp(email=body.email, otp=otp, purpose="login")
+    await save_otp(email=body.email, otp=otp, purpose="login")
     background_tasks.add_task(send_otp_email, to_email=body.email, otp=otp, purpose="login")
 
     return {
@@ -261,15 +261,15 @@ def login(body: LoginRequest, background_tasks: BackgroundTasks):
     response_model=TokenResponse,
     summary="Login – Step 2: Verify OTP",
 )
-def login_verify_otp(body: VerifyOTPRequest):
-    verify_otp(email=body.email, otp=body.otp, purpose="login")
+async def login_verify_otp(body: VerifyOTPRequest):
+    await verify_otp(email=body.email, otp=body.otp, purpose="login")
 
     col = get_users_collection()
-    user = col.find_one({"email": body.email, "is_active": True})
+    user = await col.find_one({"email": body.email, "is_active": True})
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found.")
 
-    consume_otp(body.email, "login")
+    await consume_otp(body.email, "login")
     return _build_token_response(user)
 
 
@@ -278,13 +278,13 @@ def login_verify_otp(body: VerifyOTPRequest):
     response_model=MessageResponse,
     summary="Login – Resend OTP",
 )
-def login_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
+async def login_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
-    if not col.find_one({"email": body.email, "is_active": True}):
+    if not await col.find_one({"email": body.email, "is_active": True}):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
     otp = generate_otp()
-    save_otp(email=body.email, otp=otp, purpose="login")
+    await save_otp(email=body.email, otp=otp, purpose="login")
     background_tasks.add_task(send_otp_email, to_email=body.email, otp=otp, purpose="login")
 
     return {"success": True, "message": f"OTP resent to {body.email}."}
@@ -299,12 +299,12 @@ def login_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
     response_model=TokenResponse,
     summary="Refresh Access & Refresh Tokens",
 )
-def refresh_token(body: RefreshTokenRequest):
+async def refresh_token(body: RefreshTokenRequest):
     payload = decode_token(body.refresh_token, token_type="refresh")
     user_id = payload.get("sub")
 
     col = get_users_collection()
-    user = col.find_one({"user_id": user_id, "is_active": True})
+    user = await col.find_one({"user_id": user_id, "is_active": True})
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found.")
 
@@ -320,9 +320,9 @@ def refresh_token(body: RefreshTokenRequest):
     response_model=MessageResponse,
     summary="Forgot Password – Step 1: Send OTP",
 )
-def forgot_password(body: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+async def forgot_password(body: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
-    user = col.find_one({"email": body.email, "is_active": True})
+    user = await col.find_one({"email": body.email, "is_active": True})
 
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email.")
@@ -334,7 +334,7 @@ def forgot_password(body: ForgotPasswordRequest, background_tasks: BackgroundTas
         )
 
     otp = generate_otp()
-    save_otp(email=body.email, otp=otp, purpose="forgot_password")
+    await save_otp(email=body.email, otp=otp, purpose="forgot_password")
     background_tasks.add_task(send_otp_email, to_email=body.email, otp=otp, purpose="forgot_password")
 
     return {
@@ -348,13 +348,13 @@ def forgot_password(body: ForgotPasswordRequest, background_tasks: BackgroundTas
     response_model=MessageResponse,
     summary="Forgot Password – Resend OTP",
 )
-def forgot_password_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
+async def forgot_password_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
-    if not col.find_one({"email": body.email, "is_active": True}):
+    if not await col.find_one({"email": body.email, "is_active": True}):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email.")
 
     otp = generate_otp()
-    save_otp(email=body.email, otp=otp, purpose="forgot_password")
+    await save_otp(email=body.email, otp=otp, purpose="forgot_password")
     background_tasks.add_task(send_otp_email, to_email=body.email, otp=otp, purpose="forgot_password")
 
     return {"success": True, "message": f"OTP resent to {body.email}."}
@@ -365,8 +365,8 @@ def forgot_password_resend_otp(body: ResendOTPRequest, background_tasks: Backgro
     response_model=MessageResponse,
     summary="Forgot Password – Step 2: Verify OTP",
 )
-def forgot_password_verify_otp(body: VerifyOTPRequest):
-    verify_otp(email=body.email, otp=body.otp, purpose="forgot_password")
+async def forgot_password_verify_otp(body: VerifyOTPRequest):
+    await verify_otp(email=body.email, otp=body.otp, purpose="forgot_password")
     return {"success": True, "message": "OTP verified. You may now reset your password."}
 
 
@@ -375,8 +375,8 @@ def forgot_password_verify_otp(body: VerifyOTPRequest):
     response_model=MessageResponse,
     summary="Forgot Password – Step 3: Reset Password",
 )
-def forgot_password_reset(body: ResetPasswordRequest):
-    otp_record = check_otp_verified(email=body.email, purpose="forgot_password")
+async def forgot_password_reset(body: ResetPasswordRequest):
+    otp_record = await check_otp_verified(email=body.email, purpose="forgot_password")
     if not otp_record:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -388,7 +388,7 @@ def forgot_password_reset(body: ResetPasswordRequest):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=err)
 
     col = get_users_collection()
-    result = col.update_one(
+    result = await col.update_one(
         {"email": body.email, "is_active": True},
         {
             "$set": {
@@ -400,7 +400,7 @@ def forgot_password_reset(body: ResetPasswordRequest):
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
-    consume_otp(body.email, "forgot_password")
+    await consume_otp(body.email, "forgot_password")
     return {"success": True, "message": "Password updated successfully."}
 
 
@@ -414,7 +414,7 @@ def forgot_password_reset(body: ResetPasswordRequest):
     summary="Google Sign-In / Sign-Up",
     description="Verify a Firebase ID token from Google sign-in, then login or auto-register the user.",
 )
-def google_sign_in(body: GoogleSignInRequest):
+async def google_sign_in(body: GoogleSignInRequest):
     try:
         get_firebase_app()
         decoded = firebase_auth.verify_id_token(body.id_token)
@@ -441,7 +441,7 @@ def google_sign_in(body: GoogleSignInRequest):
     last_name = parts[1] if len(parts) > 1 else ""
 
     col = get_users_collection()
-    user = col.find_one({"email": email})
+    user = await col.find_one({"email": email})
 
     if user:
         user.pop("_id", None)
@@ -456,7 +456,7 @@ def google_sign_in(body: GoogleSignInRequest):
         phone_number=phone_number,
         profile_picture=picture,
     )
-    col.insert_one(user_doc)
+    await col.insert_one(user_doc)
     user_doc.pop("_id", None)
 
     return _build_token_response(user_doc)

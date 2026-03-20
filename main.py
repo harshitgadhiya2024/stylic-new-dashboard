@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -7,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, user, model_face, background, photoshoot
 from app.firebase_config import get_firebase_app
 from app.config import settings
-from app.services.photoshoot_service import preload_deblur_restorer
+from app.database import create_indexes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,11 +26,9 @@ async def lifespan(app: FastAPI):
     except RuntimeError as exc:
         logger.warning("[startup] Firebase init skipped: %s", exc)
 
-    # Deblur pipeline — load in a thread so the async event loop isn't blocked
-    logger.info("[startup] Loading deblur pipeline in background thread...")
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, preload_deblur_restorer)
-    logger.info("[startup] Deblur pipeline load complete.")
+    # MongoDB indexes
+    await create_indexes()
+    logger.info("[startup] MongoDB indexes created.")
 
     yield
 
@@ -75,11 +72,10 @@ def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
         "main:app",
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.DEBUG,
     )
-    

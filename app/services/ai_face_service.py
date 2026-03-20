@@ -3,10 +3,10 @@ AI face generation service using Google Gemini.
 Generates a portrait image from face configuration and uploads it to S3.
 """
 
+import asyncio
 import io
-import time
 import uuid
-from typing import Generator, Tuple, Optional as Opt
+from typing import AsyncGenerator, Tuple, Optional as Opt
 
 from fastapi import HTTPException, status
 
@@ -46,7 +46,6 @@ def build_configuration(category: str, overrides: dict) -> dict:
     Merge caller-supplied overrides on top of category-appropriate defaults.
     beard_length / beard_color are stripped and forced to 'none' for non-male categories.
     """
-    # Determine gender from category
     if "female" in category or "girl" in category:
         gender = "female" if "adult" in category else "girl"
     elif "boy" in category:
@@ -56,7 +55,6 @@ def build_configuration(category: str, overrides: dict) -> dict:
 
     config = {**_DEFAULTS_COMMON, "gender": gender}
 
-    # Beard support only for adult_male
     if category in _MALE_CATEGORIES:
         config.update(_BEARD_DEFAULTS)
         if overrides.get("beard_length"):
@@ -67,7 +65,6 @@ def build_configuration(category: str, overrides: dict) -> dict:
         config["beard_length"] = "none"
         config["beard_color"]  = "none"
 
-    # Apply all other overrides (skip beard keys — handled above)
     for key, value in overrides.items():
         if key in ("beard_length", "beard_color"):
             continue
@@ -135,7 +132,7 @@ Photography Style:
 Do not add any text, watermarks, or overlays on the image."""
 
 
-def generate_face_image(config: dict) -> bytes:
+async def generate_face_image(config: dict) -> bytes:
     """Call Gemini to generate a portrait image and return raw PNG bytes."""
     try:
         from google import genai
@@ -147,8 +144,7 @@ def generate_face_image(config: dict) -> bytes:
             detail=f"Missing dependency for AI generation: {exc}. Run: pip install google-genai Pillow",
         )
 
-    client  = genai.Client(api_key=settings.GEMINI_API_KEY)
-    prompt  = build_face_prompt(config)
+    prompt = build_face_prompt(config)
 
     contents = [
         gtypes.Content(
@@ -161,12 +157,18 @@ def generate_face_image(config: dict) -> bytes:
         image_config=gtypes.ImageConfig(aspect_ratio="9:16"),
     )
 
-    try:
-        response = client.models.generate_content(
+    loop = asyncio.get_event_loop()
+
+    def _call_gemini():
+        g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        return g_client.models.generate_content(
             model=settings.GEMINI_MODEL,
             contents=contents,
             config=cfg,
         )
+
+    try:
+        response = await loop.run_in_executor(None, _call_gemini)
         for part in response.candidates[0].content.parts:
             if part.inline_data and part.inline_data.data:
                 img = Image.open(io.BytesIO(part.inline_data.data))
@@ -185,61 +187,59 @@ def generate_face_image(config: dict) -> bytes:
     )
 
 
-def generate_and_upload_face(category: str, overrides: dict) -> tuple[str, dict]:
+async def generate_and_upload_face(category: str, overrides: dict) -> tuple[str, dict]:
     """
     Full pipeline: build config → generate image → upload to S3.
     Returns (face_url, final_configuration).
     """
     config    = build_configuration(category, overrides)
-    img_bytes = generate_face_image(config)
+    img_bytes = await generate_face_image(config)
 
     face_id  = str(uuid.uuid4())
     s3_key   = f"model-faces/{category}_{face_id[:8]}.png"
-    face_url = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    face_url = await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
 
     return face_url, config
 
 
 # ---------------------------------------------------------------------------
-# Streaming generator — yields (step, message, face_url | None, config | None)
+# Async streaming generator — yields (step, message, face_url | None, config | None)
 # ---------------------------------------------------------------------------
 
-def generate_and_upload_face_stream(
+async def generate_and_upload_face_stream(
     category: str,
     overrides: dict,
-) -> Generator[Tuple[str, str, Opt[str], Opt[dict]], None, None]:
+) -> AsyncGenerator[Tuple[str, str, Opt[str], Opt[dict]], None]:
     """
     Same pipeline as generate_and_upload_face but yields progress tuples
     at each stage so the caller can stream them to the client.
 
     Yields: (step, message, face_url, config)
       - face_url and config are None for all steps except the final "done" step.
-
-    Raises HTTPException on any failure.
     """
     yield ("initialize", "Initializing face generation process", None, None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("validating_config", "Validating face configurations", None, None)
     config = build_configuration(category, overrides)
-    time.sleep(0.5)
+    await asyncio.sleep(0.5)
     yield ("validating_config_done", "Face configurations validated", None, None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("starting_generation", "Starting face generation", None, None)
-    time.sleep(1)
+    await asyncio.sleep(1)
     yield ("training", "Training face specifications, facial expression, skin overlaying, skin tone management", None, None)
 
-    img_bytes = generate_face_image(config)
-    time.sleep(0.5)
+    img_bytes = await generate_face_image(config)
+    await asyncio.sleep(0.5)
 
     yield ("generated", "Successfully generated face", None, None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("uploading", "Uploading generated face to storage", None, None)
     face_id  = str(uuid.uuid4())
     s3_key   = f"model-faces/{category}_{face_id[:8]}.png"
-    face_url = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
-    time.sleep(0.5)
+    face_url = await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    await asyncio.sleep(0.5)
 
     yield ("done", "Face generation complete", face_url, config)

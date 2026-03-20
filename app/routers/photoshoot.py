@@ -21,12 +21,12 @@ _CREDIT_PER_POSE = 2.0
         "Validates credits (total_poses × 2), stores the photoshoot document with "
         "status='processing', then fires a background job that: resolves pose prompts, "
         "runs all poses concurrently via SeedDream (quality=high, 9:16), generates 4K/2K/1K "
-        "images with deblurred variants for each pose, uploads all to S3, deducts credits, "
+        "images for each pose, uploads all to S3, deducts credits, "
         "and updates the document to status='completed' (or 'failed'). "
         "Secured — user_id is taken from the auth token."
     ),
 )
-def create_photoshoot(
+async def create_photoshoot(
     body: CreatePhotoshootRequest,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
@@ -48,7 +48,7 @@ def create_photoshoot(
         )
 
     # ── Step 2: credit check ──────────────────────────────────────────────────
-    total_credit   = total_poses * _CREDIT_PER_POSE
+    total_credit    = total_poses * _CREDIT_PER_POSE
     current_credits = float(current_user.get("credits", 0))
 
     if current_credits < total_credit:
@@ -69,30 +69,30 @@ def create_photoshoot(
         "user_id":          user_id,
         "sku_id":           body.sku_id or "",
         "input_parameter": {
-            "front_garment_image":            body.front_garment_image,
-            "back_garment_image":             body.back_garment_image or "",
-            "ethnicity":                      body.ethnicity,
-            "gender":                         body.gender,
-            "skin_tone":                      body.skin_tone,
-            "age":                            body.age,
-            "age_group":                      body.age_group,
-            "weight":                         body.weight,
-            "height":                         body.height,
-            "upper_garment_type":             body.upper_garment_type,
-            "upper_garment_specification":    body.upper_garment_specification,
-            "lower_garment_type":             body.lower_garment_type,
-            "lower_garment_specification":    body.lower_garment_specification,
-            "one_piece_garment_type":         body.one_piece_garment_type,
+            "front_garment_image":             body.front_garment_image,
+            "back_garment_image":              body.back_garment_image or "",
+            "ethnicity":                       body.ethnicity,
+            "gender":                          body.gender,
+            "skin_tone":                       body.skin_tone,
+            "age":                             body.age,
+            "age_group":                       body.age_group,
+            "weight":                          body.weight,
+            "height":                          body.height,
+            "upper_garment_type":              body.upper_garment_type,
+            "upper_garment_specification":     body.upper_garment_specification,
+            "lower_garment_type":              body.lower_garment_type,
+            "lower_garment_specification":     body.lower_garment_specification,
+            "one_piece_garment_type":          body.one_piece_garment_type,
             "one_piece_garment_specification": body.one_piece_garment_specification,
-            "fitting":                        body.fitting,
-            "background_id":                  body.background_id,
-            "which_pose_option":              body.which_pose_option,
-            "poses_ids":                      body.poses_ids or [],
-            "poses_images":                   body.poses_images or [],
-            "poses_prompts":                  body.poses_prompts or [],
-            "model_id":                       body.model_id,
-            "lighting_style":                 body.lighting_style,
-            "ornaments":                      body.ornaments or "",
+            "fitting":                         body.fitting,
+            "background_id":                   body.background_id,
+            "which_pose_option":               body.which_pose_option,
+            "poses_ids":                       body.poses_ids or [],
+            "poses_images":                    body.poses_images or [],
+            "poses_prompts":                   body.poses_prompts or [],
+            "model_id":                        body.model_id,
+            "lighting_style":                  body.lighting_style,
+            "ornaments":                       body.ornaments or "",
         },
         "output_images":      [],
         "failed_poses":       [],
@@ -106,7 +106,7 @@ def create_photoshoot(
     }
 
     col = get_photoshoots_collection()
-    col.insert_one(doc)
+    await col.insert_one(doc)
 
     # ── Step 4: fire background job ───────────────────────────────────────────
     job_payload = {

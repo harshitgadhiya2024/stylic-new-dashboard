@@ -6,31 +6,29 @@ Responsibilities:
      prompt → use as-is).
   2. Fetch background image URL from backgrounds collection.
   3. Fetch model face image URL from model_faces collection.
-  4. For each pose — concurrently via ThreadPoolExecutor:
+  4. For each pose — concurrently via asyncio.gather:
        a. Build a detailed generation prompt.
        b. Submit SeedDream task (quality=high, aspect=9:16).
        c. Poll until done.
        d. Download 4K result bytes.
        e. Resize to 2K and 1K.
-       f. Deblur all three sizes (GFPGAN + Real-ESRGAN).
-       g. Upload all 6 images (3 originals + 3 deblurred) to S3.
+       f. Upload 4K, 2K, and 1K images to S3.
   5. Build output_images mapping.
   6. Deduct credits and record history.
   7. Update photoshoot document: output_images, status, is_completed, is_credit_deducted.
      On any unhandled error → status="failed", error field set.
 """
 
+import asyncio
 import io
 import json
 import logging
-import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List
 
-import requests
+import httpx
 from PIL import Image
 
 logger = logging.getLogger("photoshoot")
@@ -55,12 +53,12 @@ _PHOTOSHOOT_CREDIT_PER_POSE = 2.0
 # Pose prompt resolution
 # ---------------------------------------------------------------------------
 
-def _fetch_default_pose_prompts(pose_ids: List[str]) -> List[str]:
+async def _fetch_default_pose_prompts(pose_ids: List[str]) -> List[str]:
     logger.info("[poses] Fetching %d default pose prompt(s) from DB", len(pose_ids))
     col     = get_poses_collection()
     prompts = []
     for pid in pose_ids:
-        doc = col.find_one({"pose_id": pid})
+        doc = await col.find_one({"pose_id": pid})
         if doc and doc.get("pose_prompt"):
             logger.info("[poses] Found prompt for pose_id=%s", pid)
             prompts.append(doc["pose_prompt"])
@@ -71,7 +69,7 @@ def _fetch_default_pose_prompts(pose_ids: List[str]) -> List[str]:
     return prompts
 
 
-def _generate_pose_prompt_from_image(image_url: str) -> str:
+async def _generate_pose_prompt_from_image(image_url: str) -> str:
     """
     Send a custom pose image to Gemini vision and extract ONLY body position
     and pose details — no gender, age, clothing, or background details.
@@ -86,10 +84,11 @@ def _generate_pose_prompt_from_image(image_url: str) -> str:
 
     try:
         logger.info("[poses] Downloading custom pose image...")
-        img_resp = requests.get(image_url, timeout=30)
-        img_resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30) as client:
+            img_resp = await client.get(image_url)
+            img_resp.raise_for_status()
         img_bytes = img_resp.content
-        content_type = img_resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+        content_type = img_resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
         if content_type not in ("image/jpeg", "image/png", "image/webp"):
             content_type = "image/jpeg"
         logger.info("[poses] Custom pose image downloaded (%d bytes, %s)", len(img_bytes), content_type)
@@ -108,10 +107,11 @@ def _generate_pose_prompt_from_image(image_url: str) -> str:
         "Output: a single concise paragraph, 2-4 sentences, describing only pose and body position."
     )
 
-    try:
-        logger.info("[poses] Calling Gemini vision to extract pose description...")
-        client   = genai.Client(api_key=settings.GEMINI_API_KEY)
-        response = client.models.generate_content(
+    loop = asyncio.get_event_loop()
+
+    def _call_gemini():
+        g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        return g_client.models.generate_content(
             model=settings.GEMINI_VISION_MODEL,
             contents=[
                 gtypes.Content(
@@ -127,6 +127,10 @@ def _generate_pose_prompt_from_image(image_url: str) -> str:
                 temperature=0,
             ),
         )
+
+    try:
+        logger.info("[poses] Calling Gemini vision to extract pose description...")
+        response = await loop.run_in_executor(None, _call_gemini)
         result = response.candidates[0].content.parts[0].text.strip()
         logger.info("[poses] Gemini pose description generated (%d chars)", len(result))
         return result
@@ -135,7 +139,7 @@ def _generate_pose_prompt_from_image(image_url: str) -> str:
         return f"Natural standing fashion model pose — vision error: {exc}"
 
 
-def resolve_pose_prompts(
+async def resolve_pose_prompts(
     which_pose_option: str,
     poses_ids: List[str],
     poses_images: List[str],
@@ -143,9 +147,10 @@ def resolve_pose_prompts(
 ) -> List[str]:
     logger.info("[poses] Resolving poses — option=%s", which_pose_option)
     if which_pose_option == "default":
-        result = _fetch_default_pose_prompts(poses_ids)
+        result = await _fetch_default_pose_prompts(poses_ids)
     elif which_pose_option == "custom":
-        result = [_generate_pose_prompt_from_image(url) for url in poses_images]
+        result = await asyncio.gather(*[_generate_pose_prompt_from_image(url) for url in poses_images])
+        result = list(result)
         logger.info("[poses] %d custom pose prompts generated via Gemini", len(result))
     else:
         logger.info("[poses] Using %d user-provided pose prompts directly", len(poses_prompts))
@@ -211,13 +216,6 @@ def _build_photoshoot_prompt(
 
     garment_lines = "\n".join(filter(None, [upper_line, lower_line, onepiece_line]))
 
-    # ── Footwear instruction ──────────────────────────────────────────────────
-    # Derive appropriate footwear from the garment style so the AI picks
-    # something that naturally complements the outfit.
-    all_garment_text = " ".join(filter(None, [
-        ug_type, ug_spec, lg_type, lg_spec, op_type, op_spec, fitting
-    ])).lower()
-
     footwear_instruction = (
         "Choose footwear that naturally complements and matches the outfit style, "
         "color palette, and formality level shown in the garment reference image. "
@@ -226,7 +224,6 @@ def _build_photoshoot_prompt(
         "Footwear must look realistic, well-fitted, and appropriate for the overall look."
     )
 
-    # ── Female accessory instruction (purse / handbag) ────────────────────────
     female_accessory_instruction = ""
     if gender == "female":
         female_accessory_instruction = (
@@ -272,7 +269,7 @@ NON-NEGOTIABLE: 1. Face = 100% identical to reference. 2. Garment = 100% identic
 # SeedDream submit + poll
 # ---------------------------------------------------------------------------
 
-def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
+async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
     logger.info("[%s] Submitting SeedDream task (quality=high, 9:16, %d images)...", pose_label, len(image_urls))
     payload = json.dumps({
         "model": settings.SEEDDREAM_MODEL,
@@ -287,8 +284,9 @@ def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
         "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
         "Content-Type":  "application/json",
     }
-    resp = requests.post(_CREATE_URL, headers=headers, data=payload, timeout=30)
-    resp.raise_for_status()
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(_CREATE_URL, headers=headers, content=payload)
+        resp.raise_for_status()
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise RuntimeError(f"No taskId returned: {resp.text}")
@@ -296,13 +294,14 @@ def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
     return task_id
 
 
-def _poll_task(task_id: str, pose_label: str) -> str:
+async def _poll_task(task_id: str, pose_label: str) -> str:
     logger.info("[%s] Polling SeedDream task_id=%s ...", pose_label, task_id)
     headers = {"Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}"}
     for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
         try:
-            resp = requests.get(f"{_STATUS_URL}?taskId={task_id}", headers=headers, timeout=30)
-            resp.raise_for_status()
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(f"{_STATUS_URL}?taskId={task_id}", headers=headers)
+                resp.raise_for_status()
             data  = resp.json().get("data", {})
             state = data.get("state")
             if state == "success":
@@ -314,37 +313,34 @@ def _poll_task(task_id: str, pose_label: str) -> str:
             if state == "fail":
                 raise RuntimeError("SeedDream task failed.")
             logger.debug("[%s] Poll #%d — state=%s", pose_label, attempt, state)
-            time.sleep(settings.SEEDDREAM_RETRY_DELAY)
+            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
         except RuntimeError:
             raise
         except Exception as exc:
             logger.warning("[%s] Poll #%d error: %s", pose_label, attempt, exc)
-            time.sleep(settings.SEEDDREAM_RETRY_DELAY)
+            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
     raise RuntimeError(f"SeedDream task timed out after {settings.SEEDDREAM_MAX_RETRIES} attempts.")
 
 
 # ---------------------------------------------------------------------------
-# Image download + resize + deblur helpers
+# Image download + resize helpers
 # ---------------------------------------------------------------------------
 
-def _download_bytes(url: str, label: str = "") -> bytes:
+async def _download_bytes(url: str, label: str = "") -> bytes:
     logger.info("[%s] Downloading image from URL...", label)
     for attempt in range(1, 4):
         try:
-            resp = requests.get(url, stream=True, timeout=(10, 120))
-            resp.raise_for_status()
-            buf = io.BytesIO()
-            for chunk in resp.iter_content(65536):
-                if chunk:
-                    buf.write(chunk)
-            data = buf.getvalue()
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+            data = resp.content
             logger.info("[%s] Image downloaded — %d bytes", label, len(data))
             return data
         except Exception as exc:
             logger.warning("[%s] Download attempt %d/3 failed: %s", label, attempt, exc)
             if attempt == 3:
                 raise RuntimeError(f"Failed to download image after 3 attempts: {exc}")
-            time.sleep(3)
+            await asyncio.sleep(3)
 
 
 def _resize_image(original_bytes: bytes, max_dimension: int) -> bytes:
@@ -358,162 +354,11 @@ def _resize_image(original_bytes: bytes, max_dimension: int) -> bytes:
     return buf.getvalue()
 
 
-# Deblur globals — loaded once, shared across threads via a lock
-_deblur_restorer   = None
-_deblur_load_lock  = threading.Lock()
-_deblur_infer_lock = threading.Lock()
-
-
-def _get_deblur_restorer():
-    global _deblur_restorer
-    if _deblur_restorer is not None:
-        return _deblur_restorer
-    with _deblur_load_lock:
-        if _deblur_restorer is not None:
-            return _deblur_restorer
-        logger.info("[deblur] Loading GFPGAN + Real-ESRGAN pipeline (first call)...")
-        try:
-            import importlib, subprocess, sys, urllib.request, os
-
-            for pkg, mod in [
-                ("gfpgan", "gfpgan"), ("basicsr", "basicsr"),
-                ("facexlib", "facexlib"), ("realesrgan", "realesrgan"),
-            ]:
-                try:
-                    importlib.import_module(mod)
-                except ImportError:
-                    logger.info("[deblur] Installing missing package: %s", pkg)
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", pkg])
-
-            try:
-                import torchvision.transforms.functional_tensor  # noqa
-            except (ImportError, ModuleNotFoundError):
-                import torchvision.transforms.functional as _ftf
-                sys.modules["torchvision.transforms.functional_tensor"] = _ftf
-
-            from gfpgan import GFPGANer
-            from basicsr.archs.rrdbnet_arch import RRDBNet
-            from realesrgan import RealESRGANer
-
-            weights_dir  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "weights")
-            os.makedirs(weights_dir, exist_ok=True)
-
-            gfpgan_path  = os.path.join(weights_dir, "GFPGANv1.4.pth")
-            esrgan_path  = os.path.join(weights_dir, "RealESRGAN_x2plus.pth")
-
-            if not os.path.exists(gfpgan_path):
-                logger.info("[deblur] Downloading GFPGANv1.4.pth weights...")
-                urllib.request.urlretrieve(
-                    "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth",
-                    gfpgan_path,
-                )
-                logger.info("[deblur] GFPGANv1.4.pth downloaded")
-            if not os.path.exists(esrgan_path):
-                logger.info("[deblur] Downloading RealESRGAN_x2plus.pth weights...")
-                urllib.request.urlretrieve(
-                    "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth",
-                    esrgan_path,
-                )
-                logger.info("[deblur] RealESRGAN_x2plus.pth downloaded")
-
-            bg_upsampler = RealESRGANer(
-                scale=2,
-                model_path=esrgan_path,
-                model=RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
-                              num_block=23, num_grow_ch=32, scale=2),
-                tile=512, tile_pad=16, pre_pad=0, half=False, device="cpu",
-            )
-            _deblur_restorer = GFPGANer(
-                model_path=gfpgan_path,
-                upscale=2,
-                arch="clean",
-                channel_multiplier=2,
-                bg_upsampler=bg_upsampler,
-                device="cpu",
-            )
-            logger.info("[deblur] GFPGAN + Real-ESRGAN pipeline ready")
-        except Exception as exc:
-            logger.error("[deblur] Failed to load deblur pipeline: %s — will skip deblur", exc)
-            _deblur_restorer = None
-    return _deblur_restorer
-
-
-def preload_deblur_restorer() -> None:
-    """
-    Call once at application startup (lifespan) to load GFPGAN + Real-ESRGAN
-    into memory. Subsequent calls to _deblur_bytes() will reuse the cached
-    restorer without any loading overhead.
-    """
-    logger.info("[deblur] Preloading deblur pipeline at startup...")
-    restorer = _get_deblur_restorer()
-    if restorer is not None:
-        logger.info("[deblur] Deblur pipeline preloaded and ready")
-    else:
-        logger.warning("[deblur] Deblur pipeline could not be loaded at startup — deblur will be skipped")
-
-
-def _deblur_bytes(image_bytes: bytes, label: str = "") -> bytes:
-    """Deblur image bytes using GFPGAN. Returns sharpened bytes or original if deblur fails."""
-    logger.info("[deblur][%s] ── Deblur START — input size: %d bytes", label, len(image_bytes))
-
-    logger.info("[deblur][%s] Acquiring deblur restorer (preloaded at startup)...", label)
-    restorer = _get_deblur_restorer()
-    if restorer is None:
-        logger.warning("[deblur][%s] Restorer not available — skipping deblur, returning original", label)
-        return image_bytes
-
-    logger.info("[deblur][%s] Restorer ready", label)
-
-    try:
-        import cv2
-        import numpy as np
-
-        logger.info("[deblur][%s] Decoding image bytes with OpenCV...", label)
-        img_array = np.frombuffer(image_bytes, dtype=np.uint8)
-        img       = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        if img is None:
-            logger.warning("[deblur][%s] cv2 could not decode image — skipping deblur, returning original", label)
-            return image_bytes
-
-        h, w = img.shape[:2]
-        logger.info("[deblur][%s] Image decoded — resolution: %dx%d", label, w, h)
-
-        logger.info("[deblur][%s] Waiting for CPU inference slot (serialised lock)...", label)
-        t_start = time.time()
-        with _deblur_infer_lock:
-            wait_s = round(time.time() - t_start, 2)
-            logger.info("[deblur][%s] CPU slot acquired (waited %.2fs) — starting GFPGAN enhance...", label, wait_s)
-            infer_start = time.time()
-            _, _, sharp = restorer.enhance(
-                img,
-                has_aligned=False,
-                only_center_face=False,
-                paste_back=True,
-                weight=0.5,
-            )
-            infer_s = round(time.time() - infer_start, 2)
-        logger.info("[deblur][%s] GFPGAN enhance complete — inference took %.2fs", label, infer_s)
-
-        sharp_h, sharp_w = sharp.shape[:2]
-        logger.info("[deblur][%s] Output resolution: %dx%d", label, sharp_w, sharp_h)
-
-        logger.info("[deblur][%s] Encoding sharpened image to PNG bytes...", label)
-        _, encoded = cv2.imencode(".png", sharp)
-        result_bytes = encoded.tobytes()
-        logger.info("[deblur][%s] ── Deblur DONE — output size: %d bytes", label, len(result_bytes))
-        return result_bytes
-
-    except Exception as exc:
-        logger.error("[deblur][%s] Deblur FAILED with error: %s", label, exc, exc_info=True)
-        logger.warning("[deblur][%s] Falling back to original (unsharpened) image", label)
-        return image_bytes
-
-
 # ---------------------------------------------------------------------------
 # Single pose worker
 # ---------------------------------------------------------------------------
 
-def _process_one_pose(
+async def _process_one_pose(
     pose_idx:      int,
     pose_prompt:   str,
     image_urls:    List[str],
@@ -521,95 +366,76 @@ def _process_one_pose(
     req_snapshot:  dict,
 ) -> dict:
     """
-    Full pipeline for one pose. Returns output_image dict or raises on failure.
+    Full async pipeline for one pose. Returns output_image dict or raises on failure.
     """
     pose_label = f"pose-{pose_idx:02d}"
     image_id   = str(uuid.uuid4())
     logger.info("[%s] ── Starting pose pipeline ──────────────────────", pose_label)
     logger.info("[%s] Pose prompt:\n%s", pose_label, pose_prompt)
 
-    # 2.3 — build generation prompt
     logger.info("[%s] Building SeedDream generation prompt...", pose_label)
     has_back = bool(req_snapshot.get("back_garment_image", ""))
     prompt   = _build_photoshoot_prompt(pose_prompt, has_back, req_snapshot)
     logger.info("[%s] Generation prompt built (%d chars, back_image=%s)", pose_label, len(prompt), has_back)
-    logger.info("[%s] Generation prompt:\n%s", pose_label, prompt)
 
-    # 2.4-2.5 — submit task
-    task_id = _submit_task(prompt, image_urls, pose_label)
-
-    # 2.6 — poll until done
-    result_url_4k = _poll_task(task_id, pose_label)
+    task_id = await _submit_task(prompt, image_urls, pose_label)
+    result_url_4k = await _poll_task(task_id, pose_label)
     logger.info("[%s] 4K result URL received", pose_label)
 
-    # 2.7 — download 4K image
-    bytes_4k = _download_bytes(result_url_4k, pose_label)
+    bytes_4k = await _download_bytes(result_url_4k, pose_label)
 
-    # 2.8 — resize to 2K and 1K
     logger.info("[%s] Resizing 4K → 2K...", pose_label)
-    bytes_2k = _resize_image(bytes_4k, 2048)
+    bytes_2k = await asyncio.get_event_loop().run_in_executor(None, _resize_image, bytes_4k, 2048)
     logger.info("[%s] Resizing 4K → 1K...", pose_label)
-    bytes_1k = _resize_image(bytes_4k, 1024)
+    bytes_1k = await asyncio.get_event_loop().run_in_executor(None, _resize_image, bytes_4k, 1024)
     logger.info("[%s] Resize complete", pose_label)
 
-    # 2.9-2.10 — deblur 1K and 2K only (4K is kept as original)
-    logger.info("[%s] Deblurring 1K image...", pose_label)
-    deblurred_1k = _deblur_bytes(bytes_1k, f"{pose_label}/1k")
-    logger.info("[%s] Deblurring 2K image...", pose_label)
-    deblurred_2k = _deblur_bytes(bytes_2k, f"{pose_label}/2k")
-    logger.info("[%s] Deblur complete (4K skipped — not needed)", pose_label)
-
-    # Upload 5 images to S3 (4K original only, no deblurred 4K)
     prefix = f"photoshoots/{photoshoot_id}/{image_id}"
-    logger.info("[%s] Uploading 5 images to S3 (prefix=%s)...", pose_label, prefix)
+    logger.info("[%s] Uploading 3 images to S3 (prefix=%s)...", pose_label, prefix)
 
-    url_4k_orig = upload_bytes_to_s3(bytes_4k,     f"{prefix}_4k.png",           "image/png")
-    logger.info("[%s] Uploaded 4K original", pose_label)
-    url_2k_orig = upload_bytes_to_s3(bytes_2k,     f"{prefix}_2k.png",           "image/png")
-    logger.info("[%s] Uploaded 2K original", pose_label)
-    url_1k_orig = upload_bytes_to_s3(bytes_1k,     f"{prefix}_1k.png",           "image/png")
-    logger.info("[%s] Uploaded 1K original", pose_label)
-    url_2k_dblr = upload_bytes_to_s3(deblurred_2k, f"{prefix}_2k_deblurred.png", "image/png")
-    logger.info("[%s] Uploaded 2K deblurred", pose_label)
-    url_1k_dblr = upload_bytes_to_s3(deblurred_1k, f"{prefix}_1k_deblurred.png", "image/png")
-    logger.info("[%s] Uploaded 1K deblurred", pose_label)
+    url_4k, url_2k, url_1k = await asyncio.gather(
+        upload_bytes_to_s3(bytes_4k, f"{prefix}_4k.png", "image/png"),
+        upload_bytes_to_s3(bytes_2k, f"{prefix}_2k.png", "image/png"),
+        upload_bytes_to_s3(bytes_1k, f"{prefix}_1k.png", "image/png"),
+    )
+    logger.info("[%s] Uploaded 4K, 2K, 1K", pose_label)
 
     logger.info("[%s] ── Pose pipeline COMPLETE ─────────────────────", pose_label)
     return {
         "image_id":    image_id,
         "pose_prompt": pose_prompt,
         "images": {
-            "1k": [url_1k_orig, url_1k_dblr],
-            "2k": [url_2k_orig, url_2k_dblr],
-            "4k": [url_4k_orig],
+            "4k": url_4k,
+            "2k": url_2k,
+            "1k": url_1k,
         },
     }
 
 
 # ---------------------------------------------------------------------------
-# Credit deduction helper (inline — avoids importing credit_service circular)
+# Credit deduction helper
 # ---------------------------------------------------------------------------
 
-def _deduct_photoshoot_credits(user_id: str, total_credit: float, photoshoot_id: str) -> None:
+async def _deduct_photoshoot_credits(user_id: str, total_credit: float, photoshoot_id: str) -> None:
     logger.info("[credits] Deducting %.2f credits from user_id=%s for photoshoot=%s",
                 total_credit, user_id, photoshoot_id)
     users_col   = get_users_collection()
     history_col = get_credit_history_collection()
 
-    user = users_col.find_one({"user_id": user_id})
+    user = await users_col.find_one({"user_id": user_id})
     if not user:
         logger.error("[credits] User not found: %s — skipping credit deduction", user_id)
         return
 
     old_credits = float(user.get("credits", 0))
     new_credits = round(old_credits - total_credit, 4)
-    users_col.update_one(
+    await users_col.update_one(
         {"user_id": user_id},
         {"$set": {"credits": new_credits, "updated_at": datetime.now(timezone.utc)}},
     )
     logger.info("[credits] Credits updated: %.4f → %.4f", old_credits, new_credits)
 
-    history_col.insert_one({
+    await history_col.insert_one({
         "history_id":      str(uuid.uuid4()),
         "user_id":         user_id,
         "feature_name":    "photoshoot_generation",
@@ -626,7 +452,7 @@ def _deduct_photoshoot_credits(user_id: str, total_credit: float, photoshoot_id:
 # Public background job entry point
 # ---------------------------------------------------------------------------
 
-def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
+async def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
     """
     Called as a FastAPI BackgroundTask. Runs the full photoshoot pipeline,
     updates the photoshoot document, deducts credits.
@@ -642,7 +468,7 @@ def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
     try:
         # ── Step 1: resolve pose prompts ──────────────────────────────────
         logger.info("[job] STEP 1 — Resolving pose prompts...")
-        pose_prompts = resolve_pose_prompts(
+        pose_prompts = await resolve_pose_prompts(
             which_pose_option=req["which_pose_option"],
             poses_ids=req.get("poses_ids") or [],
             poses_images=req.get("poses_images") or [],
@@ -656,19 +482,18 @@ def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
 
         # ── Step 2: fetch background and model face URLs ──────────────────
         logger.info("[job] STEP 2 — Fetching background and model face from DB...")
-        bg_doc = get_backgrounds_collection().find_one({"background_id": req["background_id"]})
+        bg_doc = await get_backgrounds_collection().find_one({"background_id": req["background_id"]})
         if not bg_doc:
             raise ValueError(f"Background not found: {req['background_id']}")
         background_url = bg_doc["background_url"]
         logger.info("[job] Background found: %s", background_url[:80])
 
-        mf_doc = get_model_faces_collection().find_one({"model_id": req["model_id"]})
+        mf_doc = await get_model_faces_collection().find_one({"model_id": req["model_id"]})
         if not mf_doc:
             raise ValueError(f"Model face not found: {req['model_id']}")
         model_face_url = mf_doc["face_url"]
         logger.info("[job] Model face found: %s", model_face_url[:80])
 
-        # ── Build ordered image_urls list ─────────────────────────────────
         image_urls = [req["front_garment_image"]]
         if req.get("back_garment_image"):
             image_urls.append(req["back_garment_image"])
@@ -678,35 +503,23 @@ def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
         logger.info("[job] STEP 2 DONE — %d reference images assembled", len(image_urls))
 
         # ── Step 3: process all poses concurrently ────────────────────────
-        logger.info("[job] STEP 3 — Launching %d pose(s) concurrently (max 5 workers)...", len(pose_prompts))
+        logger.info("[job] STEP 3 — Launching %d pose(s) concurrently...", len(pose_prompts))
+
+        tasks = [
+            _process_one_pose(idx, prompt, image_urls, photoshoot_id, req)
+            for idx, prompt in enumerate(pose_prompts, 1)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
         output_images = []
         failed_poses  = []
-
-        with ThreadPoolExecutor(max_workers=min(len(pose_prompts), 5)) as executor:
-            futures = {
-                executor.submit(
-                    _process_one_pose,
-                    idx,
-                    prompt,
-                    image_urls,
-                    photoshoot_id,
-                    req,
-                ): idx
-                for idx, prompt in enumerate(pose_prompts, 1)
-            }
-
-            completed_count = 0
-            for future in as_completed(futures):
-                pose_idx = futures[future]
-                try:
-                    result = future.result()
-                    output_images.append(result)
-                    completed_count += 1
-                    logger.info("[job] pose-%02d SUCCEEDED (%d/%d complete)",
-                                pose_idx, completed_count, len(pose_prompts))
-                except Exception as exc:
-                    failed_poses.append({"pose_index": pose_idx, "error": str(exc)})
-                    logger.error("[job] pose-%02d FAILED: %s", pose_idx, exc)
+        for idx, result in enumerate(results, 1):
+            if isinstance(result, Exception):
+                failed_poses.append({"pose_index": idx, "error": str(result)})
+                logger.error("[job] pose-%02d FAILED: %s", idx, result)
+            else:
+                output_images.append(result)
+                logger.info("[job] pose-%02d SUCCEEDED", idx)
 
         logger.info("[job] STEP 3 DONE — %d succeeded, %d failed",
                     len(output_images), len(failed_poses))
@@ -714,13 +527,13 @@ def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
         # ── Step 4: deduct credits ────────────────────────────────────────
         logger.info("[job] STEP 4 — Deducting credits...")
         total_credit = len(pose_prompts) * _PHOTOSHOOT_CREDIT_PER_POSE
-        _deduct_photoshoot_credits(req["user_id"], total_credit, photoshoot_id)
+        await _deduct_photoshoot_credits(req["user_id"], total_credit, photoshoot_id)
         logger.info("[job] STEP 4 DONE — %.2f credits deducted", total_credit)
 
         # ── Step 5: update photoshoot document ───────────────────────────
         logger.info("[job] STEP 5 — Updating photoshoot document in DB...")
         final_status = "completed" if not failed_poses else "partial"
-        col.update_one(
+        await col.update_one(
             {"photoshoot_id": photoshoot_id},
             {"$set": {
                 "output_images":       output_images,
@@ -743,7 +556,7 @@ def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
         elapsed = round(time.time() - job_start, 1)
         logger.error("[job] Photoshoot job FAILED — photoshoot_id=%s | error=%s | elapsed=%.1fs",
                      photoshoot_id, exc, elapsed)
-        col.update_one(
+        await col.update_one(
             {"photoshoot_id": photoshoot_id},
             {"$set": {
                 "status":     "failed",

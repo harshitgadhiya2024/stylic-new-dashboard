@@ -6,14 +6,14 @@ from app.database import get_users_collection
 bearer_scheme = HTTPBearer()
 
 
-def get_current_user(
+async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> dict:
     payload = decode_token(credentials.credentials, token_type="access")
     user_id = payload.get("sub")
 
     col = get_users_collection()
-    user = col.find_one({"user_id": user_id, "is_active": True})
+    user = await col.find_one({"user_id": user_id, "is_active": True})
 
     if not user:
         raise HTTPException(

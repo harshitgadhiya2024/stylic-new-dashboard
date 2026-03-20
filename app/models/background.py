@@ -3,6 +3,10 @@ from typing import Optional, List
 from datetime import datetime
 
 
+class DeleteBackgroundsRequest(BaseModel):
+    background_ids: list[str]
+
+
 class CreateBackgroundRequest(BaseModel):
     background_name: str
     background_url:  str

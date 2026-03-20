@@ -5,17 +5,17 @@ Two pipelines:
   A) generate_background_stream        — reference URL → SeedDream enhancement
   B) generate_background_with_ai_stream — text config  → Gemini image generation
 
-Both are synchronous generators that yield (step, message, result_url | None)
-tuples for real-time SSE streaming via the thread-pool pattern.
+Both are async generators that yield (step, message, result_url | None)
+tuples for real-time SSE streaming.
 """
 
+import asyncio
 import io
 import json
-import time
 import uuid
-from typing import Generator, Tuple, Optional
+from typing import AsyncGenerator, Tuple, Optional
 
-import requests
+import httpx
 from fastapi import HTTPException, status
 
 from app.config import settings
@@ -29,10 +29,11 @@ _STATUS_URL = "https://api.kie.ai/api/v1/jobs/recordInfo"
 # Step 1 — Validate background URL is reachable
 # ---------------------------------------------------------------------------
 
-def _validate_background_url(background_url: str) -> None:
+async def _validate_background_url(background_url: str) -> None:
     try:
-        resp = requests.head(background_url, timeout=15, allow_redirects=True)
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.head(background_url, follow_redirects=True)
+            resp.raise_for_status()
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -66,7 +67,7 @@ def _build_background_prompt(background_name: str) -> str:
 # Step 3 — Submit SeedDream task
 # ---------------------------------------------------------------------------
 
-def _submit_task(prompt: str, background_url: str) -> str:
+async def _submit_task(prompt: str, background_url: str) -> str:
     payload = json.dumps({
         "model": settings.SEEDDREAM_MODEL,
         "input": {
@@ -82,8 +83,9 @@ def _submit_task(prompt: str, background_url: str) -> str:
     }
 
     try:
-        resp = requests.post(_CREATE_URL, headers=headers, data=payload, timeout=30)
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(_CREATE_URL, headers=headers, content=payload)
+            resp.raise_for_status()
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -103,17 +105,17 @@ def _submit_task(prompt: str, background_url: str) -> str:
 # Step 4 — Poll SeedDream task
 # ---------------------------------------------------------------------------
 
-def _poll_task(task_id: str) -> str:
+async def _poll_task(task_id: str) -> str:
     headers = {"Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}"}
 
     for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
         try:
-            resp = requests.get(
-                f"{_STATUS_URL}?taskId={task_id}",
-                headers=headers,
-                timeout=30,
-            )
-            resp.raise_for_status()
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(
+                    f"{_STATUS_URL}?taskId={task_id}",
+                    headers=headers,
+                )
+                resp.raise_for_status()
             data  = resp.json().get("data", {})
             state = data.get("state")
 
@@ -132,12 +134,12 @@ def _poll_task(task_id: str) -> str:
                     detail="SeedDream background generation task failed.",
                 )
 
-            time.sleep(settings.SEEDDREAM_RETRY_DELAY)
+            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
 
         except HTTPException:
             raise
         except Exception:
-            time.sleep(settings.SEEDDREAM_RETRY_DELAY)
+            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
 
     raise HTTPException(
         status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -149,69 +151,61 @@ def _poll_task(task_id: str) -> str:
 # Step 5 — Download generated image bytes
 # ---------------------------------------------------------------------------
 
-def _download_image(result_url: str) -> bytes:
+async def _download_image(result_url: str) -> bytes:
     for attempt in range(1, 4):
         try:
-            resp = requests.get(result_url, stream=True, timeout=(10, 60))
-            resp.raise_for_status()
-            buf = io.BytesIO()
-            for chunk in resp.iter_content(65536):
-                if chunk:
-                    buf.write(chunk)
-            return buf.getvalue()
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.get(result_url)
+                resp.raise_for_status()
+            return resp.content
         except Exception as exc:
             if attempt == 3:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail=f"Failed to download generated background: {exc}",
                 )
-            time.sleep(3)
+            await asyncio.sleep(3)
 
 
 # ---------------------------------------------------------------------------
-# Public streaming generator
+# Public async streaming generator
 # ---------------------------------------------------------------------------
 
-def generate_background_stream(
+async def generate_background_stream(
     background_url:  str,
     background_name: str,
-) -> Generator[Tuple[str, str, Optional[str]], None, None]:
+) -> AsyncGenerator[Tuple[str, str, Optional[str]], None]:
     """
-    Full pipeline as a synchronous generator that yields (step, message, result_url).
+    Full pipeline as an async generator that yields (step, message, result_url).
     result_url is None for all steps except the final "done" step.
-
-    Designed to run in a thread-pool executor via _run_sync_generator so the
-    async event loop is never blocked.
-
-    Total expected duration: 20-30 seconds.
     """
     yield ("initialize", "Initializing background generation process", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("validating_background", "Validating background image URL", None)
-    _validate_background_url(background_url)
-    time.sleep(0.5)
+    await _validate_background_url(background_url)
+    await asyncio.sleep(0.5)
     yield ("validating_background_done", "Background image validated successfully", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("starting_generation", "Starting background generation", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
     yield ("processing", "Processing background — analyzing composition, lighting, color palette and environment", None)
 
-    prompt  = _build_background_prompt(background_name)
-    task_id = _submit_task(prompt, background_url)
-    result_url = _poll_task(task_id)
-    time.sleep(0.5)
+    prompt     = _build_background_prompt(background_name)
+    task_id    = await _submit_task(prompt, background_url)
+    result_url = await _poll_task(task_id)
+    await asyncio.sleep(0.5)
 
     yield ("generated", "Successfully generated background", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("uploading", "Uploading generated background to storage", None)
-    img_bytes = _download_image(result_url)
+    img_bytes = await _download_image(result_url)
     bg_id     = str(uuid.uuid4())
     s3_key    = f"backgrounds/generated_{bg_id[:8]}.png"
-    s3_url    = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
-    time.sleep(0.5)
+    s3_url    = await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    await asyncio.sleep(0.5)
 
     yield ("done", "Background generation complete", s3_url)
 
@@ -220,7 +214,7 @@ def generate_background_stream(
 # Gemini AI background generation
 # ---------------------------------------------------------------------------
 
-def _generate_background_image_with_gemini(
+async def _generate_background_image_with_gemini(
     background_name: str,
     background_configuration: str,
 ) -> bytes:
@@ -254,25 +248,28 @@ def _generate_background_image_with_gemini(
         f"Do not add any text, watermarks, or overlays on the image."
     )
 
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    loop = asyncio.get_event_loop()
 
-    contents = [
-        gtypes.Content(
-            role="user",
-            parts=[gtypes.Part.from_text(text=prompt)],
+    def _call_gemini():
+        g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        contents = [
+            gtypes.Content(
+                role="user",
+                parts=[gtypes.Part.from_text(text=prompt)],
+            )
+        ]
+        cfg = gtypes.GenerateContentConfig(
+            response_modalities=["IMAGE", "TEXT"],
+            image_config=gtypes.ImageConfig(aspect_ratio="9:16"),
         )
-    ]
-    cfg = gtypes.GenerateContentConfig(
-        response_modalities=["IMAGE", "TEXT"],
-        image_config=gtypes.ImageConfig(aspect_ratio="9:16"),
-    )
-
-    try:
-        response = client.models.generate_content(
+        return g_client.models.generate_content(
             model=settings.GEMINI_MODEL,
             contents=contents,
             config=cfg,
         )
+
+    try:
+        response = await loop.run_in_executor(None, _call_gemini)
         for part in response.candidates[0].content.parts:
             if part.inline_data and part.inline_data.data:
                 img = Image.open(io.BytesIO(part.inline_data.data))
@@ -291,39 +288,36 @@ def _generate_background_image_with_gemini(
     )
 
 
-def generate_background_with_ai_stream(
+async def generate_background_with_ai_stream(
     background_name:          str,
     background_configuration: str,
-) -> Generator[Tuple[str, str, Optional[str]], None, None]:
+) -> AsyncGenerator[Tuple[str, str, Optional[str]], None]:
     """
-    Gemini AI pipeline as a synchronous generator.
+    Gemini AI pipeline as an async generator.
     Yields (step, message, result_url | None).
-
-    Designed to run in a thread-pool executor via _run_sync_generator.
-    Expected duration: 20-30 seconds.
     """
     yield ("initialize", "Initializing background generation process", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("validating_config", "Validating background configurations", None)
-    time.sleep(0.5)
+    await asyncio.sleep(0.5)
     yield ("validating_config_done", "Background configurations validated", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("starting_generation", "Starting background generation", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
     yield ("processing", "Processing background — generating composition, lighting, color palette and environment", None)
 
-    img_bytes = _generate_background_image_with_gemini(background_name, background_configuration)
-    time.sleep(0.5)
+    img_bytes = await _generate_background_image_with_gemini(background_name, background_configuration)
+    await asyncio.sleep(0.5)
 
     yield ("generated", "Successfully generated background", None)
-    time.sleep(1)
+    await asyncio.sleep(1)
 
     yield ("uploading", "Uploading generated background to storage", None)
     bg_id  = str(uuid.uuid4())
     s3_key = f"backgrounds/ai_{bg_id[:8]}.png"
-    s3_url = upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
-    time.sleep(0.5)
+    s3_url = await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    await asyncio.sleep(0.5)
 
     yield ("done", "Background generation complete", s3_url)

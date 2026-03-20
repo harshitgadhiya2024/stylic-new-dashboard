@@ -1,4 +1,4 @@
-import smtplib
+import aiosmtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from fastapi import HTTPException, status
@@ -11,7 +11,7 @@ _PURPOSE_LABELS = {
 }
 
 
-def send_otp_email(to_email: str, otp: str, purpose: str = "register") -> None:
+async def send_otp_email(to_email: str, otp: str, purpose: str = "register") -> None:
     label = _PURPOSE_LABELS.get(purpose, "Verification")
     subject = f"{settings.APP_NAME} – {label} OTP"
 
@@ -38,12 +38,15 @@ def send_otp_email(to_email: str, otp: str, purpose: str = "register") -> None:
     msg.attach(MIMEText(html_body, "html"))
 
     try:
-        with smtplib.SMTP(settings.SMTP_SERVER, settings.SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(settings.SMTP_EMAIL, settings.SMTP_PASSWORD)
-            server.sendmail(settings.SMTP_EMAIL, to_email, msg.as_string())
-    except smtplib.SMTPException as exc:
+        await aiosmtplib.send(
+            msg,
+            hostname=settings.SMTP_SERVER,
+            port=settings.SMTP_PORT,
+            username=settings.SMTP_EMAIL,
+            password=settings.SMTP_PASSWORD,
+            start_tls=True,
+        )
+    except aiosmtplib.SMTPException as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to send email: {exc}",

@@ -2,7 +2,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import List, AsyncGenerator
+from typing import AsyncGenerator, List, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -12,6 +12,7 @@ from app.dependencies import get_current_user
 from app.models.model_face import (
     CreateModelFaceRequest,
     CreateModelFaceWithAIRequest,
+    DeleteModelFacesRequest,
     ModelFaceSchema,
 )
 from app.services.ai_face_service import generate_and_upload_face_stream
@@ -38,80 +39,42 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-async def _run_sync_generator(gen_fn, *args, **kwargs) -> asyncio.Queue:
-    """
-    Run a blocking synchronous generator in a thread-pool executor and
-    forward each yielded item into an asyncio.Queue so the async caller
-    can await items without blocking the event loop.
-
-    Sentinel values pushed to the queue:
-      ("ok",  item)   — a normal yielded value
-      ("err", exc)    — an exception raised inside the generator
-      ("end", None)   — generator exhausted
-    """
-    loop  = asyncio.get_event_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-
-    def _worker():
-        try:
-            for item in gen_fn(*args, **kwargs):
-                loop.call_soon_threadsafe(queue.put_nowait, ("ok", item))
-        except Exception as exc:
-            loop.call_soon_threadsafe(queue.put_nowait, ("err", exc))
-        finally:
-            loop.call_soon_threadsafe(queue.put_nowait, ("end", None))
-
-    loop.run_in_executor(None, _worker)
-    return queue
-
-
 @router.get(
     "/",
-    summary="Get All Model Faces",
+    summary="Get Model Faces",
     description=(
-        "Returns paginated model faces for the authenticated user. "
-        "Fetches all default faces (is_default=True, any user) and all faces created by the user "
-        "(any is_default value), merges them (deduplicating by model_id), then sorts so that "
-        "favorites appear first followed by the rest ordered by creation date (newest first). "
-        "Use `page` and `limit` query params to control pagination."
+        "Returns a paginated list of model faces based on `type`. "
+        "`type=default` — returns all platform default faces (is_default=True). "
+        "`type=custom` — returns faces created by the current user (user_id match, is_active=True), "
+        "sorted with favorites first then newest first. "
+        "Use `page` and `limit` to control pagination."
     ),
 )
-def get_model_faces(
+async def get_model_faces(
+    type:  Literal["default", "custom"] = Query(..., description="'default' for platform faces, 'custom' for user-created faces"),
     page:  int = Query(default=1,  ge=1,        description="Page number (1-based)"),
     limit: int = Query(default=10, ge=1, le=100, description="Number of items per page"),
     current_user: dict = Depends(get_current_user),
 ):
-    col     = get_model_faces_collection()
-    user_id = current_user["user_id"]
+    col = get_model_faces_collection()
 
-    # 1 — all default faces (no user_id condition)
-    default_docs = list(col.find({"is_default": True}))
+    if type == "default":
+        docs = await col.find({"is_default": True}).to_list(length=None)
+    else:
+        docs = await col.find({"user_id": current_user["user_id"], "is_active": True}).to_list(length=None)
+        docs.sort(key=lambda d: (not d.get("is_favorite", False), d.get("created_at") or ""))
 
-    # 2 — all faces created by this user (no is_default condition)
-    user_docs = list(col.find({"user_id": user_id}))
-
-    # 3 — merge, deduplicate by model_id (user docs take precedence)
-    seen: dict = {}
-    for doc in default_docs:
-        seen[doc["model_id"]] = doc
-    for doc in user_docs:
-        seen[doc["model_id"]] = doc
-
-    merged = list(seen.values())
-
-    # 4 — sort: favorites first, then newest first
-    merged.sort(key=lambda d: (not d.get("is_favorite", False), d.get("created_at") or ""), )
-
-    # 5 — paginate in Python
-    total  = len(merged)
-    skip   = (page - 1) * limit
-    paged  = merged[skip: skip + limit]
+    total       = len(docs)
+    skip        = (page - 1) * limit
+    paged       = docs[skip: skip + limit]
+    total_pages = (total + limit - 1) // limit if total else 1
 
     return {
+        "type":        type,
         "page":        page,
         "limit":       limit,
         "total":       total,
-        "total_pages": (total + limit - 1) // limit if total else 1,
+        "total_pages": total_pages,
         "data":        [_clean_face(doc) for doc in paged],
     }
 
@@ -138,53 +101,44 @@ async def create_model_face(
     async def event_stream() -> AsyncGenerator[str, None]:
         generated_face_url: str | None = None
 
-        queue = await _run_sync_generator(
-            generate_model_face_from_reference_stream,
-            body.reference_face_url,
-            body.model_category,
-        )
+        try:
+            async for step, message, face_url in generate_model_face_from_reference_stream(
+                body.reference_face_url,
+                body.model_category,
+            ):
+                if step == "done":
+                    generated_face_url = face_url
+                    yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
 
-        while True:
-            kind, payload = await queue.get()
-
-            if kind == "end":
-                break
-
-            if kind == "err":
-                exc = payload
-                msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
-                yield _sse("error", {"step": "error", "message": msg})
-                return
-
-            step, message, face_url = payload
-
-            if step == "done":
-                generated_face_url = face_url
-                yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
-
-                now = datetime.now(timezone.utc)
-                doc = {
-                    "model_id":            str(uuid.uuid4()),
-                    "user_id":             current_user["user_id"],
-                    "model_name":          body.model_name,
-                    "model_category":      body.model_category,
-                    "model_configuration": {},
-                    "tags":                body.tags,
-                    "notes":               body.notes,
-                    "model_used_count":    0,
-                    "face_url":            generated_face_url,
-                    "reference_face_url":  body.reference_face_url,
-                    "is_default":          False,
-                    "is_active":           True,
-                    "is_favorite":         False,
-                    "created_at":          now.isoformat(),
-                    "updated_at":          now.isoformat(),
-                }
-                col = get_model_faces_collection()
-                col.insert_one({**doc, "created_at": now, "updated_at": now})
-                yield _sse("done", {"step": "done", "message": "Face generation complete", "data": doc})
-            else:
-                yield _sse(step, {"step": step, "message": message})
+                    now = datetime.now(timezone.utc)
+                    doc = {
+                        "model_id":            str(uuid.uuid4()),
+                        "user_id":             current_user["user_id"],
+                        "model_name":          body.model_name,
+                        "model_category":      body.model_category,
+                        "model_configuration": {},
+                        "tags":                body.tags,
+                        "notes":               body.notes,
+                        "model_used_count":    0,
+                        "face_url":            generated_face_url,
+                        "reference_face_url":  body.reference_face_url,
+                        "is_default":          False,
+                        "is_active":           True,
+                        "is_favorite":         False,
+                        "created_at":          now.isoformat(),
+                        "updated_at":          now.isoformat(),
+                    }
+                    col = get_model_faces_collection()
+                    await col.insert_one({**doc, "created_at": now, "updated_at": now})
+                    yield _sse("done", {"step": "done", "message": "Face generation complete", "data": doc})
+                else:
+                    yield _sse(step, {"step": step, "message": message})
+        except HTTPException as exc:
+            yield _sse("error", {"step": "error", "message": exc.detail})
+            return
+        except Exception as exc:
+            yield _sse("error", {"step": "error", "message": str(exc)})
+            return
 
         if generated_face_url:
             background_tasks.add_task(
@@ -229,54 +183,45 @@ async def create_model_face_with_ai(
         generated_face_url: str | None = None
         final_config: dict | None = None
 
-        queue = await _run_sync_generator(
-            generate_and_upload_face_stream,
-            body.model_category,
-            overrides,
-        )
+        try:
+            async for step, message, face_url, config in generate_and_upload_face_stream(
+                body.model_category,
+                overrides,
+            ):
+                if step == "done":
+                    generated_face_url = face_url
+                    final_config       = config
+                    yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
 
-        while True:
-            kind, payload = await queue.get()
-
-            if kind == "end":
-                break
-
-            if kind == "err":
-                exc = payload
-                msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
-                yield _sse("error", {"step": "error", "message": msg})
-                return
-
-            step, message, face_url, config = payload
-
-            if step == "done":
-                generated_face_url = face_url
-                final_config       = config
-                yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
-
-                now = datetime.now(timezone.utc)
-                doc = {
-                    "model_id":            str(uuid.uuid4()),
-                    "user_id":             current_user["user_id"],
-                    "model_name":          body.model_name,
-                    "model_category":      body.model_category,
-                    "model_configuration": final_config,
-                    "tags":                body.tags or [],
-                    "notes":               body.notes or "",
-                    "model_used_count":    0,
-                    "face_url":            generated_face_url,
-                    "reference_face_url":  None,
-                    "is_default":          False,
-                    "is_active":           True,
-                    "is_favorite":         False,
-                    "created_at":          now.isoformat(),
-                    "updated_at":          now.isoformat(),
-                }
-                col = get_model_faces_collection()
-                col.insert_one({**doc, "created_at": now, "updated_at": now})
-                yield _sse("done", {"step": "done", "message": "Face generation complete", "data": doc})
-            else:
-                yield _sse(step, {"step": step, "message": message})
+                    now = datetime.now(timezone.utc)
+                    doc = {
+                        "model_id":            str(uuid.uuid4()),
+                        "user_id":             current_user["user_id"],
+                        "model_name":          body.model_name,
+                        "model_category":      body.model_category,
+                        "model_configuration": final_config,
+                        "tags":                body.tags or [],
+                        "notes":               body.notes or "",
+                        "model_used_count":    0,
+                        "face_url":            generated_face_url,
+                        "reference_face_url":  None,
+                        "is_default":          False,
+                        "is_active":           True,
+                        "is_favorite":         False,
+                        "created_at":          now.isoformat(),
+                        "updated_at":          now.isoformat(),
+                    }
+                    col = get_model_faces_collection()
+                    await col.insert_one({**doc, "created_at": now, "updated_at": now})
+                    yield _sse("done", {"step": "done", "message": "Face generation complete", "data": doc})
+                else:
+                    yield _sse(step, {"step": step, "message": message})
+        except HTTPException as exc:
+            yield _sse("error", {"step": "error", "message": exc.detail})
+            return
+        except Exception as exc:
+            yield _sse("error", {"step": "error", "message": str(exc)})
+            return
 
         if generated_face_url:
             background_tasks.add_task(
@@ -296,17 +241,23 @@ async def create_model_face_with_ai(
     summary="Toggle Favorite",
     description="Switch is_favorite between true and false for a model face. Secured — only the owner can toggle.",
 )
-def toggle_favorite(
+async def toggle_favorite(
     model_id: str,
     current_user: dict = Depends(get_current_user),
 ):
     col = get_model_faces_collection()
 
-    doc = col.find_one({"model_id": model_id})
+    doc = await col.find_one({"model_id": model_id})
     if not doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Model face not found.",
+        )
+
+    if doc.get("is_default", False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Default model faces cannot be marked as favorite.",
         )
 
     if doc.get("user_id") != current_user["user_id"]:
@@ -318,7 +269,7 @@ def toggle_favorite(
     new_value = not doc.get("is_favorite", False)
     now = datetime.now(timezone.utc)
 
-    col.update_one(
+    await col.update_one(
         {"model_id": model_id},
         {"$set": {"is_favorite": new_value, "updated_at": now}},
     )
@@ -333,17 +284,23 @@ def toggle_favorite(
     summary="Delete Model Face",
     description="Soft-delete a model face by setting is_active=False. Secured — only the owner can delete.",
 )
-def delete_model_face(
+async def delete_model_face(
     model_id: str,
     current_user: dict = Depends(get_current_user),
 ):
     col = get_model_faces_collection()
 
-    doc = col.find_one({"model_id": model_id})
+    doc = await col.find_one({"model_id": model_id})
     if not doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Model face not found.",
+        )
+
+    if doc.get("is_default", False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Default model faces cannot be deleted.",
         )
 
     if doc.get("user_id") != current_user["user_id"]:
@@ -358,9 +315,52 @@ def delete_model_face(
             detail="Model face is already deleted.",
         )
 
-    col.update_one(
+    await col.update_one(
         {"model_id": model_id},
         {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}},
     )
 
     return {"message": "Model face deleted successfully.", "model_id": model_id}
+
+
+@router.delete(
+    "/bulk-delete",
+    summary="Delete Multiple Model Faces",
+    description=(
+        "Soft-deletes multiple model faces by setting is_active=False. "
+        "Only faces owned by the current user (user_id match) and not default (is_default=False) "
+        "are deleted. Default faces are silently skipped. "
+        "Returns counts of deleted and skipped faces."
+    ),
+)
+async def delete_model_faces_bulk(
+    body: DeleteModelFacesRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    if not body.model_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="model_ids must not be empty.",
+        )
+
+    col     = get_model_faces_collection()
+    user_id = current_user["user_id"]
+
+    result = await col.update_many(
+        {
+            "model_id":  {"$in": body.model_ids},
+            "user_id":   user_id,
+            "is_default": False,
+            "is_active":  True,
+        },
+        {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}},
+    )
+
+    deleted_count = result.modified_count
+    skipped_count = len(body.model_ids) - deleted_count
+
+    return {
+        "message":       f"{deleted_count} model face(s) deleted successfully.",
+        "deleted_count": deleted_count,
+        "skipped_count": skipped_count,
+    }

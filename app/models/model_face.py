@@ -25,6 +25,10 @@ class FaceConfiguration(BaseModel):
     gender:           Optional[str] = None
 
 
+class DeleteModelFacesRequest(BaseModel):
+    model_ids: list[str]
+
+
 class CreateModelFaceRequest(BaseModel):
     model_name: str
     model_category: str

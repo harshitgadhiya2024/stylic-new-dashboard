@@ -8,8 +8,8 @@ python-multipart
 pydantic[email]
 pydantic-settings
 
-# ── Database (MongoDB) ────────────────────────────────────────────────────
-pymongo[srv]
+# ── Database (MongoDB async) ───────────────────────────────────────────────
+motor[srv]
 
 # ── Environment ────────────────────────────────────────────────────────────
 python-dotenv
@@ -19,8 +19,14 @@ python-jose[cryptography]
 passlib[argon2]
 firebase-admin
 
-# ── AWS S3 ────────────────────────────────────────────────────────────────
-boto3
+# ── AWS S3 (async) ────────────────────────────────────────────────────────
+aioboto3
+
+# ── HTTP client (async) ───────────────────────────────────────────────────
+httpx
+
+# ── Email (async SMTP) ────────────────────────────────────────────────────
+aiosmtplib
 
 # ── OTP / 2FA ─────────────────────────────────────────────────────────────
 pyotp
@@ -31,14 +37,5 @@ google-genai
 Pillow
 
 # ── Photoshoot / Image processing ─────────────────────────────────────────
-requests
-opencv-python-headless
 numpy
-
-# ── Deblur pipeline (GFPGAN + Real-ESRGAN) ────────────────────────────────
-gfpgan
-basicsr
-facexlib
-realesrgan
-torch
-torchvision
+opencv-python-headless

@@ -12,7 +12,7 @@ import io
 import uuid
 from datetime import datetime, timezone
 
-import requests
+import httpx
 from fastapi import HTTPException, status
 
 from app.database import get_users_collection, get_credit_history_collection
@@ -25,7 +25,7 @@ FACE_GENERATION_COST: float = 2.5
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _make_thumbnail(image_url: str) -> bytes:
+async def _make_thumbnail(image_url: str) -> bytes:
     """Download image_url and return 100×100 JPEG thumbnail bytes."""
     try:
         from PIL import Image
@@ -36,8 +36,9 @@ def _make_thumbnail(image_url: str) -> bytes:
         )
 
     try:
-        resp = requests.get(image_url, timeout=30)
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(image_url)
+            resp.raise_for_status()
         img = Image.open(io.BytesIO(resp.content)).convert("RGB")
         img.thumbnail((100, 100))
         buf = io.BytesIO()
@@ -52,11 +53,11 @@ def _make_thumbnail(image_url: str) -> bytes:
         )
 
 
-def _upload_thumbnail(image_url: str, user_id: str) -> str:
+async def _upload_thumbnail(image_url: str, user_id: str) -> str:
     """Create thumbnail from image_url, upload to S3, return public URL."""
-    thumb_bytes = _make_thumbnail(image_url)
+    thumb_bytes = await _make_thumbnail(image_url)
     key = f"thumbnails/{user_id}_{uuid.uuid4().hex[:8]}.jpg"
-    return upload_bytes_to_s3(thumb_bytes, key, content_type="image/jpeg")
+    return await upload_bytes_to_s3(thumb_bytes, key, content_type="image/jpeg")
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +79,7 @@ def check_sufficient_credits(user: dict) -> None:
         )
 
 
-def deduct_credits_and_record(
+async def deduct_credits_and_record(
     user: dict,
     feature_name: str,
     generated_face_url: str,
@@ -97,11 +98,11 @@ def deduct_credits_and_record(
     new_credits = round(current_credits - FACE_GENERATION_COST, 4)
 
     # 1 — thumbnail
-    thumbnail_url = _upload_thumbnail(generated_face_url, user_id)
+    thumbnail_url = await _upload_thumbnail(generated_face_url, user_id)
 
     # 2 — deduct from user
     users_col = get_users_collection()
-    result = users_col.update_one(
+    result = await users_col.update_one(
         {"user_id": user_id},
         {
             "$set": {
@@ -129,7 +130,7 @@ def deduct_credits_and_record(
         "created_at":       datetime.now(timezone.utc),
     }
     try:
-        history_col.insert_one(history_doc)
+        await history_col.insert_one(history_doc)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
