@@ -280,6 +280,49 @@ async def toggle_favorite(
 
 
 @router.delete(
+    "/bulk-delete",
+    summary="Delete Multiple Model Faces",
+    description=(
+        "Soft-deletes multiple model faces by setting is_active=False. "
+        "Only faces owned by the current user (user_id match) and not default (is_default=False) "
+        "are deleted. Default faces are silently skipped. "
+        "Returns counts of deleted and skipped faces."
+    ),
+)
+async def delete_model_faces_bulk(
+    body: DeleteModelFacesRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    if not body.model_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="model_ids must not be empty.",
+        )
+
+    col     = get_model_faces_collection()
+    user_id = current_user["user_id"]
+
+    result = await col.update_many(
+        {
+            "model_id":  {"$in": body.model_ids},
+            "user_id":   user_id,
+            "is_default": False,
+            "is_active":  True,
+        },
+        {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}},
+    )
+
+    deleted_count = result.modified_count
+    skipped_count = len(body.model_ids) - deleted_count
+
+    return {
+        "message":       f"{deleted_count} model face(s) deleted successfully.",
+        "deleted_count": deleted_count,
+        "skipped_count": skipped_count,
+    }
+
+
+@router.delete(
     "/{model_id}",
     summary="Delete Model Face",
     description="Soft-delete a model face by setting is_active=False. Secured — only the owner can delete.",
@@ -321,46 +364,3 @@ async def delete_model_face(
     )
 
     return {"message": "Model face deleted successfully.", "model_id": model_id}
-
-
-@router.delete(
-    "/bulk-delete",
-    summary="Delete Multiple Model Faces",
-    description=(
-        "Soft-deletes multiple model faces by setting is_active=False. "
-        "Only faces owned by the current user (user_id match) and not default (is_default=False) "
-        "are deleted. Default faces are silently skipped. "
-        "Returns counts of deleted and skipped faces."
-    ),
-)
-async def delete_model_faces_bulk(
-    body: DeleteModelFacesRequest,
-    current_user: dict = Depends(get_current_user),
-):
-    if not body.model_ids:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="model_ids must not be empty.",
-        )
-
-    col     = get_model_faces_collection()
-    user_id = current_user["user_id"]
-
-    result = await col.update_many(
-        {
-            "model_id":  {"$in": body.model_ids},
-            "user_id":   user_id,
-            "is_default": False,
-            "is_active":  True,
-        },
-        {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}},
-    )
-
-    deleted_count = result.modified_count
-    skipped_count = len(body.model_ids) - deleted_count
-
-    return {
-        "message":       f"{deleted_count} model face(s) deleted successfully.",
-        "deleted_count": deleted_count,
-        "skipped_count": skipped_count,
-    }

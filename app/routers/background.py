@@ -218,6 +218,49 @@ async def get_backgrounds(
 
 
 @router.delete(
+    "/bulk-delete",
+    summary="Delete Multiple Backgrounds",
+    description=(
+        "Soft-deletes multiple backgrounds by setting is_active=False. "
+        "Only backgrounds owned by the current user (user_id match) and not default (is_default=False) "
+        "are deleted. Default backgrounds are silently skipped. "
+        "Returns counts of deleted and skipped backgrounds."
+    ),
+)
+async def delete_backgrounds_bulk(
+    body: DeleteBackgroundsRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    if not body.background_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="background_ids must not be empty.",
+        )
+
+    col     = get_backgrounds_collection()
+    user_id = current_user["user_id"]
+
+    result = await col.update_many(
+        {
+            "background_id": {"$in": body.background_ids},
+            "user_id":       user_id,
+            "is_default":    False,
+            "is_active":     True,
+        },
+        {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}},
+    )
+
+    deleted_count = result.modified_count
+    skipped_count = len(body.background_ids) - deleted_count
+
+    return {
+        "message":       f"{deleted_count} background(s) deleted successfully.",
+        "deleted_count": deleted_count,
+        "skipped_count": skipped_count,
+    }
+
+
+@router.delete(
     "/{background_id}",
     summary="Delete Background",
     description="Soft-delete a background by setting is_active=False. Secured — only the owner can delete.",
@@ -259,46 +302,3 @@ async def delete_background(
     )
 
     return {"message": "Background deleted successfully.", "background_id": background_id}
-
-
-@router.delete(
-    "/bulk-delete",
-    summary="Delete Multiple Backgrounds",
-    description=(
-        "Soft-deletes multiple backgrounds by setting is_active=False. "
-        "Only backgrounds owned by the current user (user_id match) and not default (is_default=False) "
-        "are deleted. Default backgrounds are silently skipped. "
-        "Returns counts of deleted and skipped backgrounds."
-    ),
-)
-async def delete_backgrounds_bulk(
-    body: DeleteBackgroundsRequest,
-    current_user: dict = Depends(get_current_user),
-):
-    if not body.background_ids:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="background_ids must not be empty.",
-        )
-
-    col     = get_backgrounds_collection()
-    user_id = current_user["user_id"]
-
-    result = await col.update_many(
-        {
-            "background_id": {"$in": body.background_ids},
-            "user_id":       user_id,
-            "is_default":    False,
-            "is_active":     True,
-        },
-        {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}},
-    )
-
-    deleted_count = result.modified_count
-    skipped_count = len(body.background_ids) - deleted_count
-
-    return {
-        "message":       f"{deleted_count} background(s) deleted successfully.",
-        "deleted_count": deleted_count,
-        "skipped_count": skipped_count,
-    }
