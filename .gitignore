@@ -46,6 +46,10 @@ ENV/
 testing.txt
 testing.py
 
+# Cloned model repos (downloaded at runtime)
+SwinIR/
+HAT/
+
 # Model face images (large binary files)
 model_faces/*.png
 model_faces/*.jpg

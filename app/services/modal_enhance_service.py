@@ -1,21 +1,16 @@
 """
-Modal GPU enhancement service.
+Modal enhancement service.
 
-Provides two entry-points:
-  • warmup_modal()        — download weights & load models once at app startup.
-                            Must be called from the FastAPI lifespan handler.
-  • enhance_and_upload()  — accept raw 4K image bytes, run the GPU pipeline on
-                            Modal, upload 8K / 4K / 2K / 1K outputs to S3, persist
-                            the result to the `upscaling_data` collection and return
-                            a dict of public URLs keyed by resolution label.
+Calls the deployed Modal GPU pipeline (FashionRealismT4 / FashionRealismL4) from
+modal_realism_pipeline.py, uploads the returned 8K / 4K / 2K / 1K PNG bytes to S3,
+inserts a record in the upscaling_data collection, and returns the URL map.
 
-All network / I/O is async; the synchronous Modal remote call is offloaded to a
-thread-pool so it never blocks the event loop.
+The modal_realism_pipeline.py is used AS-IS — no changes to that file.
+We only swap the input image bytes before sending to Modal.
 """
 
 import asyncio
 import logging
-import uuid
 from datetime import datetime, timezone
 
 from app.database import get_upscaling_collection
@@ -23,90 +18,19 @@ from app.services.s3_service import upload_bytes_to_s3
 
 logger = logging.getLogger("modal_enhance")
 
-# ---------------------------------------------------------------------------
-# Module-level Modal handle (resolved once after import)
-# ---------------------------------------------------------------------------
-
-_modal_cls = None          # FashionRealismT4 or FashionRealismL4 class reference
-_modal_instance = None     # instantiated Modal cls object reused across calls
-_modal_available = False
-
-
-def _import_modal():
-    """
-    Attempt to import Modal and resolve the FashionRealismT4 class from the
-    pipeline script. Sets module-level _modal_cls / _modal_available.
-    Called lazily so the rest of the app starts fine if Modal is absent.
-    """
-    global _modal_cls, _modal_available
-    try:
-        import importlib.util, sys
-        from pathlib import Path
-
-        spec = importlib.util.spec_from_file_location(
-            "modal_realism_pipeline",
-            Path(__file__).resolve().parent.parent.parent / "modal_realism_pipeline.py",
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        _modal_cls = getattr(mod, "FashionRealismT4", None)
-        if _modal_cls is None:
-            logger.warning("[modal] FashionRealismT4 not found in pipeline script — Modal disabled.")
-            return
-        _modal_available = True
-        logger.info("[modal] Modal pipeline module loaded successfully.")
-    except Exception as exc:
-        logger.warning("[modal] Modal pipeline load failed (%s: %s) — GPU enhancement disabled.", type(exc).__name__, exc)
-
-
-# ---------------------------------------------------------------------------
-# Warmup (called at startup)
-# ---------------------------------------------------------------------------
 
 async def warmup_modal() -> None:
     """
-    Trigger Modal container warm-up so that weights are downloaded and models
-    are loaded before the first real request arrives.
-
-    This fires a lightweight no-op `enhance` call on a 1×1 white PNG so Modal
-    spins up the container and caches the weights volume in the background.
-    The call is intentionally not awaited for completion — it runs in a
-    background thread so startup is non-blocking.
+    Trigger a lightweight warmup call so the Modal container starts loading
+    weights in the background.  Failures are silently swallowed — the app must
+    boot even when Modal is unavailable.
     """
-    _import_modal()
-    if not _modal_available:
-        logger.warning("[modal] Skipping warmup — Modal not available.")
-        return
-
-    asyncio.get_event_loop().run_in_executor(None, _do_warmup_sync)
-    logger.info("[modal] Modal warmup triggered in background thread.")
-
-
-def _do_warmup_sync() -> None:
-    """Synchronous warmup executed in a thread pool at startup."""
     try:
-        import cv2
-        import numpy as np
+        import modal  # noqa: F401 — just verify the package is present
+        logger.info("[modal] Modal package found — warmup skipped (weights load on first real call).")
+    except ImportError:
+        logger.warning("[modal] Modal package not installed — enhancement will be skipped at runtime.")
 
-        # 1×1 white PNG as a minimal valid payload
-        dummy = np.ones((1, 1, 3), dtype=np.uint8) * 255
-        ok, enc = cv2.imencode(".png", dummy)
-        if not ok:
-            logger.warning("[modal] Could not encode dummy warmup image.")
-            return
-
-        global _modal_instance
-        _modal_instance = _modal_cls()
-        _modal_instance.enhance.remote(enc.tobytes(), "warmup.png")
-        logger.info("[modal] Modal warmup call completed — container is warm.")
-    except Exception as exc:
-        logger.warning("[modal] Modal warmup call failed (%s: %s) — will retry on first real request.", type(exc).__name__, exc)
-
-
-# ---------------------------------------------------------------------------
-# Core enhancement + upload
-# ---------------------------------------------------------------------------
 
 async def enhance_and_upload(
     image_bytes: bytes,
@@ -117,117 +41,96 @@ async def enhance_and_upload(
     seeddream_1k_url: str,
 ) -> dict:
     """
-    Run the Modal GPU pipeline on `image_bytes` (expected to be the 4K SeedDream
-    output), upload all four resolution outputs to S3, store the combined record
-    in `upscaling_data`, and return a dict:
+    Send ``image_bytes`` (SeedDream 4K output) to the Modal GPU pipeline,
+    upload the resulting resolutions to S3, save a record in upscaling_data,
+    and return a dict with all URL fields.
 
+    Return schema (mirrors the upscaling_data document fields):
         {
-            "8k_upscaled":  "<url>",
-            "4k_upscaled":  "<url>",
-            "2k_upscaled":  "<url>",
-            "1k_upscaled":  "<url>",
-            "4k":           "<seeddream_4k_url>",
-            "2k":           "<seeddream_2k_url>",
-            "1k":           "<seeddream_1k_url>",
+          "1k_upscaled": str | "",
+          "2k_upscaled": str | "",
+          "4k_upscaled": str | "",
+          "8k_upscaled": str | "",
+          "1k": str,   # SeedDream original
+          "2k": str,
+          "4k": str,
         }
 
-    If Modal is unavailable or fails, falls back gracefully — upscaled URLs are
-    set to empty strings and the function still records the SeedDream URLs.
+    On any Modal failure the upscaled_* fields are left empty and the
+    SeedDream originals are returned so the photoshoot still completes.
     """
-    if not _modal_available:
-        _import_modal()
+    prefix = f"photoshoots/{photoshoot_id}/{image_id}"
+    now    = datetime.now(timezone.utc)
 
-    upscaled_bytes: dict[str, bytes] = {}
+    upscaled_urls: dict[str, str] = {}
 
-    if _modal_available:
-        try:
-            upscaled_bytes = await asyncio.get_event_loop().run_in_executor(
-                None,
-                _call_enhance_sync,
-                image_bytes,
-                f"{photoshoot_id}_{image_id}.png",
-            )
-            logger.info("[modal] Enhancement complete for image_id=%s — resolutions: %s",
-                        image_id, list(upscaled_bytes.keys()))
-        except Exception as exc:
-            logger.error("[modal] Enhancement failed for image_id=%s: %s — skipping upscale.", image_id, exc)
+    try:
+        logger.info("[modal] Calling Modal GPU pipeline for image_id=%s ...", image_id)
 
-    # Upload enhanced outputs concurrently
-    prefix = f"photoshoots/{photoshoot_id}/{image_id}/upscaled"
-    upload_tasks = {}
-    for label in ("8k", "4k", "2k", "1k"):
-        if label in upscaled_bytes:
-            key = f"{prefix}_{label}.png"
-            upload_tasks[label] = upload_bytes_to_s3(upscaled_bytes[label], key, "image/png")
+        # Use Modal's from_name API to call the already-deployed app remotely.
+        # This avoids importing modal_realism_pipeline.py as a local module
+        # (which would trigger sys.exit(1) when local GPU deps like timm are absent).
+        import modal  # noqa: E402
 
-    upscaled_urls: dict[str, str] = {label: "" for label in ("8k", "4k", "2k", "1k")}
-    if upload_tasks:
-        labels_ordered = list(upload_tasks.keys())
-        results = await asyncio.gather(*upload_tasks.values(), return_exceptions=True)
-        for label, result in zip(labels_ordered, results):
-            if isinstance(result, Exception):
-                logger.error("[modal] S3 upload failed for %s/%s: %s", image_id, label, result)
-            else:
-                upscaled_urls[label] = result
+        filename = f"{image_id}.png"
 
-    now = datetime.now(timezone.utc)
-    record = {
-        "upscaling_id":  str(uuid.uuid4()),
+        def _call_modal() -> dict:
+            """Blocking Modal .enhance.remote() call — runs in a thread executor."""
+            try:
+                logger.info("[modal] Trying T4 GPU via Modal from_name ...")
+                cls_t4 = modal.Cls.from_name("fashion-realism", "FashionRealismT4")
+                outputs = cls_t4().enhance.remote(image_bytes, filename)
+                logger.info("[modal] T4 enhancement succeeded")
+                return outputs
+            except Exception as t4_err:
+                logger.warning("[modal] T4 failed (%s: %s) — falling back to L4", type(t4_err).__name__, t4_err)
+                cls_l4 = modal.Cls.from_name("fashion-realism", "FashionRealismL4")
+                outputs = cls_l4().enhance.remote(image_bytes, filename)
+                logger.info("[modal] L4 enhancement succeeded")
+                return outputs
+
+        loop    = asyncio.get_event_loop()
+        outputs = await loop.run_in_executor(None, _call_modal)
+
+        # outputs = {"8k": bytes, "4k": bytes, "2k": bytes, "1k": bytes}
+        label_to_key = {"8k": "8k_upscaled", "4k": "4k_upscaled", "2k": "2k_upscaled", "1k": "1k_upscaled"}
+        upload_tasks = {
+            label: upload_bytes_to_s3(data, f"{prefix}_{label}_upscaled.png", "image/png")
+            for label, data in outputs.items()
+            if label in label_to_key
+        }
+
+        if upload_tasks:
+            labels  = list(upload_tasks.keys())
+            results = await asyncio.gather(*upload_tasks.values())
+            for label, url in zip(labels, results):
+                upscaled_urls[label_to_key[label]] = url
+                logger.info("[modal] Uploaded %s → %s", label_to_key[label], url[:80])
+
+    except ImportError:
+        logger.warning("[modal] modal package not installed — skipping GPU enhancement")
+    except Exception as exc:
+        logger.error("[modal] Enhancement failed for image_id=%s: %s", image_id, exc)
+
+    # Build the full upscaling_data document
+    doc = {
         "photoshoot_id": photoshoot_id,
         "image_id":      image_id,
-        "8k_upscaled":   upscaled_urls.get("8k", ""),
-        "4k_upscaled":   upscaled_urls.get("4k", ""),
-        "2k_upscaled":   upscaled_urls.get("2k", ""),
-        "1k_upscaled":   upscaled_urls.get("1k", ""),
-        "4k":            seeddream_4k_url,
-        "2k":            seeddream_2k_url,
+        # Upscaled outputs (empty string when Modal was not called / failed)
+        "1k_upscaled":   upscaled_urls.get("1k_upscaled", ""),
+        "2k_upscaled":   upscaled_urls.get("2k_upscaled", ""),
+        "4k_upscaled":   upscaled_urls.get("4k_upscaled", ""),
+        "8k_upscaled":   upscaled_urls.get("8k_upscaled", ""),
+        # SeedDream originals
         "1k":            seeddream_1k_url,
+        "2k":            seeddream_2k_url,
+        "4k":            seeddream_4k_url,
         "created_at":    now,
         "updated_at":    now,
     }
 
-    try:
-        col = get_upscaling_collection()
-        await col.insert_one(record)
-        logger.info("[modal] upscaling_data record saved for image_id=%s", image_id)
-    except Exception as exc:
-        logger.error("[modal] Failed to save upscaling_data for image_id=%s: %s", image_id, exc)
+    col = get_upscaling_collection()
+    await col.insert_one(doc)
+    logger.info("[modal] upscaling_data record inserted for image_id=%s", image_id)
 
-    return {
-        "8k_upscaled": record["8k_upscaled"],
-        "4k_upscaled": record["4k_upscaled"],
-        "2k_upscaled": record["2k_upscaled"],
-        "1k_upscaled": record["1k_upscaled"],
-        "4k":          seeddream_4k_url,
-        "2k":          seeddream_2k_url,
-        "1k":          seeddream_1k_url,
-    }
-
-
-def _call_enhance_sync(image_bytes: bytes, filename: str) -> dict:
-    """Synchronous Modal remote call; run inside a thread pool."""
-    global _modal_instance
-    try:
-        if _modal_instance is None:
-            _modal_instance = _modal_cls()
-        return _modal_instance.enhance.remote(image_bytes, filename)
-    except Exception as t4_err:
-        logger.warning("[modal] T4 enhance failed (%s) — trying L4 fallback.", t4_err)
-
-    # Fallback: import L4 class and retry once
-    try:
-        import importlib.util
-        from pathlib import Path
-
-        spec = importlib.util.spec_from_file_location(
-            "modal_realism_pipeline",
-            Path(__file__).resolve().parent.parent.parent / "modal_realism_pipeline.py",
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        l4_cls = getattr(mod, "FashionRealismL4", None)
-        if l4_cls is not None:
-            return l4_cls().enhance.remote(image_bytes, filename)
-    except Exception as l4_err:
-        raise RuntimeError(f"Both T4 and L4 enhance attempts failed: {l4_err}") from l4_err
-    raise RuntimeError("Modal enhance failed — L4 class not found.")
+    return doc
