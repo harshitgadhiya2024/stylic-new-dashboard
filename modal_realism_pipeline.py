@@ -168,11 +168,8 @@ FACE_MIN_SIZE_FRACTION = 0.0
 
 QUALITY_PRESETS = {"1K": 1024, "2K": 2048, "4K": 4096, "8K": 8192}
 
-MODEL_DIR = Path("models")
-try:
-    MODEL_DIR.mkdir(exist_ok=True)
-except (PermissionError, OSError):
-    pass
+MODEL_DIR = Path("./models")
+MODEL_DIR.mkdir(exist_ok=True)
 
 # SwinIR-L real-world SR x4 (GAN variant — sharpest real-photo output)
 SWINIR_URL  = (
@@ -1832,7 +1829,7 @@ try:
 
     app            = modal.App("fashion-realism")
     weights_volume = modal.Volume.from_name("fashion-realism-weights", create_if_missing=True)
-    WEIGHTS_PATH   = "/weights"   # populated once; reused across all requests
+    WEIGHTS_PATH   = "/weights"   # populated once; reused across all request
     hf_secret = modal.Secret.from_name("huggingface-secret")
 
     image = (
