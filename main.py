@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -7,6 +8,7 @@ from app.routers import auth, user, model_face, background, photoshoot
 from app.firebase_config import get_firebase_app
 from app.config import settings
 from app.database import create_indexes
+from app.services.enhance_service import warmup_enhance_pipeline
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +31,11 @@ async def lifespan(app: FastAPI):
     # MongoDB indexes
     await create_indexes()
     logger.info("[startup] MongoDB indexes created.")
+
+    # Modal GPU pipeline warmup (downloads weights + warms container — no image input)
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, warmup_enhance_pipeline)
+    logger.info("[startup] Modal enhancement pipeline warmup triggered (background).")
 
     yield
 

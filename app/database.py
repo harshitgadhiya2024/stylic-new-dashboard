@@ -48,6 +48,10 @@ def get_poses_collection() -> AsyncIOMotorCollection:
     return get_database()["poses_data"]
 
 
+def get_upscaling_data_collection() -> AsyncIOMotorCollection:
+    return get_database()["upscaling_data"]
+
+
 async def create_indexes() -> None:
     """Create all collection indexes. Call once at application startup."""
     db = get_database()
@@ -79,3 +83,7 @@ async def create_indexes() -> None:
     await photoshoots.create_index("user_id")
     await photoshoots.create_index("status")
     await photoshoots.create_index("created_at")
+
+    upscaling_data = db["upscaling_data"]
+    await upscaling_data.create_index("image_id", unique=True)
+    await upscaling_data.create_index("photoshoot_id")

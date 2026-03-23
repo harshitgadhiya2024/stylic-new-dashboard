@@ -29,3 +29,5 @@ class CreatePhotoshootRequest(BaseModel):
     lighting_style:               str
     ornaments:                    Optional[str]  = ""
     sku_id:                       Optional[str]  = ""
+    regeneration_type:            Optional[str]  = ""
+    regenerate_photoshoot_id:     Optional[str]  = ""

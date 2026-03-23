@@ -39,3 +39,6 @@ Pillow
 # ── Photoshoot / Image processing ─────────────────────────────────────────
 numpy
 opencv-python-headless
+
+# ── Modal (GPU pipeline for image enhancement) ────────────────────────────
+modal
