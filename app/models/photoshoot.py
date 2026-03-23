@@ -3,6 +3,12 @@ from typing import Optional, List, Literal
 from datetime import datetime
 
 
+class UpscalePhotoshootRequest(BaseModel):
+    photoshoot_id:     str
+    image_ids:         List[str]
+    regeneration_type: Literal["upscale (2x)", "upscale (4x)"]
+
+
 class CreatePhotoshootRequest(BaseModel):
     front_garment_image:          str
     back_garment_image:           Optional[str]  = ""
