@@ -289,14 +289,6 @@ def download_file(url, dest):
 # ─────────────────────────────────────────────
 # 3. SWINIR — Stage 1 (base x4 upscaler)
 # ─────────────────────────────────────────────
-def _path_exists_safe(p: Path) -> bool:
-    """Check path existence without raising PermissionError."""
-    try:
-        return p.exists()
-    except (PermissionError, OSError):
-        return False
-
-
 def install_swinir():
     candidates = [
         Path("SwinIR"),
@@ -304,7 +296,7 @@ def install_swinir():
         Path("/root/SwinIR"),
         Path("/opt/SwinIR"),
     ]
-    repo = next((p for p in candidates if _path_exists_safe(p)), None)
+    repo = next((p for p in candidates if p.exists()), None)
     if repo is None:
         print("[→] Cloning SwinIR ...")
         os.system("git clone https://github.com/JingyunLiang/SwinIR.git --depth 1")
@@ -473,7 +465,7 @@ def install_hat():
         Path("/root/HAT"),
         Path("/opt/HAT"),
     ]
-    repo = next((p for p in candidates if _path_exists_safe(p)), None)
+    repo = next((p for p in candidates if p.exists()), None)
     if repo is None:
         print("[→] Cloning HAT ...")
         os.system("git clone https://github.com/XPixelGroup/HAT.git --depth 1")
