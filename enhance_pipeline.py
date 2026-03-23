@@ -168,7 +168,7 @@ FACE_MIN_SIZE_FRACTION = 0.0
 
 QUALITY_PRESETS = {"1K": 1024, "2K": 2048, "4K": 4096, "8K": 8192}
 
-MODEL_DIR = Path("./models")
+MODEL_DIR = Path("models")
 try:
     MODEL_DIR.mkdir(exist_ok=True)
 except (PermissionError, OSError):
@@ -289,6 +289,14 @@ def download_file(url, dest):
 # ─────────────────────────────────────────────
 # 3. SWINIR — Stage 1 (base x4 upscaler)
 # ─────────────────────────────────────────────
+def _path_exists_safe(p: Path) -> bool:
+    """Check path existence without raising PermissionError."""
+    try:
+        return p.exists()
+    except (PermissionError, OSError):
+        return False
+
+
 def install_swinir():
     candidates = [
         Path("SwinIR"),
@@ -296,7 +304,7 @@ def install_swinir():
         Path("/root/SwinIR"),
         Path("/opt/SwinIR"),
     ]
-    repo = next((p for p in candidates if p.exists()), None)
+    repo = next((p for p in candidates if _path_exists_safe(p)), None)
     if repo is None:
         print("[→] Cloning SwinIR ...")
         os.system("git clone https://github.com/JingyunLiang/SwinIR.git --depth 1")
@@ -465,7 +473,7 @@ def install_hat():
         Path("/root/HAT"),
         Path("/opt/HAT"),
     ]
-    repo = next((p for p in candidates if p.exists()), None)
+    repo = next((p for p in candidates if _path_exists_safe(p)), None)
     if repo is None:
         print("[→] Cloning HAT ...")
         os.system("git clone https://github.com/XPixelGroup/HAT.git --depth 1")
