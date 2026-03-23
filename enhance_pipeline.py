@@ -169,7 +169,10 @@ FACE_MIN_SIZE_FRACTION = 0.0
 QUALITY_PRESETS = {"1K": 1024, "2K": 2048, "4K": 4096, "8K": 8192}
 
 MODEL_DIR = Path("./models")
-MODEL_DIR.mkdir(exist_ok=True)
+try:
+    MODEL_DIR.mkdir(exist_ok=True)
+except (PermissionError, OSError):
+    pass
 
 # SwinIR-L real-world SR x4 (GAN variant — sharpest real-photo output)
 SWINIR_URL  = (

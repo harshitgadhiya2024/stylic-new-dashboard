@@ -19,18 +19,26 @@ from pathlib import Path
 logger = logging.getLogger("enhance_service")
 
 # ---------------------------------------------------------------------------
-# Lazy Modal import helpers
+# Lazy Modal import helpers — loaded once and cached
 # ---------------------------------------------------------------------------
+
+_modal_classes: tuple | None = None   # (T4, L4) once loaded; (None, None) if unavailable
+
 
 def _get_modal_classes():
     """
-    Import enhance_pipeline and return (FashionRealismT4, FashionRealismL4).
+    Import enhance_pipeline once, cache, and return (FashionRealismT4, FashionRealismL4).
     Returns (None, None) if Modal is not installed or the pipeline file is missing.
     """
+    global _modal_classes
+    if _modal_classes is not None:
+        return _modal_classes
+
     pipeline_path = Path(__file__).resolve().parent.parent.parent / "enhance_pipeline.py"
     if not pipeline_path.exists():
         logger.warning("[enhance] enhance_pipeline.py not found — enhancement disabled")
-        return None, None
+        _modal_classes = (None, None)
+        return _modal_classes
 
     try:
         import importlib.util
@@ -41,11 +49,15 @@ def _get_modal_classes():
         L4 = getattr(module, "FashionRealismL4", None)
         if T4 is None or L4 is None:
             logger.warning("[enhance] Modal classes not found in enhance_pipeline.py — Modal may not be installed")
-            return None, None
-        return T4, L4
+            _modal_classes = (None, None)
+        else:
+            logger.info("[enhance] enhance_pipeline.py loaded successfully")
+            _modal_classes = (T4, L4)
     except Exception as exc:
         logger.warning("[enhance] Could not load enhance_pipeline.py: %s — enhancement disabled", exc)
-        return None, None
+        _modal_classes = (None, None)
+
+    return _modal_classes
 
 
 # ---------------------------------------------------------------------------
