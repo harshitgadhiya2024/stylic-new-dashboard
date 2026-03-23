@@ -321,3 +321,46 @@ async def delete_model_faces_bulk(
         "skipped_count": skipped_count,
     }
 
+
+@router.delete(
+    "/{model_id}",
+    summary="Delete Model Face",
+    description="Soft-delete a model face by setting is_active=False. Secured — only the owner can delete.",
+)
+async def delete_model_face(
+    model_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    col = get_model_faces_collection()
+
+    doc = await col.find_one({"model_id": model_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model face not found.",
+        )
+
+    if doc.get("is_default", False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Default model faces cannot be deleted.",
+        )
+
+    if doc.get("user_id") != current_user["user_id"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to delete this model face.",
+        )
+
+    if not doc.get("is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Model face is already deleted.",
+        )
+
+    await col.update_one(
+        {"model_id": model_id},
+        {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}},
+    )
+
+    return {"message": "Model face deleted successfully.", "model_id": model_id}

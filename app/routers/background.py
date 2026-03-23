@@ -259,3 +259,46 @@ async def delete_backgrounds_bulk(
         "skipped_count": skipped_count,
     }
 
+
+@router.delete(
+    "/{background_id}",
+    summary="Delete Background",
+    description="Soft-delete a background by setting is_active=False. Secured — only the owner can delete.",
+)
+async def delete_background(
+    background_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    col = get_backgrounds_collection()
+
+    doc = await col.find_one({"background_id": background_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Background not found.",
+        )
+
+    if doc.get("is_default", False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Default backgrounds cannot be deleted.",
+        )
+
+    if doc.get("user_id") != current_user["user_id"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to delete this background.",
+        )
+
+    if not doc.get("is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Background is already deleted.",
+        )
+
+    await col.update_one(
+        {"background_id": background_id},
+        {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}},
+    )
+
+    return {"message": "Background deleted successfully.", "background_id": background_id}
