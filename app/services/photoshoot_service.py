@@ -11,11 +11,11 @@ Responsibilities:
        b. Submit SeedDream task (quality=high, aspect=9:16).
        c. Poll until done.
        d. Download 4K result bytes.
-       e. Send to Modal GPU for enhancement → 8K/4K/2K/1K upscaled outputs.
-       f. Also produce plain resized 4K/2K/1K from original (fallback/raw).
-       g. Upload all images to S3.
-       h. Store upscaling_data document.
-  5. Build output_images mapping (image_id, pose_prompt, image = upscaled 1K URL).
+       e. Resize to 2K and 1K (SeedDream originals).
+       f. Upload SeedDream 4K, 2K, 1K to S3.
+       g. Send 4K bytes to Modal GPU pipeline for enhancement.
+       h. Upload enhanced 8K, 4K, 2K, 1K to S3 and save to upscaling_data.
+  5. Build output_images mapping — each entry stores the upscaled 1K URL as `image`.
   6. Deduct credits and record history.
   7. Update photoshoot document: output_images, status, is_completed, is_credit_deducted.
      On any unhandled error → status="failed", error field set.
@@ -43,19 +43,13 @@ from app.database import (
     get_poses_collection,
     get_users_collection,
     get_credit_history_collection,
-    get_upscaling_data_collection,
 )
 from app.services.s3_service import upload_bytes_to_s3
-from app.services.enhance_service import enhance_image
+from app.services.modal_enhance_service import enhance_and_upload
 
 _CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
 _STATUS_URL  = "https://api.kie.ai/api/v1/jobs/recordInfo"
 _PHOTOSHOOT_CREDIT_PER_POSE = 2.0
-
-
-async def _noop_url() -> str:
-    """Return an empty string as a placeholder when an upload is skipped."""
-    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -393,74 +387,44 @@ async def _process_one_pose(
 
     bytes_4k = await _download_bytes(result_url_4k, pose_label)
 
-    # ── Raw resized variants (plain downscale from SeedDream 4K output) ──────
-    logger.info("[%s] Resizing 4K → 2K and 1K (raw)...", pose_label)
-    bytes_2k_raw, bytes_1k_raw = await asyncio.gather(
-        asyncio.get_event_loop().run_in_executor(None, _resize_image, bytes_4k, 2048),
-        asyncio.get_event_loop().run_in_executor(None, _resize_image, bytes_4k, 1024),
-    )
-    logger.info("[%s] Raw resize complete", pose_label)
+    # ── SeedDream originals: resize 4K → 2K / 1K ─────────────────────────
+    logger.info("[%s] Resizing 4K → 2K...", pose_label)
+    bytes_2k = await asyncio.get_event_loop().run_in_executor(None, _resize_image, bytes_4k, 2048)
+    logger.info("[%s] Resizing 4K → 1K...", pose_label)
+    bytes_1k = await asyncio.get_event_loop().run_in_executor(None, _resize_image, bytes_4k, 1024)
+    logger.info("[%s] Resize complete", pose_label)
 
-    # ── Modal GPU enhancement ─────────────────────────────────────────────────
-    logger.info("[%s] Sending 4K image to Modal for GPU enhancement...", pose_label)
-    enhanced = await enhance_image(bytes_4k, f"{image_id}.png")
-
-    upscaled_8k   = enhanced.get("8k")  if enhanced else None
-    upscaled_4k   = enhanced.get("4k")  if enhanced else None
-    upscaled_2k   = enhanced.get("2k")  if enhanced else None
-    upscaled_1k   = enhanced.get("1k")  if enhanced else None
-
-    if enhanced:
-        logger.info("[%s] Enhancement complete — received %s resolution(s)", pose_label, list(enhanced.keys()))
-    else:
-        logger.warning("[%s] Enhancement unavailable — using raw resized images only", pose_label)
-
-    # ── Upload all variants to S3 concurrently ────────────────────────────────
     prefix = f"photoshoots/{photoshoot_id}/{image_id}"
-    logger.info("[%s] Uploading images to S3 (prefix=%s)...", pose_label, prefix)
+    logger.info("[%s] Uploading SeedDream 4K / 2K / 1K to S3 (prefix=%s)...", pose_label, prefix)
 
-    upload_tasks = [
-        upload_bytes_to_s3(bytes_4k,     f"{prefix}_4k.png",            "image/png"),
-        upload_bytes_to_s3(bytes_2k_raw, f"{prefix}_2k.png",            "image/png"),
-        upload_bytes_to_s3(bytes_1k_raw, f"{prefix}_1k.png",            "image/png"),
-        upload_bytes_to_s3(upscaled_8k,  f"{prefix}_upscaled_8k.png",   "image/png") if upscaled_8k  else _noop_url(),
-        upload_bytes_to_s3(upscaled_4k,  f"{prefix}_upscaled_4k.png",   "image/png") if upscaled_4k  else _noop_url(),
-        upload_bytes_to_s3(upscaled_2k,  f"{prefix}_upscaled_2k.png",   "image/png") if upscaled_2k  else _noop_url(),
-        upload_bytes_to_s3(upscaled_1k,  f"{prefix}_upscaled_1k.png",   "image/png") if upscaled_1k  else _noop_url(),
-    ]
-    (
-        url_4k, url_2k, url_1k,
-        url_upscaled_8k, url_upscaled_4k, url_upscaled_2k, url_upscaled_1k,
-    ) = await asyncio.gather(*upload_tasks)
+    url_4k, url_2k, url_1k = await asyncio.gather(
+        upload_bytes_to_s3(bytes_4k, f"{prefix}_4k.png", "image/png"),
+        upload_bytes_to_s3(bytes_2k, f"{prefix}_2k.png", "image/png"),
+        upload_bytes_to_s3(bytes_1k, f"{prefix}_1k.png", "image/png"),
+    )
+    logger.info("[%s] Uploaded SeedDream 4K, 2K, 1K", pose_label)
 
-    logger.info("[%s] S3 uploads complete", pose_label)
+    # ── Modal GPU enhancement: 4K → enhanced 8K / 4K / 2K / 1K ──────────
+    logger.info("[%s] Sending 4K bytes to Modal GPU pipeline for enhancement...", pose_label)
+    upscale_result = await enhance_and_upload(
+        image_bytes=bytes_4k,
+        photoshoot_id=photoshoot_id,
+        image_id=image_id,
+        seeddream_4k_url=url_4k,
+        seeddream_2k_url=url_2k,
+        seeddream_1k_url=url_1k,
+    )
+    logger.info("[%s] Modal enhancement complete — upscaled 1K: %s", pose_label,
+                upscale_result.get("1k_upscaled", "N/A")[:80])
 
-    # ── Save upscaling_data document ──────────────────────────────────────────
-    now = datetime.now(timezone.utc)
-    upscaling_col = get_upscaling_data_collection()
-    await upscaling_col.insert_one({
-        "photoshoot_id":  photoshoot_id,
-        "image_id":       image_id,
-        "1k_upscaled":    url_upscaled_1k,
-        "2k_upscaled":    url_upscaled_2k,
-        "4k_upscaled":    url_upscaled_4k,
-        "8k_upscaled":    url_upscaled_8k,
-        "1k":             url_1k,
-        "2k":             url_2k,
-        "4k":             url_4k,
-        "created_at":     now,
-        "updated_at":     now,
-    })
-    logger.info("[%s] upscaling_data document saved", pose_label)
-
-    # Use upscaled 1K as the primary image; fall back to raw 1K if enhancement failed.
-    primary_image_url = url_upscaled_1k if url_upscaled_1k else url_1k
+    # Use the upscaled 1K as the primary display image; fall back to SeedDream 1K
+    display_image = upscale_result.get("1k_upscaled") or url_1k
 
     logger.info("[%s] ── Pose pipeline COMPLETE ─────────────────────", pose_label)
     return {
         "image_id":    image_id,
         "pose_prompt": pose_prompt,
-        "image":       primary_image_url,
+        "image":       display_image,
     }
 
 
