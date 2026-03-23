@@ -1829,7 +1829,7 @@ try:
 
     app            = modal.App("fashion-realism")
     weights_volume = modal.Volume.from_name("fashion-realism-weights", create_if_missing=True)
-    WEIGHTS_PATH   = "/weights"   # populated once; reused across all requests
+    WEIGHTS_PATH   = "/weights"   # populated once; reused across all request
     hf_secret = modal.Secret.from_name("huggingface-secret")
 
     image = (
