@@ -293,7 +293,14 @@ def install_swinir():
         Path("/root/SwinIR"),
         Path("/opt/SwinIR"),
     ]
-    repo = next((p for p in candidates if p.exists()), None)
+
+    def _safe_exists(p: Path) -> bool:
+        try:
+            return p.exists()
+        except (PermissionError, OSError):
+            return False
+
+    repo = next((p for p in candidates if _safe_exists(p)), None)
     if repo is None:
         print("[→] Cloning SwinIR ...")
         os.system("git clone https://github.com/JingyunLiang/SwinIR.git --depth 1")
