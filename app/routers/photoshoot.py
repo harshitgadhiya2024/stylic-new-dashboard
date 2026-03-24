@@ -457,3 +457,34 @@ async def get_all_photoshoots(
         "has_prev":    page > 1,
         "photoshoots": photoshoots,
     }
+
+
+@router.get(
+    "/{photoshoot_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Get Photoshoot Detail",
+    description=(
+        "Returns full details of a single photoshoot by photoshoot_id. "
+        "Only the authenticated user's own photoshoot is accessible. "
+        "Secured — user_id is taken from the auth token."
+    ),
+)
+async def get_photoshoot_detail(
+    photoshoot_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    col     = get_photoshoots_collection()
+
+    photoshoot = await col.find_one(
+        {"photoshoot_id": photoshoot_id, "user_id": user_id},
+        {"_id": 0},
+    )
+
+    if not photoshoot:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Photoshoot '{photoshoot_id}' not found.",
+        )
+
+    return photoshoot
