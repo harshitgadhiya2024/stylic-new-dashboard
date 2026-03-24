@@ -10,7 +10,7 @@ from app.database import (
     get_credit_history_collection,
 )
 from app.dependencies import get_current_user
-from app.models.photoshoot import CreatePhotoshootRequest, UpscalePhotoshootRequest, RegeneratePhotoshootRequest, DeletePhotoshootsRequest
+from app.models.photoshoot import CreatePhotoshootRequest, UpscalePhotoshootRequest, RegeneratePhotoshootRequest, DeletePhotoshootsRequest, ResizePhotoshootRequest
 from app.services.photoshoot_service import run_photoshoot_job
 
 router = APIRouter(prefix="/api/v1/photoshoots", tags=["Photoshoots"])
@@ -534,4 +534,78 @@ async def soft_delete_photoshoots(
         "message":        f"{result.modified_count} photoshoot(s) deleted successfully.",
         "deleted_count":  result.modified_count,
         "photoshoot_ids": body.photoshoot_ids,
+    }
+
+
+@router.post(
+    "/resize",
+    status_code=status.HTTP_200_OK,
+    summary="Resize Photoshoot",
+    description=(
+        "Copies an existing photoshoot into a new document, replacing the image URL "
+        "for each matching image_id with the one provided in resize_list. "
+        "Sets regeneration_type='resize' and regenerate_photoshoot_id to the original "
+        "photoshoot_id. No credits are deducted. "
+        "Secured — user_id is taken from the auth token."
+    ),
+)
+async def resize_photoshoot(
+    body: ResizePhotoshootRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+
+    if not body.resize_list:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="resize_list must contain at least one item.",
+        )
+
+    # ── Step 1: fetch original photoshoot ─────────────────────────────────────
+    ps_col      = get_photoshoots_collection()
+    original_ps = await ps_col.find_one({"photoshoot_id": body.photoshoot_id, "user_id": user_id})
+    if not original_ps:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Photoshoot '{body.photoshoot_id}' not found.",
+        )
+
+    # ── Step 2: build updated output_images ───────────────────────────────────
+    resize_map = {item.image_id: item.image for item in body.resize_list}
+
+    output_images = [
+        {
+            **img,
+            "image": resize_map[img["image_id"]] if img["image_id"] in resize_map else img["image"],
+        }
+        for img in original_ps.get("output_images", [])
+    ]
+
+    # ── Step 3: build and store new photoshoot document ───────────────────────
+    new_photoshoot_id = str(uuid.uuid4())
+    now               = datetime.now(timezone.utc)
+
+    new_doc = {
+        k: v for k, v in original_ps.items()
+        if k not in ("_id", "photoshoot_id", "output_images", "regeneration_type",
+                     "regenerate_photoshoot_id", "created_at", "updated_at")
+    }
+    new_doc.update({
+        "photoshoot_id":            new_photoshoot_id,
+        "output_images":            output_images,
+        "regeneration_type":        "resize",
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "is_active":                True,
+        "created_at":               now,
+        "updated_at":               now,
+    })
+
+    await ps_col.insert_one(new_doc)
+
+    return {
+        "message":                  "Photoshoot resized successfully.",
+        "photoshoot_id":            new_photoshoot_id,
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "regeneration_type":        "resize",
+        "output_images":            output_images,
     }

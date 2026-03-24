@@ -18,6 +18,16 @@ class DeletePhotoshootsRequest(BaseModel):
     photoshoot_ids: List[str]
 
 
+class ResizeImageItem(BaseModel):
+    image_id: str
+    image:    str
+
+
+class ResizePhotoshootRequest(BaseModel):
+    photoshoot_id: str
+    resize_list:   List[ResizeImageItem]
+
+
 class CreatePhotoshootRequest(BaseModel):
     front_garment_image:          str
     back_garment_image:           Optional[str]  = ""
