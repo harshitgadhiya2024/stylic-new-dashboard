@@ -571,15 +571,20 @@ async def resize_photoshoot(
         )
 
     # ── Step 2: build updated output_images ───────────────────────────────────
+    # Only include entries whose image_id is in resize_list, with the new image URL
     resize_map = {item.image_id: item.image for item in body.resize_list}
 
     output_images = [
-        {
-            **img,
-            "image": resize_map[img["image_id"]] if img["image_id"] in resize_map else img["image"],
-        }
+        {**img, "image": resize_map[img["image_id"]]}
         for img in original_ps.get("output_images", [])
+        if img["image_id"] in resize_map
     ]
+
+    if not output_images:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="None of the provided image_ids were found in this photoshoot's output_images.",
+        )
 
     # ── Step 3: build and store new photoshoot document ───────────────────────
     new_photoshoot_id = str(uuid.uuid4())
