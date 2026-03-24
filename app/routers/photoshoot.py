@@ -270,14 +270,16 @@ async def upscale_photoshoot(
         {"$set": {"credits": new_credits, "updated_at": now}},
     )
     await history_col.insert_one({
-        "history_id":     str(uuid.uuid4()),
-        "user_id":        user_id,
-        "feature_name":   "photoshoot_upscale",
-        "credit":         total_credit,
-        "type":           "deduct",
-        "thumbnail_image": "",
-        "notes":          f"Upscale ({body.regeneration_type}) — new photoshoot {new_photoshoot_id}",
-        "created_at":     now,
+        "history_id":               str(uuid.uuid4()),
+        "user_id":                  user_id,
+        "feature_name":             "photoshoot_upscale",
+        "credit":                   total_credit,
+        "type":                     "deduct",
+        "thumbnail_image":          "",
+        "notes":                    f"Upscale ({body.regeneration_type}) — new photoshoot {new_photoshoot_id}",
+        "regeneration_type":        body.regeneration_type,
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "created_at":               now,
     })
 
     return {

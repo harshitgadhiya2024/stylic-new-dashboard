@@ -432,7 +432,13 @@ async def _process_one_pose(
 # Credit deduction helper
 # ---------------------------------------------------------------------------
 
-async def _deduct_photoshoot_credits(user_id: str, total_credit: float, photoshoot_id: str) -> None:
+async def _deduct_photoshoot_credits(
+    user_id: str,
+    total_credit: float,
+    photoshoot_id: str,
+    regeneration_type: str = "",
+    regenerate_photoshoot_id: str = "",
+) -> None:
     logger.info("[credits] Deducting %.2f credits from user_id=%s for photoshoot=%s",
                 total_credit, user_id, photoshoot_id)
     users_col   = get_users_collection()
@@ -451,16 +457,28 @@ async def _deduct_photoshoot_credits(user_id: str, total_credit: float, photosho
     )
     logger.info("[credits] Credits updated: %.4f → %.4f", old_credits, new_credits)
 
-    await history_col.insert_one({
+    feature_name = "photoshoot_regenerate" if regeneration_type == "regenerate" else "photoshoot_generation"
+    notes        = f"Photoshoot {photoshoot_id}"
+    if regeneration_type:
+        notes = f"{regeneration_type} — new photoshoot {photoshoot_id}"
+        if regenerate_photoshoot_id:
+            notes += f" (from {regenerate_photoshoot_id})"
+
+    history_doc = {
         "history_id":      str(uuid.uuid4()),
         "user_id":         user_id,
-        "feature_name":    "photoshoot_generation",
+        "feature_name":    feature_name,
         "credit":          total_credit,
         "type":            "deduct",
         "thumbnail_image": "",
-        "notes":           f"Photoshoot {photoshoot_id}",
+        "notes":           notes,
         "created_at":      datetime.now(timezone.utc),
-    })
+    }
+    if regeneration_type:
+        history_doc["regeneration_type"]        = regeneration_type
+        history_doc["regenerate_photoshoot_id"] = regenerate_photoshoot_id
+
+    await history_col.insert_one(history_doc)
     logger.info("[credits] Credit history record inserted")
 
 
@@ -543,7 +561,13 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
         # ── Step 4: deduct credits ────────────────────────────────────────
         logger.info("[job] STEP 4 — Deducting credits...")
         total_credit = len(pose_prompts) * _PHOTOSHOOT_CREDIT_PER_POSE
-        await _deduct_photoshoot_credits(req["user_id"], total_credit, photoshoot_id)
+        await _deduct_photoshoot_credits(
+            req["user_id"],
+            total_credit,
+            photoshoot_id,
+            regeneration_type=req.get("regeneration_type", ""),
+            regenerate_photoshoot_id=req.get("regenerate_photoshoot_id", ""),
+        )
         logger.info("[job] STEP 4 DONE — %.2f credits deducted", total_credit)
 
         # ── Step 5: update photoshoot document ───────────────────────────
