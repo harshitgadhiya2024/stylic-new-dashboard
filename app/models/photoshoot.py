@@ -33,6 +33,12 @@ class BrandingPhotoshootRequest(BaseModel):
     image_ids:     List[str]
 
 
+class BackgroundChangeRequest(BaseModel):
+    photoshoot_id: str
+    background_id: str
+    image_ids:     List[str]
+
+
 class CreatePhotoshootRequest(BaseModel):
     front_garment_image:          str
     back_garment_image:           Optional[str]  = ""

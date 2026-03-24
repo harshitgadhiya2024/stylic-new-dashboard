@@ -8,9 +8,10 @@ from app.database import (
     get_upscaling_collection,
     get_users_collection,
     get_credit_history_collection,
+    get_backgrounds_collection,
 )
 from app.dependencies import get_current_user
-from app.models.photoshoot import CreatePhotoshootRequest, UpscalePhotoshootRequest, RegeneratePhotoshootRequest, DeletePhotoshootsRequest, ResizePhotoshootRequest, BrandingPhotoshootRequest
+from app.models.photoshoot import CreatePhotoshootRequest, UpscalePhotoshootRequest, RegeneratePhotoshootRequest, DeletePhotoshootsRequest, ResizePhotoshootRequest, BrandingPhotoshootRequest, BackgroundChangeRequest
 from app.services.photoshoot_service import run_photoshoot_job
 
 router = APIRouter(prefix="/api/v1/photoshoots", tags=["Photoshoots"])
@@ -919,4 +920,132 @@ async def adjust_image_photoshoot(
         "regeneration_type":        "adjust_image",
         "total_credit":             total_credit,
         "output_images":            output_images,
+    }
+
+
+@router.post(
+    "/background-change",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Background Change Photoshoot",
+    description=(
+        "Re-runs the full SeedDream + Modal pipeline for selected poses using a new background. "
+        "Fetches pose_prompts from the original photoshoot's output_images for given image_ids, "
+        "swaps the background_id, and keeps all other input_parameter values unchanged. "
+        "Credits: 2 per image. Secured — user_id from auth token."
+    ),
+)
+async def background_change_photoshoot(
+    body: BackgroundChangeRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+
+    if not body.image_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="image_ids must contain at least one id.",
+        )
+
+    # ── Step 1: fetch new background URL ──────────────────────────────────────
+    bg_col = get_backgrounds_collection()
+    bg_doc = await bg_col.find_one({"background_id": body.background_id})
+    if not bg_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Background '{body.background_id}' not found.",
+        )
+
+    # ── Step 2: fetch original photoshoot and resolve pose_prompts ────────────
+    ps_col      = get_photoshoots_collection()
+    original_ps = await ps_col.find_one({"photoshoot_id": body.photoshoot_id, "user_id": user_id})
+    if not original_ps:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Photoshoot '{body.photoshoot_id}' not found.",
+        )
+
+    id_set   = set(body.image_ids)
+    selected = [img for img in original_ps.get("output_images", []) if img["image_id"] in id_set]
+    if not selected:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="None of the provided image_ids were found in this photoshoot.",
+        )
+
+    pose_prompts = [img["pose_prompt"] for img in selected]
+    total_poses  = len(pose_prompts)
+
+    # ── Step 3: credit check ──────────────────────────────────────────────────
+    total_credit    = total_poses * _CREDIT_PER_POSE
+    current_credits = float(current_user.get("credits", 0))
+
+    if current_credits < total_credit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Insufficient credits. Background change requires {total_credit} credits "
+                f"({total_poses} pose(s) × {_CREDIT_PER_POSE}) but you only have {current_credits}."
+            ),
+        )
+
+    # ── Step 4: build job payload — original params with new background ───────
+    original_params   = original_ps.get("input_parameter", {})
+    new_photoshoot_id = str(uuid.uuid4())
+    now               = datetime.now(timezone.utc)
+
+    job_payload = {
+        **original_params,
+        "user_id":                   user_id,
+        "which_pose_option":         "prompt",
+        "poses_prompts":             pose_prompts,
+        "poses_ids":                 [],
+        "poses_images":              [],
+        "background_id":             body.background_id,
+        "regeneration_type":         "background_change",
+        "regenerate_photoshoot_id":  body.photoshoot_id,
+    }
+
+    # ── Step 5: store new photoshoot document ─────────────────────────────────
+    doc = {
+        "photoshoot_id":            new_photoshoot_id,
+        "user_id":                  user_id,
+        "sku_id":                   original_ps.get("sku_id", ""),
+        "input_parameter": {
+            **original_params,
+            "which_pose_option":        "prompt",
+            "poses_prompts":            pose_prompts,
+            "poses_ids":                [],
+            "poses_images":             [],
+            "background_id":            body.background_id,
+            "regeneration_type":        "background_change",
+            "regenerate_photoshoot_id": body.photoshoot_id,
+        },
+        "output_images":            [],
+        "failed_poses":             [],
+        "total_credit":             total_credit,
+        "is_credit_deducted":       False,
+        "is_completed":             False,
+        "status":                   "processing",
+        "error":                    None,
+        "regeneration_type":        "background_change",
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "is_active":                True,
+        "created_at":               now,
+        "updated_at":               now,
+    }
+    await ps_col.insert_one(doc)
+
+    # ── Step 6: fire background job ───────────────────────────────────────────
+    background_tasks.add_task(run_photoshoot_job, new_photoshoot_id, job_payload)
+
+    return {
+        "message":                  "Background change started successfully. Processing in background.",
+        "photoshoot_id":            new_photoshoot_id,
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "regeneration_type":        "background_change",
+        "background_id":            body.background_id,
+        "total_poses":              total_poses,
+        "total_credit":             total_credit,
+        "status":                   "processing",
     }
