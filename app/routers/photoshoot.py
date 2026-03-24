@@ -10,7 +10,7 @@ from app.database import (
     get_credit_history_collection,
 )
 from app.dependencies import get_current_user
-from app.models.photoshoot import CreatePhotoshootRequest, UpscalePhotoshootRequest, RegeneratePhotoshootRequest
+from app.models.photoshoot import CreatePhotoshootRequest, UpscalePhotoshootRequest, RegeneratePhotoshootRequest, DeletePhotoshootsRequest
 from app.services.photoshoot_service import run_photoshoot_job
 
 router = APIRouter(prefix="/api/v1/photoshoots", tags=["Photoshoots"])
@@ -112,6 +112,7 @@ async def create_photoshoot(
         "error":                     None,
         "regeneration_type":         body.regeneration_type or "",
         "regenerate_photoshoot_id":  body.regenerate_photoshoot_id or "",
+        "is_active":                 True,
         "created_at":                now,
         "updated_at":                now,
     }
@@ -252,6 +253,7 @@ async def upscale_photoshoot(
         "error":                   None,
         "regeneration_type":       body.regeneration_type,
         "regenerate_photoshoot_id": body.photoshoot_id,
+        "is_active":               True,
         "created_at":              now,
         "updated_at":              now,
     })
@@ -401,6 +403,7 @@ async def regenerate_photoshoot(
         "error":                    None,
         "regeneration_type":        "regenerate",
         "regenerate_photoshoot_id": body.photoshoot_id,
+        "is_active":                True,
         "created_at":               now,
         "updated_at":               now,
     }
@@ -439,12 +442,14 @@ async def get_all_photoshoots(
     user_id = current_user["user_id"]
     col     = get_photoshoots_collection()
 
-    total     = await col.count_documents({"user_id": user_id})
-    skip      = (page - 1) * page_size
+    query = {"user_id": user_id, "is_active": True}
+
+    total       = await col.count_documents(query)
+    skip        = (page - 1) * page_size
     total_pages = (total + page_size - 1) // page_size
 
     photoshoots = await col.find(
-        {"user_id": user_id},
+        query,
         {"_id": 0},
     ).sort("created_at", -1).skip(skip).limit(page_size).to_list(length=None)
 
@@ -488,3 +493,43 @@ async def get_photoshoot_detail(
         )
 
     return photoshoot
+
+
+@router.patch(
+    "/delete",
+    status_code=status.HTTP_200_OK,
+    summary="Soft Delete Photoshoots",
+    description=(
+        "Sets is_active=False on the given list of photoshoot_ids for the authenticated user. "
+        "Soft-deleted photoshoots are excluded from the get-all listing. "
+        "Secured — user_id is taken from the auth token."
+    ),
+)
+async def soft_delete_photoshoots(
+    body: DeletePhotoshootsRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+
+    if not body.photoshoot_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="photoshoot_ids must contain at least one id.",
+        )
+
+    col    = get_photoshoots_collection()
+    now    = datetime.now(timezone.utc)
+
+    result = await col.update_many(
+        {
+            "photoshoot_id": {"$in": body.photoshoot_ids},
+            "user_id":       user_id,
+        },
+        {"$set": {"is_active": False, "updated_at": now}},
+    )
+
+    return {
+        "message":        f"{result.modified_count} photoshoot(s) deleted successfully.",
+        "deleted_count":  result.modified_count,
+        "photoshoot_ids": body.photoshoot_ids,
+    }

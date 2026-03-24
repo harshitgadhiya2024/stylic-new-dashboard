@@ -82,6 +82,7 @@ async def create_indexes() -> None:
     await photoshoots.create_index("photoshoot_id", unique=True)
     await photoshoots.create_index("user_id")
     await photoshoots.create_index("status")
+    await photoshoots.create_index("is_active")
     await photoshoots.create_index("created_at")
 
     upscaling = db["upscaling_data"]

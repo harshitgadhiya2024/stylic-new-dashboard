@@ -14,6 +14,10 @@ class RegeneratePhotoshootRequest(BaseModel):
     image_ids:     Optional[List[str]] = []   # empty = regenerate all poses
 
 
+class DeletePhotoshootsRequest(BaseModel):
+    photoshoot_ids: List[str]
+
+
 class CreatePhotoshootRequest(BaseModel):
     front_garment_image:          str
     back_garment_image:           Optional[str]  = ""
