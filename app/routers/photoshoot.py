@@ -586,18 +586,34 @@ async def resize_photoshoot(
             detail="None of the provided image_ids were found in this photoshoot's output_images.",
         )
 
-    # ── Step 3: build and store new photoshoot document ───────────────────────
+    # ── Step 3: credit check ──────────────────────────────────────────────────
+    total_credit    = 1.0 * len(output_images)
+    current_credits = float(current_user.get("credits", 0))
+
+    if current_credits < total_credit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Insufficient credits. This resize requires {total_credit} credits "
+                f"({len(output_images)} image(s) × 1) but you only have {current_credits}."
+            ),
+        )
+
+    # ── Step 4: build and store new photoshoot document ───────────────────────
     new_photoshoot_id = str(uuid.uuid4())
     now               = datetime.now(timezone.utc)
 
     new_doc = {
         k: v for k, v in original_ps.items()
-        if k not in ("_id", "photoshoot_id", "output_images", "regeneration_type",
+        if k not in ("_id", "photoshoot_id", "output_images", "total_credit",
+                     "is_credit_deducted", "regeneration_type",
                      "regenerate_photoshoot_id", "created_at", "updated_at")
     }
     new_doc.update({
         "photoshoot_id":            new_photoshoot_id,
         "output_images":            output_images,
+        "total_credit":             total_credit,
+        "is_credit_deducted":       True,
         "regeneration_type":        "resize",
         "regenerate_photoshoot_id": body.photoshoot_id,
         "is_active":                True,
@@ -607,10 +623,33 @@ async def resize_photoshoot(
 
     await ps_col.insert_one(new_doc)
 
+    # ── Step 5: deduct credits + record history ───────────────────────────────
+    users_col   = get_users_collection()
+    history_col = get_credit_history_collection()
+
+    new_credits = round(current_credits - total_credit, 4)
+    await users_col.update_one(
+        {"user_id": user_id},
+        {"$set": {"credits": new_credits, "updated_at": now}},
+    )
+    await history_col.insert_one({
+        "history_id":               str(uuid.uuid4()),
+        "user_id":                  user_id,
+        "feature_name":             "photoshoot_resize",
+        "credit":                   total_credit,
+        "type":                     "deduct",
+        "thumbnail_image":          "",
+        "notes":                    f"Resize — new photoshoot {new_photoshoot_id}",
+        "regeneration_type":        "resize",
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "created_at":               now,
+    })
+
     return {
         "message":                  "Photoshoot resized successfully.",
         "photoshoot_id":            new_photoshoot_id,
         "regenerate_photoshoot_id": body.photoshoot_id,
         "regeneration_type":        "resize",
+        "total_credit":             total_credit,
         "output_images":            output_images,
     }
