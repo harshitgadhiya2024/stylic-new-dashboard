@@ -800,3 +800,123 @@ async def branding_photoshoot(
         "new_image_ids": body.image_ids,
         "total_credit":  total_credit,
     }
+
+
+@router.post(
+    "/adjust-image",
+    status_code=status.HTTP_200_OK,
+    summary="Adjust Image Photoshoot",
+    description=(
+        "Copies an existing photoshoot into a new document, replacing the image URL "
+        "for each matching image_id with the one provided in resize_list. "
+        "Sets regeneration_type='adjust_image'. Deducts 1 credit per image. "
+        "Secured — user_id is taken from the auth token."
+    ),
+)
+async def adjust_image_photoshoot(
+    body: ResizePhotoshootRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+
+    if not body.resize_list:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="resize_list must contain at least one item.",
+        )
+
+    # ── Step 1: fetch original photoshoot ─────────────────────────────────────
+    ps_col      = get_photoshoots_collection()
+    original_ps = await ps_col.find_one({"photoshoot_id": body.photoshoot_id, "user_id": user_id})
+    if not original_ps:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Photoshoot '{body.photoshoot_id}' not found.",
+        )
+
+    # ── Step 2: build updated output_images ───────────────────────────────────
+    adjust_map = {item.image_id: item.image for item in body.resize_list}
+
+    output_images = [
+        {**img, "image": adjust_map[img["image_id"]]}
+        for img in original_ps.get("output_images", [])
+        if img["image_id"] in adjust_map
+    ]
+
+    if not output_images:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="None of the provided image_ids were found in this photoshoot's output_images.",
+        )
+
+    # ── Step 3: credit check ──────────────────────────────────────────────────
+    total_credit    = 1.0 * len(output_images)
+    current_credits = float(current_user.get("credits", 0))
+
+    if current_credits < total_credit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Insufficient credits. Adjust image requires {total_credit} credits "
+                f"({len(output_images)} image(s) × 1) but you only have {current_credits}."
+            ),
+        )
+
+    # ── Step 4: build and store new photoshoot document ───────────────────────
+    new_photoshoot_id = str(uuid.uuid4())
+    now               = datetime.now(timezone.utc)
+
+    new_doc = {
+        k: v for k, v in original_ps.items()
+        if k not in ("_id", "photoshoot_id", "output_images", "total_credit",
+                     "is_credit_deducted", "regeneration_type",
+                     "regenerate_photoshoot_id", "created_at", "updated_at")
+    }
+    new_doc.update({
+        "photoshoot_id":            new_photoshoot_id,
+        "output_images":            output_images,
+        "total_credit":             total_credit,
+        "is_credit_deducted":       True,
+        "regeneration_type":        "adjust_image",
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "is_active":                True,
+        "created_at":               now,
+        "updated_at":               now,
+    })
+
+    await ps_col.insert_one(new_doc)
+
+    # ── Step 5: deduct credits + record history ───────────────────────────────
+    users_col   = get_users_collection()
+    history_col = get_credit_history_collection()
+
+    adjusted_image_ids = [img["image_id"] for img in output_images]
+    new_credits        = round(current_credits - total_credit, 4)
+    await users_col.update_one(
+        {"user_id": user_id},
+        {"$set": {"credits": new_credits, "updated_at": now}},
+    )
+    await history_col.insert_one({
+        "history_id":               str(uuid.uuid4()),
+        "user_id":                  user_id,
+        "feature_name":             "photoshoot_adjust_image",
+        "credit":                   total_credit,
+        "credit_per_image":         1.0,
+        "image_ids":                adjusted_image_ids,
+        "type":                     "deduct",
+        "thumbnail_image":          "",
+        "notes":                    f"Adjust image — new photoshoot {new_photoshoot_id}",
+        "photoshoot_id":            new_photoshoot_id,
+        "regeneration_type":        "adjust_image",
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "created_at":               now,
+    })
+
+    return {
+        "message":                  "Photoshoot image adjusted successfully.",
+        "photoshoot_id":            new_photoshoot_id,
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "regeneration_type":        "adjust_image",
+        "total_credit":             total_credit,
+        "output_images":            output_images,
+    }
