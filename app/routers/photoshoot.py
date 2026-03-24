@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.database import (
     get_photoshoots_collection,
@@ -12,7 +12,7 @@ from app.database import (
 )
 from app.dependencies import get_current_user
 from app.models.photoshoot import CreatePhotoshootRequest, UpscalePhotoshootRequest, RegeneratePhotoshootRequest, DeletePhotoshootsRequest, ResizePhotoshootRequest, BrandingPhotoshootRequest, BackgroundChangeRequest
-from app.services.photoshoot_service import run_photoshoot_job
+from app.tasks.photoshoot_tasks import run_photoshoot_task
 
 router = APIRouter(prefix="/api/v1/photoshoots", tags=["Photoshoots"])
 
@@ -36,7 +36,6 @@ _CREDIT_UPSCALE_4X = 4.0
 )
 async def create_photoshoot(
     body: CreatePhotoshootRequest,
-    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["user_id"]
@@ -121,16 +120,20 @@ async def create_photoshoot(
     col = get_photoshoots_collection()
     await col.insert_one(doc)
 
-    # ── Step 4: fire background job ───────────────────────────────────────────
+    # ── Step 4: enqueue background job via Celery ─────────────────────────────
     job_payload = {
         **doc["input_parameter"],
         "user_id": user_id,
     }
-    background_tasks.add_task(run_photoshoot_job, photoshoot_id, job_payload)
+    task = run_photoshoot_task.apply_async(
+        args=[photoshoot_id, job_payload],
+        queue="photoshoots",
+    )
 
     return {
         "message":        "Photoshoot started successfully. Processing in background.",
         "photoshoot_id":  photoshoot_id,
+        "task_id":        task.id,
         "total_poses":    total_poses,
         "total_credit":   total_credit,
         "status":         "processing",
@@ -311,7 +314,6 @@ async def upscale_photoshoot(
 )
 async def regenerate_photoshoot(
     body: RegeneratePhotoshootRequest,
-    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["user_id"]
@@ -415,12 +417,16 @@ async def regenerate_photoshoot(
     }
     await ps_col.insert_one(doc)
 
-    # ── Step 6: fire background job (same pipeline as create) ─────────────────
-    background_tasks.add_task(run_photoshoot_job, new_photoshoot_id, job_payload)
+    # ── Step 6: enqueue background job via Celery ─────────────────────────────
+    task = run_photoshoot_task.apply_async(
+        args=[new_photoshoot_id, job_payload],
+        queue="photoshoots",
+    )
 
     return {
         "message":                  "Photoshoot regeneration started successfully. Processing in background.",
         "photoshoot_id":            new_photoshoot_id,
+        "task_id":                  task.id,
         "regenerate_photoshoot_id": body.photoshoot_id,
         "regeneration_type":        "regenerate",
         "total_poses":              total_poses,
@@ -936,7 +942,6 @@ async def adjust_image_photoshoot(
 )
 async def background_change_photoshoot(
     body: BackgroundChangeRequest,
-    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["user_id"]
@@ -1036,12 +1041,16 @@ async def background_change_photoshoot(
     }
     await ps_col.insert_one(doc)
 
-    # ── Step 6: fire background job ───────────────────────────────────────────
-    background_tasks.add_task(run_photoshoot_job, new_photoshoot_id, job_payload)
+    # ── Step 6: enqueue background job via Celery ─────────────────────────────
+    task = run_photoshoot_task.apply_async(
+        args=[new_photoshoot_id, job_payload],
+        queue="photoshoots",
+    )
 
     return {
         "message":                  "Background change started successfully. Processing in background.",
         "photoshoot_id":            new_photoshoot_id,
+        "task_id":                  task.id,
         "regenerate_photoshoot_id": body.photoshoot_id,
         "regeneration_type":        "background_change",
         "background_id":            body.background_id,

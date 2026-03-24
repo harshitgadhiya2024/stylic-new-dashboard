@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     DEFAULT_PLAN: str = "free"
     OTP_EXPIRE_MINUTES: int = 10
 
+    # Redis / Celery queue
+    REDIS_URL: str = "redis://localhost:6379/0"
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000

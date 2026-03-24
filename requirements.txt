@@ -39,3 +39,7 @@ Pillow
 # ── Photoshoot / Image processing ─────────────────────────────────────────
 numpy
 opencv-python-headless
+
+# ── Queue management (Celery + Redis) ─────────────────────────────────────
+celery[redis]
+redis

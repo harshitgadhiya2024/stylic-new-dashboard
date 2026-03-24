@@ -75,6 +75,35 @@ def health_check():
     return {"status": "ok", "service": "Stylic AI API"}
 
 
+@app.get("/queue/status", tags=["Queue"])
+def queue_status():
+    """Return the number of photoshoot jobs waiting in the Celery queue."""
+    from app.tasks.photoshoot_tasks import get_queue_length
+    pending = get_queue_length()
+    return {
+        "queue":         "photoshoots",
+        "pending_jobs":  pending,
+        "note":          "pending_jobs=-1 means Redis is unreachable",
+    }
+
+
+@app.get("/queue/task/{task_id}", tags=["Queue"])
+def task_status(task_id: str):
+    """Check the status of a specific Celery task by its task_id."""
+    from celery.result import AsyncResult
+    from app.worker import celery_app
+    result = AsyncResult(task_id, app=celery_app)
+    response = {
+        "task_id": task_id,
+        "status":  result.status,  # PENDING | STARTED | SUCCESS | FAILURE | RETRY
+    }
+    if result.status == "SUCCESS":
+        response["result"] = result.result
+    elif result.status == "FAILURE":
+        response["error"] = str(result.result)
+    return response
+
+
 if __name__ == "__main__":
     import uvicorn
 
