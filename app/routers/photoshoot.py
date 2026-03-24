@@ -667,8 +667,9 @@ async def resize_photoshoot(
     status_code=status.HTTP_200_OK,
     summary="Branding Photoshoot",
     description=(
-        "Deducts 1 credit per image_id for branding, records credit history with "
-        "regeneration_type='branding' and regenerate_photoshoot_id. "
+        "Deducts 1 credit per new image_id for branding. "
+        "If a credit history record already exists for this user + photoshoot + branding, "
+        "only the image_ids not yet charged are billed and the existing record is updated. "
         "Secured — user_id is taken from the auth token."
     ),
 )
@@ -693,7 +694,70 @@ async def branding_photoshoot(
             detail=f"Photoshoot '{body.photoshoot_id}' not found.",
         )
 
-    # ── Step 2: credit check ──────────────────────────────────────────────────
+    # ── Step 2: check existing branding credit history record ─────────────────
+    history_col     = get_credit_history_collection()
+    existing_record = await history_col.find_one({
+        "user_id":       user_id,
+        "photoshoot_id": body.photoshoot_id,
+        "feature_name":  "photoshoot_branding",
+    })
+
+    if existing_record:
+        already_charged  = set(existing_record.get("image_ids", []))
+        new_image_ids    = [iid for iid in body.image_ids if iid not in already_charged]
+
+        if not new_image_ids:
+            # All image_ids already charged — nothing to do
+            return {
+                "message":       "All image_ids have already been charged for branding. No credits deducted.",
+                "photoshoot_id": body.photoshoot_id,
+                "image_ids":     body.image_ids,
+                "new_image_ids": [],
+                "total_credit":  0.0,
+            }
+
+        total_credit    = 1.0 * len(new_image_ids)
+        current_credits = float(current_user.get("credits", 0))
+
+        if current_credits < total_credit:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=(
+                    f"Insufficient credits. Branding requires {total_credit} credits "
+                    f"({len(new_image_ids)} new image(s) × 1) but you only have {current_credits}."
+                ),
+            )
+
+        # Deduct credits
+        now         = datetime.now(timezone.utc)
+        users_col   = get_users_collection()
+        new_credits = round(current_credits - total_credit, 4)
+        await users_col.update_one(
+            {"user_id": user_id},
+            {"$set": {"credits": new_credits, "updated_at": now}},
+        )
+
+        # Update existing credit history record with merged image_ids and updated credit
+        merged_image_ids    = list(already_charged) + new_image_ids
+        updated_total_credit = round(existing_record.get("credit", 0) + total_credit, 4)
+        await history_col.update_one(
+            {"_id": existing_record["_id"]},
+            {"$set": {
+                "image_ids":  merged_image_ids,
+                "credit":     updated_total_credit,
+                "updated_at": now,
+            }},
+        )
+
+        return {
+            "message":       "Branding credits deducted for new images.",
+            "photoshoot_id": body.photoshoot_id,
+            "image_ids":     merged_image_ids,
+            "new_image_ids": new_image_ids,
+            "total_credit":  total_credit,
+        }
+
+    # ── No existing record — create fresh ────────────────────────────────────
     total_credit    = 1.0 * len(body.image_ids)
     current_credits = float(current_user.get("credits", 0))
 
@@ -706,11 +770,8 @@ async def branding_photoshoot(
             ),
         )
 
-    # ── Step 3: deduct credits + record history ───────────────────────────────
     now         = datetime.now(timezone.utc)
     users_col   = get_users_collection()
-    history_col = get_credit_history_collection()
-
     new_credits = round(current_credits - total_credit, 4)
     await users_col.update_one(
         {"user_id": user_id},
@@ -733,9 +794,9 @@ async def branding_photoshoot(
     })
 
     return {
-        "message":                  "Branding credits deducted successfully.",
-        "photoshoot_id":            body.photoshoot_id,
-        "regeneration_type":        "branding",
-        "image_ids":                body.image_ids,
-        "total_credit":             total_credit,
+        "message":       "Branding credits deducted successfully.",
+        "photoshoot_id": body.photoshoot_id,
+        "image_ids":     body.image_ids,
+        "new_image_ids": body.image_ids,
+        "total_credit":  total_credit,
     }
