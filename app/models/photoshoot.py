@@ -9,6 +9,11 @@ class UpscalePhotoshootRequest(BaseModel):
     regeneration_type: Literal["upscale (2x)", "upscale (4x)"]
 
 
+class RegeneratePhotoshootRequest(BaseModel):
+    photoshoot_id: str
+    image_ids:     Optional[List[str]] = []   # empty = regenerate all poses
+
+
 class CreatePhotoshootRequest(BaseModel):
     front_garment_image:          str
     back_garment_image:           Optional[str]  = ""

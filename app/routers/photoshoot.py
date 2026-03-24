@@ -10,7 +10,7 @@ from app.database import (
     get_credit_history_collection,
 )
 from app.dependencies import get_current_user
-from app.models.photoshoot import CreatePhotoshootRequest, UpscalePhotoshootRequest
+from app.models.photoshoot import CreatePhotoshootRequest, UpscalePhotoshootRequest, RegeneratePhotoshootRequest
 from app.services.photoshoot_service import run_photoshoot_job
 
 router = APIRouter(prefix="/api/v1/photoshoots", tags=["Photoshoots"])
@@ -287,4 +287,134 @@ async def upscale_photoshoot(
         "total_credit":             total_credit,
         "status":                   "completed",
         "output_images":            output_images,
+    }
+
+
+@router.post(
+    "/regenerate",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Regenerate Photoshoot",
+    description=(
+        "Re-runs the full SeedDream + Modal pipeline for selected poses of an existing "
+        "photoshoot using the same input_parameter configuration. "
+        "If image_ids is empty, all poses are regenerated; otherwise only the specified ones. "
+        "Credits: 2 per regenerated image. Secured — user_id from auth token."
+    ),
+)
+async def regenerate_photoshoot(
+    body: RegeneratePhotoshootRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    now     = datetime.now(timezone.utc)
+
+    # ── Step 1: fetch original photoshoot ─────────────────────────────────────
+    ps_col      = get_photoshoots_collection()
+    original_ps = await ps_col.find_one({"photoshoot_id": body.photoshoot_id})
+    if not original_ps:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Photoshoot '{body.photoshoot_id}' not found.",
+        )
+
+    if original_ps.get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this photoshoot.",
+        )
+
+    # ── Step 2: resolve pose_prompts from original output_images ──────────────
+    all_output_images = original_ps.get("output_images", [])
+    if not all_output_images:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Original photoshoot has no output_images to regenerate from.",
+        )
+
+    requested_ids = body.image_ids or []
+    if requested_ids:
+        # only regenerate poses matching the given image_ids, preserving order
+        id_set = set(requested_ids)
+        selected = [img for img in all_output_images if img["image_id"] in id_set]
+        if not selected:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="None of the provided image_ids were found in this photoshoot.",
+            )
+    else:
+        # regenerate all poses
+        selected = all_output_images
+
+    pose_prompts = [img["pose_prompt"] for img in selected]
+    total_poses  = len(pose_prompts)
+
+    # ── Step 3: credit check ──────────────────────────────────────────────────
+    total_credit    = total_poses * _CREDIT_PER_POSE
+    current_credits = float(current_user.get("credits", 0))
+
+    if current_credits < total_credit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Insufficient credits. This regeneration requires {total_credit} credits "
+                f"({total_poses} pose(s) × {_CREDIT_PER_POSE}) but you only have {current_credits}."
+            ),
+        )
+
+    # ── Step 4: build job payload from original input_parameter ───────────────
+    original_params = original_ps.get("input_parameter", {})
+    new_photoshoot_id = str(uuid.uuid4())
+
+    # Override poses to use the resolved pose_prompts directly (prompt mode)
+    job_payload = {
+        **original_params,
+        "user_id":                   user_id,
+        "which_pose_option":         "prompt",
+        "poses_prompts":             pose_prompts,
+        "poses_ids":                 [],
+        "poses_images":              [],
+        "regeneration_type":         "regenerate",
+        "regenerate_photoshoot_id":  body.photoshoot_id,
+    }
+
+    # ── Step 5: store new photoshoot document (processing state) ──────────────
+    doc = {
+        "photoshoot_id":            new_photoshoot_id,
+        "user_id":                  user_id,
+        "sku_id":                   original_ps.get("sku_id", ""),
+        "input_parameter":          {
+            **original_params,
+            "which_pose_option":        "prompt",
+            "poses_prompts":            pose_prompts,
+            "poses_ids":                [],
+            "poses_images":             [],
+            "regeneration_type":        "regenerate",
+            "regenerate_photoshoot_id": body.photoshoot_id,
+        },
+        "output_images":            [],
+        "failed_poses":             [],
+        "total_credit":             total_credit,
+        "is_credit_deducted":       False,
+        "is_completed":             False,
+        "status":                   "processing",
+        "error":                    None,
+        "regeneration_type":        "regenerate",
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "created_at":               now,
+        "updated_at":               now,
+    }
+    await ps_col.insert_one(doc)
+
+    # ── Step 6: fire background job (same pipeline as create) ─────────────────
+    background_tasks.add_task(run_photoshoot_job, new_photoshoot_id, job_payload)
+
+    return {
+        "message":                  "Photoshoot regeneration started successfully. Processing in background.",
+        "photoshoot_id":            new_photoshoot_id,
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "regeneration_type":        "regenerate",
+        "total_poses":              total_poses,
+        "total_credit":             total_credit,
+        "status":                   "processing",
     }
