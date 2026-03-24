@@ -438,6 +438,8 @@ async def _deduct_photoshoot_credits(
     photoshoot_id: str,
     regeneration_type: str = "",
     regenerate_photoshoot_id: str = "",
+    image_ids: list = None,
+    credit_per_image: float = None,
 ) -> None:
     logger.info("[credits] Deducting %.2f credits from user_id=%s for photoshoot=%s",
                 total_credit, user_id, photoshoot_id)
@@ -465,15 +467,17 @@ async def _deduct_photoshoot_credits(
             notes += f" (from {regenerate_photoshoot_id})"
 
     history_doc = {
-        "history_id":      str(uuid.uuid4()),
-        "user_id":         user_id,
-        "feature_name":    feature_name,
-        "credit":          total_credit,
-        "type":            "deduct",
-        "thumbnail_image": "",
-        "notes":           notes,
-        "photoshoot_id":   photoshoot_id,
-        "created_at":      datetime.now(timezone.utc),
+        "history_id":       str(uuid.uuid4()),
+        "user_id":          user_id,
+        "feature_name":     feature_name,
+        "credit":           total_credit,
+        "credit_per_image": credit_per_image if credit_per_image is not None else _PHOTOSHOOT_CREDIT_PER_POSE,
+        "image_ids":        image_ids or [],
+        "type":             "deduct",
+        "thumbnail_image":  "",
+        "notes":            notes,
+        "photoshoot_id":    photoshoot_id,
+        "created_at":       datetime.now(timezone.utc),
     }
     if regeneration_type:
         history_doc["regeneration_type"]        = regeneration_type
@@ -562,12 +566,15 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
         # ── Step 4: deduct credits ────────────────────────────────────────
         logger.info("[job] STEP 4 — Deducting credits...")
         total_credit = len(pose_prompts) * _PHOTOSHOOT_CREDIT_PER_POSE
+        generated_image_ids = [img["image_id"] for img in output_images]
         await _deduct_photoshoot_credits(
             req["user_id"],
             total_credit,
             photoshoot_id,
             regeneration_type=req.get("regeneration_type", ""),
             regenerate_photoshoot_id=req.get("regenerate_photoshoot_id", ""),
+            image_ids=generated_image_ids,
+            credit_per_image=_PHOTOSHOOT_CREDIT_PER_POSE,
         )
         logger.info("[job] STEP 4 DONE — %.2f credits deducted", total_credit)
 

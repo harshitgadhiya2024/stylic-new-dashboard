@@ -274,6 +274,8 @@ async def upscale_photoshoot(
         "user_id":                  user_id,
         "feature_name":             "photoshoot_upscale",
         "credit":                   total_credit,
+        "credit_per_image":         credit_per_img,
+        "image_ids":                body.image_ids,
         "type":                     "deduct",
         "thumbnail_image":          "",
         "notes":                    f"Upscale ({body.regeneration_type}) — new photoshoot {new_photoshoot_id}",
@@ -633,11 +635,14 @@ async def resize_photoshoot(
         {"user_id": user_id},
         {"$set": {"credits": new_credits, "updated_at": now}},
     )
+    resized_image_ids = [img["image_id"] for img in output_images]
     await history_col.insert_one({
         "history_id":               str(uuid.uuid4()),
         "user_id":                  user_id,
         "feature_name":             "photoshoot_resize",
         "credit":                   total_credit,
+        "credit_per_image":         1.0,
+        "image_ids":                resized_image_ids,
         "type":                     "deduct",
         "thumbnail_image":          "",
         "notes":                    f"Resize — new photoshoot {new_photoshoot_id}",
