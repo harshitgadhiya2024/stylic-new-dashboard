@@ -10,7 +10,7 @@ from app.database import (
     get_credit_history_collection,
 )
 from app.dependencies import get_current_user
-from app.models.photoshoot import CreatePhotoshootRequest, UpscalePhotoshootRequest, RegeneratePhotoshootRequest, DeletePhotoshootsRequest, ResizePhotoshootRequest
+from app.models.photoshoot import CreatePhotoshootRequest, UpscalePhotoshootRequest, RegeneratePhotoshootRequest, DeletePhotoshootsRequest, ResizePhotoshootRequest, BrandingPhotoshootRequest
 from app.services.photoshoot_service import run_photoshoot_job
 
 router = APIRouter(prefix="/api/v1/photoshoots", tags=["Photoshoots"])
@@ -659,4 +659,83 @@ async def resize_photoshoot(
         "regeneration_type":        "resize",
         "total_credit":             total_credit,
         "output_images":            output_images,
+    }
+
+
+@router.post(
+    "/branding",
+    status_code=status.HTTP_200_OK,
+    summary="Branding Photoshoot",
+    description=(
+        "Deducts 1 credit per image_id for branding, records credit history with "
+        "regeneration_type='branding' and regenerate_photoshoot_id. "
+        "Secured — user_id is taken from the auth token."
+    ),
+)
+async def branding_photoshoot(
+    body: BrandingPhotoshootRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+
+    if not body.image_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="image_ids must contain at least one id.",
+        )
+
+    # ── Step 1: verify photoshoot exists and belongs to user ──────────────────
+    ps_col      = get_photoshoots_collection()
+    original_ps = await ps_col.find_one({"photoshoot_id": body.photoshoot_id, "user_id": user_id})
+    if not original_ps:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Photoshoot '{body.photoshoot_id}' not found.",
+        )
+
+    # ── Step 2: credit check ──────────────────────────────────────────────────
+    total_credit    = 1.0 * len(body.image_ids)
+    current_credits = float(current_user.get("credits", 0))
+
+    if current_credits < total_credit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Insufficient credits. Branding requires {total_credit} credits "
+                f"({len(body.image_ids)} image(s) × 1) but you only have {current_credits}."
+            ),
+        )
+
+    # ── Step 3: deduct credits + record history ───────────────────────────────
+    now         = datetime.now(timezone.utc)
+    users_col   = get_users_collection()
+    history_col = get_credit_history_collection()
+
+    new_credits = round(current_credits - total_credit, 4)
+    await users_col.update_one(
+        {"user_id": user_id},
+        {"$set": {"credits": new_credits, "updated_at": now}},
+    )
+    await history_col.insert_one({
+        "history_id":               str(uuid.uuid4()),
+        "user_id":                  user_id,
+        "feature_name":             "photoshoot_branding",
+        "credit":                   total_credit,
+        "credit_per_image":         1.0,
+        "image_ids":                body.image_ids,
+        "type":                     "deduct",
+        "thumbnail_image":          "",
+        "notes":                    f"Branding — photoshoot {body.photoshoot_id}",
+        "photoshoot_id":            body.photoshoot_id,
+        "regeneration_type":        "branding",
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "created_at":               now,
+    })
+
+    return {
+        "message":                  "Branding credits deducted successfully.",
+        "photoshoot_id":            body.photoshoot_id,
+        "regeneration_type":        "branding",
+        "image_ids":                body.image_ids,
+        "total_credit":             total_credit,
     }

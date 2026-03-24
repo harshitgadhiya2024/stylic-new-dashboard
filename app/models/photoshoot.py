@@ -28,6 +28,11 @@ class ResizePhotoshootRequest(BaseModel):
     resize_list:   List[ResizeImageItem]
 
 
+class BrandingPhotoshootRequest(BaseModel):
+    photoshoot_id: str
+    image_ids:     List[str]
+
+
 class CreatePhotoshootRequest(BaseModel):
     front_garment_image:          str
     back_garment_image:           Optional[str]  = ""
