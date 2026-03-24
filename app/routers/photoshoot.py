@@ -418,3 +418,32 @@ async def regenerate_photoshoot(
         "total_credit":             total_credit,
         "status":                   "processing",
     }
+
+
+@router.get(
+    "/",
+    status_code=status.HTTP_200_OK,
+    summary="Get All Photoshoots",
+    description=(
+        "Returns all photoshoots belonging to the authenticated user, "
+        "sorted by created_at descending (newest first). "
+        "Secured — user_id is taken from the auth token."
+    ),
+)
+async def get_all_photoshoots(
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    col     = get_photoshoots_collection()
+
+    cursor = col.find(
+        {"user_id": user_id},
+        {"_id": 0},
+    ).sort("created_at", -1)
+
+    photoshoots = await cursor.to_list(length=None)
+
+    return {
+        "total":       len(photoshoots),
+        "photoshoots": photoshoots,
+    }
