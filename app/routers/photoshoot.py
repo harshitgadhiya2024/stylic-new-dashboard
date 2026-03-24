@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 
 from app.database import (
     get_photoshoots_collection,
@@ -425,25 +425,35 @@ async def regenerate_photoshoot(
     status_code=status.HTTP_200_OK,
     summary="Get All Photoshoots",
     description=(
-        "Returns all photoshoots belonging to the authenticated user, "
+        "Returns paginated photoshoots belonging to the authenticated user, "
         "sorted by created_at descending (newest first). "
+        "Use `page` (1-based) and `page_size` query params to control pagination. "
         "Secured — user_id is taken from the auth token."
     ),
 )
 async def get_all_photoshoots(
     current_user: dict = Depends(get_current_user),
+    page:      int = Query(default=1,  ge=1,  description="Page number (1-based)"),
+    page_size: int = Query(default=10, ge=1, le=100, description="Number of records per page (max 100)"),
 ):
     user_id = current_user["user_id"]
     col     = get_photoshoots_collection()
 
-    cursor = col.find(
+    total     = await col.count_documents({"user_id": user_id})
+    skip      = (page - 1) * page_size
+    total_pages = (total + page_size - 1) // page_size
+
+    photoshoots = await col.find(
         {"user_id": user_id},
         {"_id": 0},
-    ).sort("created_at", -1)
-
-    photoshoots = await cursor.to_list(length=None)
+    ).sort("created_at", -1).skip(skip).limit(page_size).to_list(length=None)
 
     return {
-        "total":       len(photoshoots),
+        "total":       total,
+        "page":        page,
+        "page_size":   page_size,
+        "total_pages": total_pages,
+        "has_next":    page < total_pages,
+        "has_prev":    page > 1,
         "photoshoots": photoshoots,
     }
