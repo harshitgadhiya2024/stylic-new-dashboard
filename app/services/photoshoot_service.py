@@ -472,6 +472,7 @@ async def _deduct_photoshoot_credits(
         "type":            "deduct",
         "thumbnail_image": "",
         "notes":           notes,
+        "photoshoot_id":   photoshoot_id,
         "created_at":      datetime.now(timezone.utc),
     }
     if regeneration_type:
