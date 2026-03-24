@@ -39,6 +39,20 @@ class BackgroundChangeRequest(BaseModel):
     image_ids:     List[str]
 
 
+class FabricChangeRequest(BaseModel):
+    """API-1: Change fabric on a single garment image using Gemini."""
+    photoshoot_id: str
+    fabric:        str   # e.g. "cotton", "silk", "denim"
+
+
+class FabricPhotoshootRequest(BaseModel):
+    """API-2: Re-generate photoshoot with a new garment fabric via full SeedDream pipeline."""
+    photoshoot_id:       str
+    front_garment_image: str
+    back_garment_image:  Optional[str] = ""
+    image_ids:           List[str]
+
+
 class CreatePhotoshootRequest(BaseModel):
     front_garment_image:          str
     back_garment_image:           Optional[str]  = ""
