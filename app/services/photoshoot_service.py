@@ -267,6 +267,10 @@ Use EXACT background from reference. Match: all objects, colors, lighting, shado
 
 [STYLE] Lighting: {req.get('lighting_style', 'natural light')} | Ornaments: {req.get('ornaments', 'none')}
 
+[BODY REALISM]
+- The model's chest/bust area should appear naturally fuller and well-defined — medium to slightly fuller than average — to give the garment a realistic, voluminous, and commercial fashion look.
+- Ensure natural body proportions: chest shape should look real, not exaggerated. The garment fabric should drape naturally over the chest area with realistic folds and tension.
+
 [QUALITY] Ultra-high resolution 4K, photorealistic, professional fashion photography, sharp focus, seamless model-background integration, commercial e-commerce grade.
 
 NON-NEGOTIABLE: 1. Face = 100% identical to reference. 2. Garment = 100% identical to reference. 3. Background = 100% identical to reference."""
