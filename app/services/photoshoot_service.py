@@ -227,8 +227,9 @@ def _build_photoshoot_prompt(
         "Footwear must look realistic, well-fitted, and appropriate for the overall look."
     )
 
+    # Only add bag/handbag if caller explicitly requests it via add_bag=True
     female_accessory_instruction = ""
-    if gender == "female":
+    if gender == "female" and req.get("add_bag", False):
         female_accessory_instruction = (
             "\n\n[ACCESSORIES — FEMALE]\n"
             "Evaluate the outfit style from the garment reference image:\n"

@@ -106,6 +106,7 @@ class CreatePhotoshootRequest(BaseModel):
     model_id:                     str
     lighting_style:               str
     ornaments:                    Optional[str]  = ""
+    add_bag:                      Optional[bool] = False  # if True → add purse/handbag to female model
     sku_id:                       Optional[str]  = ""
     regeneration_type:            Optional[str]  = ""
     regenerate_photoshoot_id:     Optional[str]  = ""
