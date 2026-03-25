@@ -89,3 +89,6 @@ async def create_indexes() -> None:
     await upscaling.create_index([("photoshoot_id", ASCENDING), ("image_id", ASCENDING)])
     await upscaling.create_index("photoshoot_id")
     await upscaling.create_index("image_id")
+
+    poses_data = db["poses_data"]
+    await poses_data.create_index("pose_id")
