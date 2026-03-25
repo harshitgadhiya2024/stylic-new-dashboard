@@ -23,6 +23,8 @@ from app.models.photoshoot import (
     FabricPhotoshootRequest,
     TextureChangeRequest,
     TexturePhotoshootRequest,
+    ColorChangeRequest,
+    ColorPhotoshootRequest,
 )
 from app.tasks.photoshoot_tasks import run_photoshoot_task
 
@@ -1469,6 +1471,208 @@ async def texture_change_photoshoot(
         "task_id":                  task.id,
         "regenerate_photoshoot_id": body.photoshoot_id,
         "regeneration_type":        "texture_change",
+        "total_poses":              total_poses,
+        "total_credit":             total_credit,
+        "status":                   "processing",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API-1: Change color on garment image (Gemini only, no photoshoot re-run)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/change-color",
+    status_code=status.HTTP_200_OK,
+    summary="Change Color on Garment Image",
+    description=(
+        "Fetches the front_garment_image (and back_garment_image if present) from the original "
+        "photoshoot's input_parameter, passes each to Gemini to apply the requested hex color, "
+        "uploads the result(s) to S3, and returns the new garment image URL(s). "
+        "No new photoshoot is created. No credits are deducted. "
+        "Secured — user_id from auth token."
+    ),
+)
+async def change_color_garment(
+    body: ColorChangeRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    from app.services.fabric_service import change_color
+    from app.services.s3_service import upload_bytes_to_s3
+
+    user_id = current_user["user_id"]
+
+    # ── Step 1: fetch photoshoot ───────────────────────────────────────────────
+    ps_col = get_photoshoots_collection()
+    ps_doc = await ps_col.find_one({"photoshoot_id": body.photoshoot_id, "user_id": user_id})
+    if not ps_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Photoshoot '{body.photoshoot_id}' not found.",
+        )
+
+    # ── Step 2: extract garment image URLs from input_parameter ───────────────
+    input_params      = ps_doc.get("input_parameter", {})
+    front_garment_url = input_params.get("front_garment_image", "")
+    back_garment_url  = input_params.get("back_garment_image", "")
+
+    if not front_garment_url:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Original photoshoot has no front_garment_image in input_parameter.",
+        )
+
+    # ── Step 3: call Gemini for each garment image and upload to S3 ───────────
+    safe_hex = body.color_hex.lstrip("#")
+    result: dict = {}
+
+    front_bytes  = await change_color(front_garment_url, body.color_hex)
+    front_key    = f"photoshoots/color/{body.photoshoot_id}/front_{safe_hex}_{uuid.uuid4().hex[:8]}.png"
+    front_s3_url = await upload_bytes_to_s3(front_bytes, front_key, content_type="image/png")
+    result["front_garment_image"] = front_s3_url
+
+    if back_garment_url:
+        back_bytes  = await change_color(back_garment_url, body.color_hex)
+        back_key    = f"photoshoots/color/{body.photoshoot_id}/back_{safe_hex}_{uuid.uuid4().hex[:8]}.png"
+        back_s3_url = await upload_bytes_to_s3(back_bytes, back_key, content_type="image/png")
+        result["back_garment_image"] = back_s3_url
+
+    return {
+        "message":        "Color changed successfully.",
+        "photoshoot_id":  body.photoshoot_id,
+        "color_hex":      body.color_hex,
+        "garment_images": result,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API-2: Re-generate photoshoot with new garment images (color change variant)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_CREDIT_COLOR_CHANGE = 3.0
+
+
+@router.post(
+    "/color-change-photoshoot",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Color Change Photoshoot",
+    description=(
+        "Re-runs the full SeedDream + Modal pipeline for selected poses using new garment images "
+        "(color-changed). Fetches pose_prompts from the original photoshoot's output_images for "
+        "the given image_ids, replaces front/back garment images with those supplied in the request, "
+        "and keeps all other input_parameter values unchanged. "
+        "Credits: 3 per image. Secured — user_id from auth token."
+    ),
+)
+async def color_change_photoshoot(
+    body: ColorPhotoshootRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+
+    if not body.image_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="image_ids must contain at least one id.",
+        )
+
+    # ── Step 1: fetch original photoshoot ─────────────────────────────────────
+    ps_col      = get_photoshoots_collection()
+    original_ps = await ps_col.find_one({"photoshoot_id": body.photoshoot_id, "user_id": user_id})
+    if not original_ps:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Photoshoot '{body.photoshoot_id}' not found.",
+        )
+
+    # ── Step 2: credit check (3 credits per image) ────────────────────────────
+    total_poses     = len(body.image_ids)
+    total_credit    = total_poses * _CREDIT_COLOR_CHANGE
+    current_credits = float(current_user.get("credits", 0))
+
+    if current_credits < total_credit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Insufficient credits. Color change photoshoot requires {total_credit} credits "
+                f"({total_poses} image(s) × {_CREDIT_COLOR_CHANGE}) but you only have {current_credits}."
+            ),
+        )
+
+    # ── Step 3: resolve pose_prompts for the selected image_ids ───────────────
+    id_set   = set(body.image_ids)
+    selected = [img for img in original_ps.get("output_images", []) if img["image_id"] in id_set]
+    if not selected:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="None of the provided image_ids were found in this photoshoot.",
+        )
+
+    pose_prompts = [img["pose_prompt"] for img in selected]
+
+    # ── Step 4: build job payload — original params with new garment images ───
+    original_params   = original_ps.get("input_parameter", {})
+    new_photoshoot_id = str(uuid.uuid4())
+    now               = datetime.now(timezone.utc)
+
+    updated_garments: dict = {"front_garment_image": body.front_garment_image}
+    if body.back_garment_image:
+        updated_garments["back_garment_image"] = body.back_garment_image
+
+    job_payload = {
+        **original_params,
+        **updated_garments,
+        "user_id":                   user_id,
+        "which_pose_option":         "prompt",
+        "poses_prompts":             pose_prompts,
+        "poses_ids":                 [],
+        "poses_images":              [],
+        "regeneration_type":         "color_change",
+        "regenerate_photoshoot_id":  body.photoshoot_id,
+    }
+
+    # ── Step 5: store new photoshoot document ─────────────────────────────────
+    doc = {
+        "photoshoot_id":            new_photoshoot_id,
+        "user_id":                  user_id,
+        "sku_id":                   original_ps.get("sku_id", ""),
+        "input_parameter": {
+            **original_params,
+            **updated_garments,
+            "which_pose_option":        "prompt",
+            "poses_prompts":            pose_prompts,
+            "poses_ids":                [],
+            "poses_images":             [],
+            "regeneration_type":        "color_change",
+            "regenerate_photoshoot_id": body.photoshoot_id,
+        },
+        "output_images":            [],
+        "failed_poses":             [],
+        "total_credit":             total_credit,
+        "is_credit_deducted":       False,
+        "is_completed":             False,
+        "status":                   "processing",
+        "error":                    None,
+        "regeneration_type":        "color_change",
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "is_active":                True,
+        "created_at":               now,
+        "updated_at":               now,
+    }
+    await ps_col.insert_one(doc)
+
+    # ── Step 6: enqueue background job via Celery ─────────────────────────────
+    task = run_photoshoot_task.apply_async(
+        args=[new_photoshoot_id, job_payload],
+        queue="photoshoots",
+    )
+
+    return {
+        "message":                  "Color change photoshoot started successfully. Processing in background.",
+        "photoshoot_id":            new_photoshoot_id,
+        "task_id":                  task.id,
+        "regenerate_photoshoot_id": body.photoshoot_id,
+        "regeneration_type":        "color_change",
         "total_poses":              total_poses,
         "total_credit":             total_credit,
         "status":                   "processing",

@@ -67,6 +67,20 @@ class TexturePhotoshootRequest(BaseModel):
     image_ids:           List[str]
 
 
+class ColorChangeRequest(BaseModel):
+    """API-1: Change color on a single garment image using Gemini."""
+    photoshoot_id: str
+    color_hex:     str   # e.g. "#fff28f", "#fe2a3e"
+
+
+class ColorPhotoshootRequest(BaseModel):
+    """API-2: Re-generate photoshoot with a new garment color via full SeedDream pipeline."""
+    photoshoot_id:       str
+    front_garment_image: str
+    back_garment_image:  Optional[str] = ""
+    image_ids:           List[str]
+
+
 class CreatePhotoshootRequest(BaseModel):
     front_garment_image:          str
     back_garment_image:           Optional[str]  = ""

@@ -215,3 +215,103 @@ async def change_texture(image_url: str, texture: str) -> bytes:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Gemini texture change failed: {exc}",
         )
+
+
+def _hex_to_rgb_name(hex_code: str) -> str:
+    """Convert a hex color code to an approximate human-readable color name for the prompt."""
+    hex_code = hex_code.lstrip("#")
+    try:
+        r, g, b = int(hex_code[0:2], 16), int(hex_code[2:4], 16), int(hex_code[4:6], 16)
+        return f"RGB({r}, {g}, {b}) / hex #{hex_code.upper()}"
+    except Exception:
+        return f"hex #{hex_code}"
+
+
+def _build_color_prompt(color_hex: str) -> str:
+    color_desc = _hex_to_rgb_name(color_hex)
+    return (
+        f"You are a professional fashion image editor.\n\n"
+        f"I am providing you with a garment image. Your task is to change the color of this "
+        f"garment to the following exact color: **{color_desc}**.\n\n"
+        f"[STRICT REQUIREMENTS]\n"
+        f"- Change the primary garment color to exactly match {color_desc}\n"
+        f"- Keep the exact same garment shape, cut, silhouette, and style\n"
+        f"- Preserve all fabric texture, pattern, weave, and surface details — only the hue changes\n"
+        f"- Maintain realistic lighting, shadows, highlights, and shading on the garment "
+        f"  as they would appear with the new color under the same lighting conditions\n"
+        f"- Preserve all stitching, seams, buttons, zippers, labels, or other garment details\n"
+        f"- Keep the same background, lighting direction, and composition as the original image\n"
+        f"- Do NOT add any text, watermarks, logos, or overlays\n"
+        f"- Output a high-resolution, photorealistic image\n\n"
+        f"Return ONLY the edited garment image with the new color applied."
+    )
+
+
+async def change_color(image_url: str, color_hex: str) -> bytes:
+    """
+    Apply a new color to a garment image using Gemini.
+
+    Args:
+        image_url:  Public URL of the garment image to edit.
+        color_hex:  Target color as a hex code (e.g. "#fff28f", "#fe2a3e").
+
+    Returns:
+        PNG bytes of the color-changed garment image.
+    """
+    try:
+        from google import genai
+        from google.genai import types as gtypes
+        from PIL import Image
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Missing dependency: {exc}. Run: pip install google-genai Pillow",
+        )
+
+    img_bytes, mime_type = await _download_image(image_url)
+    prompt_text          = _build_color_prompt(color_hex)
+
+    loop = asyncio.get_event_loop()
+
+    def _call_gemini() -> bytes:
+        g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        cfg = gtypes.GenerateContentConfig(
+            response_modalities=["IMAGE", "TEXT"],
+        )
+        response = g_client.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=[
+                gtypes.Content(
+                    role="user",
+                    parts=[
+                        gtypes.Part.from_bytes(mime_type=mime_type, data=img_bytes),
+                        gtypes.Part.from_text(text=prompt_text),
+                    ],
+                )
+            ],
+            config=cfg,
+        )
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.data:
+                img = Image.open(io.BytesIO(part.inline_data.data))
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="PNG")
+                return buf.getvalue()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Gemini returned no image data for color change.",
+        )
+
+    try:
+        logger.info("[color] Calling Gemini for color='%s' on image: %s", color_hex, image_url)
+        result = await loop.run_in_executor(None, _call_gemini)
+        logger.info("[color] Gemini color change complete (%d bytes)", len(result))
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[color] Gemini color change failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gemini color change failed: {exc}",
+        )
