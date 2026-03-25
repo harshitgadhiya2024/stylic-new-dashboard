@@ -58,6 +58,10 @@ async def enhance_and_upload(
 
     On any Modal failure the upscaled_* fields are left empty and the
     SeedDream originals are returned so the photoshoot still completes.
+
+    Modal is called via .remote.aio() (native async) so multiple poses running
+    concurrently via asyncio.gather all dispatch to Modal simultaneously — each
+    gets its own auto-scaled GPU container on Modal's side.
     """
     prefix = f"photoshoots/{photoshoot_id}/{image_id}"
     now    = datetime.now(timezone.utc)
@@ -68,29 +72,32 @@ async def enhance_and_upload(
         logger.info("[modal] Calling Modal GPU pipeline for image_id=%s ...", image_id)
 
         # Use Modal's from_name API to call the already-deployed app remotely.
-        # This avoids importing modal_realism_pipeline.py as a local module
-        # (which would trigger sys.exit(1) when local GPU deps like timm are absent).
+        # .remote.aio() is Modal's native async method — it returns an awaitable
+        # coroutine so asyncio.gather across multiple poses dispatches all Modal
+        # calls concurrently without blocking a thread pool.
         import modal  # noqa: E402
 
         filename = f"{image_id}.png"
 
-        def _call_modal() -> dict:
-            """Blocking Modal .enhance.remote() call — runs in a thread executor."""
+        async def _call_modal_async() -> dict:
+            """Async Modal call — uses .remote.aio() so the event loop stays free."""
             try:
-                logger.info("[modal] Trying T4 GPU via Modal from_name ...")
-                cls_t4 = modal.Cls.from_name("fashion-realism", "FashionRealismT4")
-                outputs = cls_t4().enhance.remote(image_bytes, filename)
-                logger.info("[modal] T4 enhancement succeeded")
+                logger.info("[modal] Trying T4 GPU via Modal from_name (async) ...")
+                cls_t4  = modal.Cls.from_name("fashion-realism", "FashionRealismT4")
+                outputs = await cls_t4().enhance.remote.aio(image_bytes, filename)
+                logger.info("[modal] T4 enhancement succeeded for image_id=%s", image_id)
                 return outputs
             except Exception as t4_err:
-                logger.warning("[modal] T4 failed (%s: %s) — falling back to L4", type(t4_err).__name__, t4_err)
-                cls_l4 = modal.Cls.from_name("fashion-realism", "FashionRealismL4")
-                outputs = cls_l4().enhance.remote(image_bytes, filename)
-                logger.info("[modal] L4 enhancement succeeded")
+                logger.warning(
+                    "[modal] T4 failed for image_id=%s (%s: %s) — falling back to L4",
+                    image_id, type(t4_err).__name__, t4_err,
+                )
+                cls_l4  = modal.Cls.from_name("fashion-realism", "FashionRealismL4")
+                outputs = await cls_l4().enhance.remote.aio(image_bytes, filename)
+                logger.info("[modal] L4 enhancement succeeded for image_id=%s", image_id)
                 return outputs
 
-        loop    = asyncio.get_event_loop()
-        outputs = await loop.run_in_executor(None, _call_modal)
+        outputs = await _call_modal_async()
 
         # outputs = {"8k": bytes, "4k": bytes, "2k": bytes, "1k": bytes}
         label_to_key = {"8k": "8k_upscaled", "4k": "4k_upscaled", "2k": "2k_upscaled", "1k": "1k_upscaled"}
