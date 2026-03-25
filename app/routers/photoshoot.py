@@ -491,7 +491,7 @@ async def get_all_photoshoots(
 
 
 @router.get(
-    "/{photoshoot_id}",
+    "/detail",
     status_code=status.HTTP_200_OK,
     summary="Get Photoshoot Detail",
     description=(
@@ -501,7 +501,7 @@ async def get_all_photoshoots(
     ),
 )
 async def get_photoshoot_detail(
-    photoshoot_id: str,
+    photoshoot_id: str = Query(..., description="ID of the photoshoot to fetch"),
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["user_id"]
