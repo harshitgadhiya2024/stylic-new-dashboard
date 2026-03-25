@@ -1996,6 +1996,11 @@ try:
         memory=16384,
         secrets=[hf_secret],
         volumes={WEIGHTS_PATH: weights_volume},
+        # Auto-scale: spin up to 10 T4 containers when demand is high,
+        # scale back to 0 when idle (cold-start ~15-25s).
+        concurrency_limit=10,
+        # Each container processes one image at a time (GPU-bound workload).
+        allow_concurrent_inputs=1,
     )
     class FashionRealismT4:
         @modal.enter()
@@ -2014,6 +2019,9 @@ try:
         memory=24576,
         secrets=[hf_secret],
         volumes={WEIGHTS_PATH: weights_volume},
+        # Auto-scale: spin up to 5 L4 containers (more expensive GPU, keep lower cap).
+        concurrency_limit=5,
+        allow_concurrent_inputs=1,
     )
     class FashionRealismL4:
         @modal.enter()
