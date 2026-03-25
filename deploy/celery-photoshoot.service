@@ -1,0 +1,45 @@
+[Unit]
+Description=Celery Photoshoot Worker
+After=network.target redis-server.service
+Wants=redis-server.service
+
+[Service]
+Type=forking
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/stylic-ai
+
+# Activate virtualenv and run Celery with autoscaling
+# --autoscale=MAX,MIN: scales between 1 and 5 worker processes based on queue depth
+ExecStart=/home/ubuntu/stylic-ai/venv/bin/celery \
+    -A app.worker worker \
+    -Q photoshoots \
+    --autoscale=5,1 \
+    --loglevel=info \
+    --logfile=/var/log/celery/photoshoot.log \
+    --pidfile=/var/run/celery/photoshoot.pid \
+    --detach
+
+ExecStop=/home/ubuntu/stylic-ai/venv/bin/celery \
+    -A app.worker control shutdown
+
+ExecReload=/bin/kill -s HUP $MAINPID
+
+# Restart automatically if the worker crashes
+Restart=on-failure
+RestartSec=10s
+
+# Give worker 60s to finish processing the current task before force-killing
+TimeoutStopSec=60
+
+# Environment — adjust REDIS_URL if your Redis is on a different host/port
+Environment="PYTHONPATH=/home/ubuntu/stylic-ai"
+EnvironmentFile=/home/ubuntu/stylic-ai/.env
+
+# Log stdout/stderr to journald as well
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celery-photoshoot
+
+[Install]
+WantedBy=multi-user.target

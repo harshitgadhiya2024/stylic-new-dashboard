@@ -1,0 +1,31 @@
+[Unit]
+Description=Flower — Celery Monitoring UI
+After=network.target redis-server.service celery-photoshoot.service
+Wants=redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/stylic-ai
+
+ExecStart=/home/ubuntu/stylic-ai/venv/bin/celery \
+    -A app.worker flower \
+    --port=5555 \
+    --basic_auth=admin:changeme \
+    --loglevel=info \
+    --logfile=/var/log/celery/flower.log
+
+# Restart automatically if Flower crashes
+Restart=on-failure
+RestartSec=10s
+
+Environment="PYTHONPATH=/home/ubuntu/stylic-ai"
+EnvironmentFile=/home/ubuntu/stylic-ai/.env
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=flower
+
+[Install]
+WantedBy=multi-user.target
