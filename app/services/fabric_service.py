@@ -59,6 +59,24 @@ def _build_fabric_prompt(fabric: str) -> str:
     )
 
 
+def _build_texture_prompt(texture: str) -> str:
+    return (
+        f"You are a professional fashion image editor.\n\n"
+        f"I am providing you with a garment image. Your task is to change the surface texture/pattern "
+        f"of this garment to: **{texture}**.\n\n"
+        f"[STRICT REQUIREMENTS]\n"
+        f"- Keep the exact same garment shape, cut, silhouette, and style\n"
+        f"- Keep the same base color tones — only change the surface texture/pattern\n"
+        f"- Realistically apply the {texture} texture — ensure the pattern repeats naturally "
+        f"  across the fabric surface, follows the garment's contours, and looks physically accurate\n"
+        f"- Preserve all stitching, seams, buttons, zippers, or other garment construction details\n"
+        f"- Keep the same background, lighting, and composition as the original image\n"
+        f"- Do NOT add any text, watermarks, logos, or overlays\n"
+        f"- Output a high-resolution, photorealistic image\n\n"
+        f"Return ONLY the edited garment image with the {texture} texture applied."
+    )
+
+
 async def change_fabric(image_url: str, fabric: str) -> bytes:
     """
     Apply a new fabric texture to a garment image using Gemini.
@@ -126,4 +144,74 @@ async def change_fabric(image_url: str, fabric: str) -> bytes:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Gemini fabric change failed: {exc}",
+        )
+
+
+async def change_texture(image_url: str, texture: str) -> bytes:
+    """
+    Apply a new surface texture/pattern to a garment image using Gemini.
+
+    Args:
+        image_url: Public URL of the garment image to edit.
+        texture:   The desired texture/pattern name (e.g. "plain weave", "checked", "printed").
+
+    Returns:
+        PNG bytes of the texture-changed garment image.
+    """
+    try:
+        from google import genai
+        from google.genai import types as gtypes
+        from PIL import Image
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Missing dependency: {exc}. Run: pip install google-genai Pillow",
+        )
+
+    img_bytes, mime_type = await _download_image(image_url)
+    prompt_text          = _build_texture_prompt(texture)
+
+    loop = asyncio.get_event_loop()
+
+    def _call_gemini() -> bytes:
+        g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        cfg = gtypes.GenerateContentConfig(
+            response_modalities=["IMAGE", "TEXT"],
+        )
+        response = g_client.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=[
+                gtypes.Content(
+                    role="user",
+                    parts=[
+                        gtypes.Part.from_bytes(mime_type=mime_type, data=img_bytes),
+                        gtypes.Part.from_text(text=prompt_text),
+                    ],
+                )
+            ],
+            config=cfg,
+        )
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.data:
+                img = Image.open(io.BytesIO(part.inline_data.data))
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="PNG")
+                return buf.getvalue()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Gemini returned no image data for texture change.",
+        )
+
+    try:
+        logger.info("[texture] Calling Gemini for texture='%s' on image: %s", texture, image_url)
+        result = await loop.run_in_executor(None, _call_gemini)
+        logger.info("[texture] Gemini texture change complete (%d bytes)", len(result))
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[texture] Gemini texture change failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gemini texture change failed: {exc}",
         )

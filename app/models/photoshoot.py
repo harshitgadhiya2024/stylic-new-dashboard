@@ -53,6 +53,20 @@ class FabricPhotoshootRequest(BaseModel):
     image_ids:           List[str]
 
 
+class TextureChangeRequest(BaseModel):
+    """API-1: Change texture on a single garment image using Gemini."""
+    photoshoot_id: str
+    texture:       str   # e.g. "plain weave", "checked", "printed", "striped"
+
+
+class TexturePhotoshootRequest(BaseModel):
+    """API-2: Re-generate photoshoot with a new garment texture via full SeedDream pipeline."""
+    photoshoot_id:       str
+    front_garment_image: str
+    back_garment_image:  Optional[str] = ""
+    image_ids:           List[str]
+
+
 class CreatePhotoshootRequest(BaseModel):
     front_garment_image:          str
     back_garment_image:           Optional[str]  = ""
