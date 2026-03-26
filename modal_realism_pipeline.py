@@ -351,9 +351,11 @@ def load_swinir(model_path, device):
     return model
 
 
-def make_cosine_window(size, device):
-    ramp = torch.hann_window(size, periodic=False, device=device)
-    return ramp.unsqueeze(0) * ramp.unsqueeze(1)
+def make_cosine_window_2d(out_h, out_w, device):
+    """Rectangular Hann window matching exact output patch dimensions (H × W)."""
+    ramp_h = torch.hann_window(out_h, periodic=False, device=device)
+    ramp_w = torch.hann_window(out_w, periodic=False, device=device)
+    return ramp_h.unsqueeze(1) * ramp_w.unsqueeze(0)   # (H, W)
 
 
 def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
@@ -362,12 +364,11 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
     scale=4  for SwinIR (x4 upscale)
     scale=1  for HAT used as a refinement-only pass
 
-    Note: the cosine blending window is derived from the ACTUAL output patch
-    size (patch_out.shape) on the first tile, not from tile*scale.  This
-    prevents a shape mismatch when target_scale != 4 causes the input to be
-    pre-shrunk before calling this function (e.g. x2 mode shrinks input by 0.5
-    so each tile is half the expected width and the model output is 2× smaller
-    than tile*scale would predict).
+    The blending window is built per-tile from the ACTUAL patch_out shape so
+    it is always correct regardless of:
+      - rectangular patches (H ≠ W, common on edge tiles or non-square images)
+      - pre-scaling in the caller (_infer_with_target_scale shrinks the input
+        for x1/x2 mode so each tile is smaller than `tile` pixels wide)
     """
     window_size = 8
     img = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
@@ -379,11 +380,11 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
     img_t = F.pad(img_t, (0, pad_w, 0, pad_h), mode="reflect")
 
     _, _, H, W = img_t.shape
+
+    # Allocate accumulators using declared scale; will be rebuilt on first tile
+    # if the model's actual output scale turns out to be different.
     out_t  = torch.zeros(1, 3, H * scale, W * scale, device=device, dtype=torch.float32)
     weight = torch.zeros(1, 1, H * scale, W * scale, device=device, dtype=torch.float32)
-    # win is initialised lazily from the first real patch_out shape so it is
-    # always correct regardless of how the input was pre-scaled.
-    win    = None
 
     tiles_y = math.ceil(H / (tile - overlap))
     tiles_x = math.ceil(W / (tile - overlap))
@@ -392,6 +393,8 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
     TIMER.start(f"Tiled inference: {total} tiles ({tiles_y}×{tiles_x}), "
                 f"tile={tile}, overlap={overlap}")
     count = 0
+    scale_confirmed = False   # True once we have verified scale from real output
+
     for yi in range(tiles_y):
         for xi in range(tiles_x):
             y0 = min(yi * (tile - overlap), H - tile)
@@ -406,25 +409,29 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
                 else:
                     patch_out = model(patch).clamp(0, 1)
 
-            # Build the cosine window from the actual output patch size on
-            # the first tile — handles any pre-scaling in the caller.
-            if win is None:
-                actual_out_h, actual_out_w = patch_out.shape[2], patch_out.shape[3]
-                # Use the smaller dimension so the square window fits both axes.
-                win_size = min(actual_out_h, actual_out_w)
-                win = make_cosine_window(win_size, device).float()
-                # Rebuild accumulators at the true output resolution if the
-                # model's actual scale differs from the declared scale arg.
-                actual_scale = actual_out_h // tile  # integer scale from real output
+            # Derive real scale from first tile output and rebuild accumulators
+            # if necessary (handles pre-scaled inputs from _infer_with_target_scale).
+            if not scale_confirmed:
+                actual_out_h = patch_out.shape[2]
+                in_tile_h    = y1 - y0          # actual input tile height (pixels)
+                actual_scale = actual_out_h // in_tile_h
+                if actual_scale < 1:
+                    actual_scale = 1
                 if actual_scale != scale:
-                    out_t  = torch.zeros(1, 3, H * actual_scale, W * actual_scale,
+                    scale  = actual_scale
+                    out_t  = torch.zeros(1, 3, H * scale, W * scale,
                                          device=device, dtype=torch.float32)
-                    weight = torch.zeros(1, 1, H * actual_scale, W * actual_scale,
+                    weight = torch.zeros(1, 1, H * scale, W * scale,
                                          device=device, dtype=torch.float32)
-                    scale  = actual_scale  # use real scale for all subsequent index math
+                scale_confirmed = True
 
-            sy0, sy1 = y0 * scale, y1 * scale
-            sx0, sx1 = x0 * scale, x1 * scale
+            # Per-tile rectangular blending window — correct for all tile sizes.
+            p_h, p_w = patch_out.shape[2], patch_out.shape[3]
+            win = make_cosine_window_2d(p_h, p_w, device).float()  # (p_h, p_w)
+            win = win.unsqueeze(0).unsqueeze(0)                     # (1, 1, p_h, p_w)
+
+            sy0, sy1 = y0 * scale, y0 * scale + p_h
+            sx0, sx1 = x0 * scale, x0 * scale + p_w
             out_t[:, :, sy0:sy1, sx0:sx1]  += patch_out * win
             weight[:, :, sy0:sy1, sx0:sx1] += win
 
