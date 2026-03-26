@@ -39,7 +39,6 @@ async def enhance_and_upload(
     seeddream_4k_url: str,
     seeddream_2k_url: str,
     seeddream_1k_url: str,
-    upscaling_col=None,
 ) -> dict:
     """
     Send ``image_bytes`` (SeedDream 4K output) to the Modal GPU pipeline,
@@ -137,13 +136,8 @@ async def enhance_and_upload(
         "updated_at":    now,
     }
 
-    try:
-        col = upscaling_col if upscaling_col is not None else get_upscaling_collection()
-        # insert a copy so Motor doesn't mutate doc by injecting _id
-        await col.insert_one(dict(doc))
-        logger.info("[modal] upscaling_data record inserted for image_id=%s", image_id)
-    except Exception as db_exc:
-        logger.error("[modal] Failed to insert upscaling_data record for image_id=%s: %s", image_id, db_exc)
+    col = get_upscaling_collection()
+    await col.insert_one(doc)
+    logger.info("[modal] upscaling_data record inserted for image_id=%s", image_id)
 
-    # Always return doc — callers must never receive None from this function
     return doc

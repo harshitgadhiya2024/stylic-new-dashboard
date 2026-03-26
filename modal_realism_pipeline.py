@@ -57,10 +57,10 @@ SAVE_2K = True
 SAVE_4K = True
 
 # ── Stage 1: SwinIR base upscaler ──────────────────────────────
-# Tile size: L40S (48 GB) handles 1536 comfortably; A100-40GB handles 1280.
-# Larger tiles = fewer tile boundaries = sharper output + significantly fewer passes = faster.
-SWINIR_TILE         = 1536   # was 1024 — L40S/A100 have ample VRAM for 1536
-SWINIR_TILE_OVERLAP = 96     # was 128 — sufficient at 1536; saves ~25% overlap waste
+# Tile size: L40S 48 GB VRAM handles 1024 comfortably (was 512 on T4 16 GB).
+# Larger tiles = fewer tile boundaries, faster processing, better quality.
+SWINIR_TILE         = 1024
+SWINIR_TILE_OVERLAP = 128
 # SR scale mode for SwinIR/HAT pipeline:
 # "auto" = 1x for >=4K input, 2x for mid-res, 4x for small input
 # 1, 2, 4 are also allowed.
@@ -71,8 +71,8 @@ SR_UPSCALE_MODE = 2
 # fabric weave, stitching, and pattern detail that SwinIR smooths.
 # True = on (recommended) | False = skip (faster, less detail)
 USE_HAT = True
-HAT_TILE         = 768   # was 512 — L40S/A100 handle 768 easily; ~2.25× fewer HAT tiles
-HAT_TILE_OVERLAP = 64    # was 96 — proportionally fine at 768; keeps seams clean
+HAT_TILE         = 512   # L40S 48 GB handles 512 (was 256 on T4); fewer seams, faster
+HAT_TILE_OVERLAP = 96    # scaled up from 64 to match larger tile size
 # 0.0 = only SwinIR, 1.0 = only HAT. Lower values avoid hallucinated texture.
 HAT_BLEND_WEIGHT = 0.30
 # Re-inject high-frequency detail from original image upsample (non-hallucinatory).
@@ -1796,7 +1796,7 @@ def main():
     device     = get_device()
 
     print("=" * 60)
-    print("  Fashion Realism Pipeline  —  L40S / A100-40GB Edition")
+    print("  Fashion Realism Pipeline  —  T4 GPU Edition")
     print(f"  Input     : {INPUT_IMAGE}")
     print(f"  Device    : {device}")
     print(f"  Stages    : SwinIR/HAT dynamic scale ({SR_UPSCALE_MODE}) → {FACE_BACKEND} face → body-skin refine → post-proc")
@@ -1994,20 +1994,16 @@ try:
         image=image,
         gpu="L40S",
         timeout=600,
-        memory=49152,   # 48 GB VRAM — matches L40S physical memory
+        memory=49152,   # 48 GB VRAM + headroom; L40S has 48 GB GDDR6 VRAM
         secrets=[hf_secret],
         volumes={WEIGHTS_PATH: weights_volume},
         # Auto-scale: spin up to 10 L40S containers when demand is high,
-        # scale back to 0 when idle (cold-start ~15-25s).
+        # scale back to 0 when idle.
         concurrency_limit=10,
         # Each container processes one image at a time (GPU-bound workload).
         allow_concurrent_inputs=1,
     )
     class FashionRealismT4:
-        """Primary GPU class — runs on L40S (48 GB, Ada Lovelace).
-        Class name kept as FashionRealismT4 for backward compatibility with
-        existing service code that calls it by name via modal.Cls.from_name().
-        """
         @modal.enter()
         def load(self):
             self.rt = _RealismRuntime()
@@ -2021,18 +2017,14 @@ try:
         image=image,
         gpu="A100-40GB",
         timeout=600,
-        memory=40960,   # 40 GB VRAM — matches A100-40GB physical memory
+        memory=40960,   # 40 GB HBM2 VRAM on A100-40GB
         secrets=[hf_secret],
         volumes={WEIGHTS_PATH: weights_volume},
-        # Auto-scale: spin up to 5 A100-40GB containers as fallback.
+        # Auto-scale: spin up to 5 A100-40GB containers (premium GPU, keep lower cap).
         concurrency_limit=5,
         allow_concurrent_inputs=1,
     )
     class FashionRealismL4:
-        """Fallback GPU class — runs on A100-40GB (40 GB, Ampere).
-        Class name kept as FashionRealismL4 for backward compatibility with
-        existing service code that calls it by name via modal.Cls.from_name().
-        """
         @modal.enter()
         def load(self):
             self.rt = _RealismRuntime()
