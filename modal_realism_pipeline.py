@@ -1123,18 +1123,35 @@ def blend_faces_natural(pre_face_bgr, enhanced_bgr):
     """
     Reduce plastic/AI skin look by softly blending each detected face region
     back with the pre-enhancement image.
+
+    Speed optimisations (no quality change):
+    - Haar detection runs on a max-1024px downscale; boxes are scaled back up.
+    - Ellipse mask is built as a tight bounding-box patch, not a full-res mgrid.
+    - absdiff / changed-pixel map runs at 1/4 scale then upsampled.
     """
     blend = float(np.clip(FACE_NATURAL_BLEND, 0.0, 1.0))
     if blend <= 0.0:
         return enhanced_bgr
 
+    h, w = pre_face_bgr.shape[:2]
+
+    # ── 1. Face detection on downscaled image ──────────────────────────────
+    _DET_MAX = 1024
+    det_scale = min(1.0, _DET_MAX / max(h, w))
     try:
         cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
-        gray = cv2.cvtColor(pre_face_bgr, cv2.COLOR_BGR2GRAY)
+        if det_scale < 1.0:
+            dw, dh = int(w * det_scale), int(h * det_scale)
+            gray_small = cv2.resize(
+                cv2.cvtColor(pre_face_bgr, cv2.COLOR_BGR2GRAY),
+                (dw, dh), interpolation=cv2.INTER_AREA,
+            )
+        else:
+            gray_small = cv2.cvtColor(pre_face_bgr, cv2.COLOR_BGR2GRAY)
         faces = cascade.detectMultiScale(
-            gray, scaleFactor=1.08, minNeighbors=4, minSize=(36, 36)
+            gray_small, scaleFactor=1.08, minNeighbors=4, minSize=(24, 24)
         )
     except Exception as e:
         print(f"[!] Face natural blend skipped ({e})")
@@ -1143,26 +1160,48 @@ def blend_faces_natural(pre_face_bgr, enhanced_bgr):
     if len(faces) == 0:
         return enhanced_bgr
 
-    # If enhancement changed only limited region(s), constrain blending there.
-    diff = cv2.absdiff(enhanced_bgr, pre_face_bgr)
-    diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-    changed = cv2.GaussianBlur((diff_gray > 2).astype(np.float32), (0, 0), 2.2)
+    # Scale face boxes back to full resolution
+    inv = 1.0 / det_scale
+    faces_full = [(int(x * inv), int(y * inv), int(fw * inv), int(fh * inv))
+                  for (x, y, fw, fh) in faces]
 
-    h, w = pre_face_bgr.shape[:2]
+    # ── 2. Changed-pixel map at 1/4 scale (upsampled back) ─────────────────
+    _DIFF_MAX = 1024
+    diff_scale = min(1.0, _DIFF_MAX / max(h, w))
+    if diff_scale < 1.0:
+        dw2, dh2 = int(w * diff_scale), int(h * diff_scale)
+        pre_s = cv2.resize(pre_face_bgr, (dw2, dh2), interpolation=cv2.INTER_AREA)
+        enh_s = cv2.resize(enhanced_bgr,  (dw2, dh2), interpolation=cv2.INTER_AREA)
+        diff_s = cv2.absdiff(enh_s, pre_s)
+        dg_s   = cv2.cvtColor(diff_s, cv2.COLOR_BGR2GRAY)
+        changed_s = cv2.GaussianBlur((dg_s > 2).astype(np.float32), (0, 0), 2.2)
+        changed = cv2.resize(changed_s, (w, h), interpolation=cv2.INTER_LINEAR)
+    else:
+        diff = cv2.absdiff(enhanced_bgr, pre_face_bgr)
+        diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        changed = cv2.GaussianBlur((diff_gray > 2).astype(np.float32), (0, 0), 2.2)
+
+    # ── 3. Build ellipse mask as tight patches (no full-res mgrid) ──────────
     mask = np.zeros((h, w), dtype=np.float32)
-    yy, xx = np.mgrid[0:h, 0:w]
-    for (x, y, fw, fh) in faces:
+    for (x, y, fw, fh) in faces_full:
         cx, cy = x + fw / 2.0, y + fh / 2.0
         rx, ry = fw * 0.70, fh * 0.85
         if rx < 1 or ry < 1:
             continue
-        ell = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2
-        local = np.clip(1.0 - ell, 0.0, 1.0)
-        local = cv2.GaussianBlur(local, (0, 0), 5.0)
-        mask = np.maximum(mask, local)
+        # Bounding box with padding
+        pad = int(max(rx, ry) * 1.1)
+        x0, y0 = max(0, int(cx - pad)), max(0, int(cy - pad))
+        x1, y1 = min(w, int(cx + pad)), min(h, int(cy + pad))
+        if x1 <= x0 or y1 <= y0:
+            continue
+        # Build ellipse only within the patch
+        yy_p, xx_p = np.mgrid[y0:y1, x0:x1]
+        ell = ((xx_p - cx) / rx) ** 2 + ((yy_p - cy) / ry) ** 2
+        local_patch = np.clip(1.0 - ell, 0.0, 1.0).astype(np.float32)
+        # GaussianBlur needs a 2D array — apply in patch to avoid 8K allocation
+        local_patch = cv2.GaussianBlur(local_patch, (0, 0), 5.0)
+        np.maximum(mask[y0:y1, x0:x1], local_patch, out=mask[y0:y1, x0:x1])
 
-    # Keep blend only where enhancement actually modified pixels, avoids
-    # over-blending unaffected/false-positive face boxes.
     mask = mask * np.clip(changed * 1.5, 0.0, 1.0)
     mask = np.clip(mask * blend, 0.0, 1.0)
     mask3 = np.stack([mask, mask, mask], axis=-1)
