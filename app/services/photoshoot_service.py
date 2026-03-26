@@ -367,11 +367,12 @@ Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {
 
 [BACKGROUND — DO NOT CHANGE]
 - Copy the EXACT background from IMG{bg_img_num}. All objects, colors, lighting, shadows unchanged.
-- Composite the model naturally into the scene exactly as a real professional photoshoot — the model stands inside the environment, feet on the ground, with natural lighting and shadows matching the scene.
-- Do NOT paste or float the model on top of the background. The model must look like they were physically photographed in that location.
+- Place the model at correct human scale consistent with background perspective and depth.
+- Model must appear physically inside the scene — not pasted over it.
 
 [POSE]
 {clean_pose}
+- Model scale must be proportionally correct relative to background objects.
 
 [FOOTWEAR]
 Choose footwear matching the outfit style and formality (sandals/heels for ethnic/formal, sneakers for casual, boots for western).{bag_note}

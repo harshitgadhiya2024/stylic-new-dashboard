@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     #   MODAL_CLS_PRIMARY=FashionRealismL40S
     #   MODAL_CLS_FALLBACK=FashionRealismA100
     MODAL_APP_NAME:    str = "fashion-realism"
-    MODAL_CLS_PRIMARY: str = "FashionRealismL40S"   # L40S — primary GPU class
-    MODAL_CLS_FALLBACK: str = "FashionRealismA100" 
+    MODAL_CLS_PRIMARY: str = "FashionRealismT4"   # L40S — primary GPU class
+    MODAL_CLS_FALLBACK: str = "FashionRealismL4" 
 
     # Redis / Celery queue
     REDIS_URL: str = "redis://localhost:6379/0"

@@ -59,8 +59,8 @@ SAVE_4K = True
 # ── Stage 1: SwinIR base upscaler ──────────────────────────────
 # Tile size: L40S 48 GB VRAM handles 1024 comfortably (was 512 on T4 16 GB).
 # Larger tiles = fewer tile boundaries, faster processing, better quality.
-SWINIR_TILE         = 1024
-SWINIR_TILE_OVERLAP = 128
+SWINIR_TILE         = 512
+SWINIR_TILE_OVERLAP = 96
 # SR scale mode for SwinIR/HAT pipeline:
 # "auto" = 1x for >=4K input, 2x for mid-res, 4x for small input
 # 1, 2, 4 are also allowed.
@@ -71,8 +71,8 @@ SR_UPSCALE_MODE = 2
 # fabric weave, stitching, and pattern detail that SwinIR smooths.
 # True = on (recommended) | False = skip (faster, less detail)
 USE_HAT = True
-HAT_TILE         = 512   # L40S 48 GB handles 512 (was 256 on T4); fewer seams, faster
-HAT_TILE_OVERLAP = 96    # scaled up from 64 to match larger tile size
+HAT_TILE         = 256   # L40S 48 GB handles 512 (was 256 on T4); fewer seams, faster
+HAT_TILE_OVERLAP = 64    # scaled up from 64 to match larger tile size
 # 0.0 = only SwinIR, 1.0 = only HAT. Lower values avoid hallucinated texture.
 HAT_BLEND_WEIGHT = 0.30
 # Re-inject high-frequency detail from original image upsample (non-hallucinatory).
@@ -2100,8 +2100,8 @@ try:
 
     @app.cls(
         image=image,
-        gpu="L40S",
-        timeout=600,
+        gpu="T4",
+        timeout=1000,
         memory=49152,   # 48 GB VRAM + headroom; L40S has 48 GB GDDR6 VRAM
         secrets=[hf_secret],
         volumes={WEIGHTS_PATH: weights_volume},
@@ -2111,7 +2111,7 @@ try:
         # Each container processes one image at a time (GPU-bound workload).
         allow_concurrent_inputs=1,
     )
-    class FashionRealismL40S:
+    class FashionRealismT4:
         @modal.enter()
         def load(self):
             self.rt = _RealismRuntime()
@@ -2123,8 +2123,8 @@ try:
 
     @app.cls(
         image=image,
-        gpu="A100-40GB",
-        timeout=600,
+        gpu="L4",
+        timeout=1000,
         memory=40960,   # 40 GB HBM2 VRAM on A100-40GB
         secrets=[hf_secret],
         volumes={WEIGHTS_PATH: weights_volume},
@@ -2132,7 +2132,7 @@ try:
         concurrency_limit=5,
         allow_concurrent_inputs=1,
     )
-    class FashionRealismA100:
+    class FashionRealismL4:
         @modal.enter()
         def load(self):
             self.rt = _RealismRuntime()
