@@ -325,19 +325,14 @@ def _build_photoshoot_prompt(
         )
 
     return f"""CRITICAL INSTRUCTION: You are a reference-faithful image compositor, NOT a creative fashion artist.
-Your ONLY job is to place the model with the EXACT face (from the face reference) wearing the EXACT garment (from the garment reference) inside the EXACT background (from the background reference) in the specified pose.
-DO NOT redesign, reimagine, stylise, beautify, or improve any reference image. All three references — face, garment, background — must be reproduced with zero deviation.
+Your ONLY job is to place the model (using the face reference) wearing the EXACT garment (from the garment reference) inside the EXACT background (from the background reference) in the specified pose.
+DO NOT redesign, reimagine, stylise, or improve any reference image. Reproduce all references faithfully.
 
 {image_ref}
 
-[FACE — DO NOT CHANGE — HIGHEST PRIORITY]
-- Copy the EXACT face from the model face reference image. This is non-negotiable.
-- Match with 100% accuracy: face shape, eye shape and color, nose shape, lip shape and color, skin tone, eyebrows, jawline, cheekbones, facial structure, hair color, hair texture, and hairstyle.
-- DO NOT alter, beautify, smooth, slim, reshape, or in any way modify the face.
-- DO NOT blend in features from any other face. The output face must be indistinguishable from the reference face when placed side by side.
-- Expressions may vary naturally with the pose, but the underlying facial identity and all features must remain 100% identical.
-- FACE INTEGRITY CHECK: Before finalising, verify the face matches the reference exactly — regenerate if there is any deviation in any facial feature.
-Model body reference: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin.
+[FACE — DO NOT CHANGE]
+Use EXACT face from the model face reference image. Match precisely: face shape, eyes, nose, lips, skin tone, eyebrows, hair colour and style.
+Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin.
 
 [GARMENT — DO NOT CHANGE — HIGHEST PRIORITY]
 {garment_copy_instruction}
@@ -358,26 +353,20 @@ Model body reference: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['a
 
 [STYLE] Lighting: {req.get('lighting_style', 'natural light')} | Ornaments: {req.get('ornaments', 'none')}
 
-[INTEGRITY CHECKS — VERIFY BEFORE FINALISING]
-Face check:
-1. Face shape, skin tone, eye color/shape, nose, lips, eyebrows, hair all match the face reference exactly.
-2. The face has NOT been smoothed, slimmed, beautified, or altered in any way.
-3. If face deviates from reference in any feature → regenerate.
-
-Garment check:
-1. Neckline shape and depth, sleeve length and shape, bodice length, and hem match the garment reference exactly.
-2. All surface details (lace, embroidery, buttons, prints, patterns) are present at correct scale and placement.
-3. Garment silhouette is identical to the reference — loose stays loose, fitted stays fitted.
-4. If garment deviates → regenerate.
+[GARMENT INTEGRITY CHECK]
+Before finalising the image, verify:
+1. The garment neckline, sleeve length, bodice length, and hem match the reference exactly.
+2. All surface details (lace, embroidery, buttons, prints, patterns) are present at correct scale.
+3. The garment silhouette is identical to the reference — loose stays loose, fitted stays fitted.
+4. If any of the above fail, regenerate until all match.
 
 [QUALITY] Ultra-high resolution 4K, photorealistic, professional fashion photography, sharp focus, natural lighting, commercial e-commerce grade.
 
-NON-NEGOTIABLE — ALL THREE MUST BE MET:
-1. Face = 100% identical to reference — same face shape, skin, eyes, nose, lips, hair. Zero modifications.
-2. Garment = 100% identical to reference — zero changes to design, silhouette, details, or fit.
-3. Background = 100% identical to reference — zero changes to scene, objects, or lighting.
-4. Model scale fits naturally within the background perspective.
-If the output fails any of the above three, it is REJECTED — regenerate."""
+NON-NEGOTIABLE PRIORITIES (in order):
+1. Garment = 100% identical to reference — zero changes to design, silhouette, details, or fit.
+2. Background = 100% identical to reference — zero changes to scene, objects, or lighting.
+3. Face = 100% identical to reference.
+4. Model scale fits naturally within the background perspective."""
 
 
 # ---------------------------------------------------------------------------
