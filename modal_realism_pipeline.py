@@ -388,13 +388,17 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
                 else:
                     patch_out = model(patch).clamp(0, 1)
 
-            sy0, sy1 = y0 * scale, y1 * scale
-            sx0, sx1 = x0 * scale, x1 * scale
-
-            # Build window matching the actual output patch dimensions.
-            # patch_out shape: (1, C, ph, pw) — ph/pw may differ from tile*scale
-            # on padded edge tiles.
+            # Use actual output patch dimensions to derive output coordinates.
+            # patch_out may have fewer rows/cols than tile*scale when the model
+            # is run in effective x1/x2 mode (pre-resized input), so we must
+            # NOT derive sy1/sx1 from y1*scale — that would leave gaps with
+            # zero weight that turn black in the final division step.
             _, _, ph, pw = patch_out.shape
+            sy0 = y0 * scale
+            sx0 = x0 * scale
+            sy1 = sy0 + ph
+            sx1 = sx0 + pw
+
             if ph == pw:
                 win = make_cosine_window(ph, device).float()
             else:
