@@ -4,6 +4,18 @@ Celery tasks for photoshoot processing.
 Each task wraps the async run_photoshoot_job in a fresh asyncio event loop
 so it can run safely inside a synchronous Celery worker process.
 
+Root-cause note
+---------------
+Motor (AsyncIOMotorClient) binds to the event loop that is current at the
+time the first async call is made.  When asyncio.run() finishes it closes
+that loop, so any Motor client created *before* or *during* that run is
+permanently broken for future asyncio.run() calls.
+
+Fix: create a fresh AsyncIOMotorClient at the start of every asyncio.run()
+call (via make_motor_client()), pass it into the service layer, and close it
+before the loop exits.  The global singleton in database.py is left for the
+FastAPI process only.
+
 The worker is started with --concurrency=1 so only ONE job runs at a time,
 preventing simultaneous SeedDream / Modal calls.
 """
@@ -19,7 +31,7 @@ logger = logging.getLogger("photoshoot_tasks")
 
 
 class _PhotoshootTask(Task):
-    """Base task that logs start/end and updates photoshoot status on failure."""
+    """Base task that logs failures and updates photoshoot status in DB."""
 
     abstract = True
 
@@ -29,22 +41,27 @@ class _PhotoshootTask(Task):
             "[task] FAILED — photoshoot_id=%s | task_id=%s | error=%s",
             photoshoot_id, task_id, exc,
         )
-        # Mark the photoshoot as failed in DB so the client sees a final state
         asyncio.run(_mark_failed(photoshoot_id, str(exc)))
 
 
 async def _mark_failed(photoshoot_id: str, error: str) -> None:
     from datetime import datetime, timezone
-    from app.database import get_photoshoots_collection
-    col = get_photoshoots_collection()
-    await col.update_one(
-        {"photoshoot_id": photoshoot_id},
-        {"$set": {
-            "status":     "failed",
-            "error":      error,
-            "updated_at": datetime.now(timezone.utc),
-        }},
-    )
+    from app.database import make_motor_client
+    from app.config import settings
+
+    client = make_motor_client()
+    try:
+        col = client[settings.MONGO_DB_NAME]["photoshoots"]
+        await col.update_one(
+            {"photoshoot_id": photoshoot_id},
+            {"$set": {
+                "status":     "failed",
+                "error":      error,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+    finally:
+        client.close()
 
 
 @celery_app.task(
@@ -78,9 +95,15 @@ def run_photoshoot_task(self, photoshoot_id: str, req: dict) -> dict:
 
 
 async def _run_async_job(photoshoot_id: str, req: dict) -> None:
-    """Thin async wrapper so Celery (sync) can call the async pipeline."""
+    """Create a fresh Motor client, run the pipeline, then close the client."""
+    from app.database import make_motor_client
     from app.services.photoshoot_service import run_photoshoot_job
-    await run_photoshoot_job(photoshoot_id, req)
+
+    client = make_motor_client()
+    try:
+        await run_photoshoot_job(photoshoot_id, req, motor_client=client)
+    finally:
+        client.close()
 
 
 def get_queue_length() -> int:

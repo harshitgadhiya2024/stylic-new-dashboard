@@ -448,11 +448,15 @@ async def _deduct_photoshoot_credits(
     regenerate_photoshoot_id: str = "",
     image_ids: list = None,
     credit_per_image: float = None,
+    users_col=None,
+    history_col=None,
 ) -> None:
     logger.info("[credits] Deducting %.2f credits from user_id=%s for photoshoot=%s",
                 total_credit, user_id, photoshoot_id)
-    users_col   = get_users_collection()
-    history_col = get_credit_history_collection()
+    if users_col is None:
+        users_col = get_users_collection()
+    if history_col is None:
+        history_col = get_credit_history_collection()
 
     user = await users_col.find_one({"user_id": user_id})
     if not user:
@@ -499,17 +503,36 @@ async def _deduct_photoshoot_credits(
 # Public background job entry point
 # ---------------------------------------------------------------------------
 
-async def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
+async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -> None:
     """
-    Called as a FastAPI BackgroundTask. Runs the full photoshoot pipeline,
-    updates the photoshoot document, deducts credits.
+    Runs the full photoshoot pipeline, updates the photoshoot document,
+    deducts credits.
+
+    motor_client: optional AsyncIOMotorClient.  When provided (Celery path),
+    collections are derived from it so Motor never touches the closed global
+    event loop.  When None (FastAPI BackgroundTask path), the global singleton
+    collections are used as before.
     """
     logger.info("=" * 70)
     logger.info("[job] Photoshoot job STARTED — photoshoot_id=%s", photoshoot_id)
     logger.info("[job] user_id=%s | pose_option=%s", req.get("user_id"), req.get("which_pose_option"))
     logger.info("=" * 70)
 
-    col       = get_photoshoots_collection()
+    if motor_client is not None:
+        from app.config import settings as _s
+        _db  = motor_client[_s.MONGO_DB_NAME]
+        col  = _db["photoshoots"]
+        _get_bg  = lambda: _db["backgrounds"]
+        _get_mf  = lambda: _db["model_faces"]
+        _get_usr = lambda: _db["users"]
+        _get_ch  = lambda: _db["credit_history"]
+    else:
+        col      = get_photoshoots_collection()
+        _get_bg  = get_backgrounds_collection
+        _get_mf  = get_model_faces_collection
+        _get_usr = get_users_collection
+        _get_ch  = get_credit_history_collection
+
     job_start = time.time()
 
     try:
@@ -529,13 +552,13 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
 
         # ── Step 2: fetch background and model face URLs ──────────────────
         logger.info("[job] STEP 2 — Fetching background and model face from DB...")
-        bg_doc = await get_backgrounds_collection().find_one({"background_id": req["background_id"]})
+        bg_doc = await _get_bg().find_one({"background_id": req["background_id"]})
         if not bg_doc:
             raise ValueError(f"Background not found: {req['background_id']}")
         background_url = bg_doc["background_url"]
         logger.info("[job] Background found: %s", background_url[:80])
 
-        mf_doc = await get_model_faces_collection().find_one({"model_id": req["model_id"]})
+        mf_doc = await _get_mf().find_one({"model_id": req["model_id"]})
         if not mf_doc:
             raise ValueError(f"Model face not found: {req['model_id']}")
         model_face_url = mf_doc["face_url"]
@@ -583,6 +606,8 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
             regenerate_photoshoot_id=req.get("regenerate_photoshoot_id", ""),
             image_ids=generated_image_ids,
             credit_per_image=_PHOTOSHOOT_CREDIT_PER_POSE,
+            users_col=_get_usr(),
+            history_col=_get_ch(),
         )
         logger.info("[job] STEP 4 DONE — %.2f credits deducted", total_credit)
 
