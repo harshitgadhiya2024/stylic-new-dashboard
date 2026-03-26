@@ -2157,12 +2157,12 @@ try:
         payload = inp.read_bytes()
         try:
             print("[→] Trying L40S ...")
-            outputs = FashionRealismL40S().enhance.remote(payload, inp.name)
+            outputs = FashionRealismT4().enhance.remote(payload, inp.name)
             gpu_used = "L40S"
         except Exception as l40s_err:
             print(f"[!] L40S failed ({type(l40s_err).__name__}: {l40s_err})")
             print("[→] Falling back to A100-40GB ...")
-            outputs = FashionRealismA100().enhance.remote(payload, inp.name)
+            outputs = FashionRealismL4().enhance.remote(payload, inp.name)
             gpu_used = "A100-40GB"
 
         print("\n" + "=" * 60)

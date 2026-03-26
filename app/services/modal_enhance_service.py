@@ -1,14 +1,14 @@
 """
 Modal enhancement service.
 
-Calls the deployed Modal GPU pipeline (FashionRealismL40S / FashionRealismA100)
+Calls the deployed Modal GPU pipeline (FashionRealismT4 / FashionRealismL4)
 from modal_realism_pipeline.py, uploads the returned 8K / 4K / 2K / 1K PNG bytes
 to S3, inserts a record in the upscaling_data collection, and returns the URL map.
 
 GPU configuration (set in app/config.py / .env):
     MODAL_APP_NAME     = "fashion-realism"
-    MODAL_CLS_PRIMARY  = "FashionRealismL40S"   ← L40S, 48 GB VRAM (primary)
-    MODAL_CLS_FALLBACK = "FashionRealismA100"   ← A100-40GB, 40 GB VRAM (fallback)
+    MODAL_CLS_PRIMARY  = "FashionRealismT4"   ← L40S, 48 GB VRAM (primary)
+    MODAL_CLS_FALLBACK = "FashionRealismL4"   ← A100-40GB, 40 GB VRAM (fallback)
 
 Modal is called via .remote.aio() (native async) so multiple poses dispatched
 via asyncio.gather each get their own auto-scaled GPU container.

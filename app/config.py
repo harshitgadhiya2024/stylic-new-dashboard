@@ -50,8 +50,8 @@ class Settings(BaseSettings):
     # Class names must match what is currently DEPLOYED on Modal.
     # After running `modal deploy modal_realism_pipeline.py` with the new GPU classes,
     # update these via .env:
-    #   MODAL_CLS_PRIMARY=FashionRealismL40S
-    #   MODAL_CLS_FALLBACK=FashionRealismA100
+    #   MODAL_CLS_PRIMARY=FashionRealismT4
+    #   MODAL_CLS_FALLBACK=FashionRealismL4
     MODAL_APP_NAME:    str = "fashion-realism"
     MODAL_CLS_PRIMARY: str = "FashionRealismT4"   # L40S — primary GPU class
     MODAL_CLS_FALLBACK: str = "FashionRealismL4" 
