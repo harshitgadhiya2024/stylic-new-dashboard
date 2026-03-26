@@ -263,11 +263,34 @@ def _build_photoshoot_prompt(
     req: dict,
 ) -> str:
     if has_back_image:
-        image_ref   = "Refs: IMG1=garment front, IMG2=garment back, IMG3=face, IMG4=background."
-        garment_src = "IMG1+IMG2"
+        image_ref = (
+            "You are provided with FOUR reference images:\n"
+            "  IMG1 — GARMENT FRONT: exact outfit front view.\n"
+            "  IMG2 — GARMENT BACK: exact outfit back view.\n"
+            "  IMG3 — MODEL FACE: the exact face to use.\n"
+            "  IMG4 — BACKGROUND: the exact background scene."
+        )
+        garment_src  = "IMG1 (front) and IMG2 (back)"
+        garment_note = (
+            "- Copy the garment EXACTLY from IMG1 and IMG2.\n"
+            "- Reproduce with 100% accuracy: neckline shape/depth, sleeve length/shape, "
+            "bodice length, hem, waistband, all lace/embroidery/trim/buttons/prints at exact scale and placement.\n"
+            "- Do NOT alter silhouette, proportions, or fit. Loose/flowy in reference = loose/flowy in output."
+        )
     else:
-        image_ref   = "Refs: IMG1=garment, IMG2=face, IMG3=background."
-        garment_src = "IMG1"
+        image_ref = (
+            "You are provided with THREE reference images:\n"
+            "  IMG1 — GARMENT: exact outfit to be worn.\n"
+            "  IMG2 — MODEL FACE: the exact face to use.\n"
+            "  IMG3 — BACKGROUND: the exact background scene."
+        )
+        garment_src  = "IMG1"
+        garment_note = (
+            "- Copy the garment EXACTLY from IMG1.\n"
+            "- Reproduce with 100% accuracy: neckline shape/depth, sleeve length/shape, "
+            "bodice length, hem, waistband, all lace/embroidery/trim/buttons/prints at exact scale and placement.\n"
+            "- Do NOT alter silhouette, proportions, or fit. Loose/flowy in reference = loose/flowy in output."
+        )
 
     fitting = req.get("fitting", "regular fit")
     gender  = req.get("gender", "").strip().lower()
@@ -278,30 +301,62 @@ def _build_photoshoot_prompt(
     paired_note = ""
     if paired_garment_block:
         if "LOWER" in paired_garment_block:
-            paired_note = " Add complementary lower garment matching upper garment style."
+            paired_note = (
+                "\n- Only the upper garment is in the reference. "
+                "Add a complementary lower garment (palazzo/salwar for ethnic, jeans for casual, "
+                "trousers for formal) that matches the upper garment's color and style."
+            )
         else:
-            paired_note = " Add complementary upper garment matching lower garment style."
+            paired_note = (
+                "\n- Only the lower garment is in the reference. "
+                "Add a complementary upper garment (ethnic top/blouse for ethnic, t-shirt for casual, "
+                "formal shirt for formal) that matches the lower garment's color and style."
+            )
 
     _ornaments_lower = req.get("ornaments", "").lower()
     _bag_requested   = any(kw in _ornaments_lower for kw in ("bag", "purse", "handbag"))
-    bag_note = " Add matching bag/purse." if (gender == "female" and _bag_requested) else ""
+    bag_note = (
+        "\n- Add a matching bag/purse (clutch for ethnic/formal, handbag for casual) "
+        "held naturally, matching the outfit color palette."
+    ) if (gender == "female" and _bag_requested) else ""
 
-    return f"""{image_ref}
-Fashion photo. {req['gender']}, {req['ethnicity']}, {req['age']}, {req['skin_tone']} skin, {req['height']}, {req['weight']} build.
-FACE(IMG2): exact copy — shape, eyes, nose, lips, skin, hair. No changes.
-GARMENT({garment_src}): exact copy — neckline, sleeves, length, hem, prints/lace/trim/buttons at exact scale. Silhouette unchanged. Fit: {fitting}.{paired_note}
-BG(IMG3): exact copy — all objects, colors, lighting, shadows. Model at correct scale inside scene.
-POSE: {clean_pose}
-FOOTWEAR: suit outfit style.{bag_note}
-Lighting: {req.get('lighting_style', 'natural')}. Ornaments: {req.get('ornaments', 'none')}.
-4K photorealistic fashion photo."""
+    return f"""INSTRUCTION: You are a reference-faithful image compositor. Reproduce all three references exactly — no redesigning, beautifying, or creative changes.
+
+{image_ref}
+
+[FACE — DO NOT CHANGE]
+- Copy the EXACT face from IMG{4 if has_back_image else 2} (face reference). Non-negotiable.
+- Match 100%: face shape, eye shape/color, nose, lips, skin tone, eyebrows, jawline, hair color/texture/style.
+- Do NOT beautify, smooth, slim, or reshape the face in any way.
+Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin.
+
+[GARMENT — DO NOT CHANGE]
+{garment_note}
+- Fitting: {fitting} (only if consistent with the reference — never override what you see).{paired_note}
+
+[BACKGROUND — DO NOT CHANGE]
+- Copy the EXACT background from IMG{4 if has_back_image else 3}. All objects, colors, lighting, shadows unchanged.
+- Place the model at correct human scale consistent with background perspective and depth.
+- Model must appear physically inside the scene — not pasted over it.
+
+[POSE]
+{clean_pose}
+- Model scale must be proportionally correct relative to background objects.
+
+[FOOTWEAR]
+Choose footwear matching the outfit style and formality (sandals/heels for ethnic/formal, sneakers for casual, boots for western).{bag_note}
+
+[STYLE]
+Lighting: {req.get('lighting_style', 'natural light')}. Ornaments: {req.get('ornaments', 'none')}.
+
+4K photorealistic professional fashion photography. Sharp focus. Commercial e-commerce grade."""
 
 
 # ---------------------------------------------------------------------------
 # SeedDream submit + poll
 # ---------------------------------------------------------------------------
 
-_SEEDDREAM_PROMPT_LIMIT = 900   # SeedDream hard limit; keep well under to be safe
+_SEEDDREAM_PROMPT_LIMIT = 3000   # kie.ai official limit per API docs
 
 
 async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
