@@ -479,6 +479,7 @@ async def _process_one_pose(
     image_urls:    List[str],
     photoshoot_id: str,
     req_snapshot:  dict,
+    upscaling_col=None,
 ) -> dict:
     """
     Full async pipeline for one pose. Returns output_image dict or raises on failure.
@@ -525,9 +526,14 @@ async def _process_one_pose(
         seeddream_4k_url=url_4k,
         seeddream_2k_url=url_2k,
         seeddream_1k_url=url_1k,
+        upscaling_col=upscaling_col,
     )
+    # enhance_and_upload always returns a dict, but guard defensively
+    if not upscale_result:
+        logger.warning("[%s] enhance_and_upload returned None — falling back to SeedDream 1K", pose_label)
+        upscale_result = {}
     logger.info("[%s] Modal enhancement complete — upscaled 1K: %s", pose_label,
-                upscale_result.get("1k_upscaled", "N/A")[:80])
+                (upscale_result.get("1k_upscaled") or "N/A")[:80])
 
     # Use the upscaled 1K as the primary display image; fall back to SeedDream 1K
     display_image = upscale_result.get("1k_upscaled") or url_1k
@@ -624,18 +630,22 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
 
     if motor_client is not None:
         from app.config import settings as _s
-        _db  = motor_client[_s.MONGO_DB_NAME]
-        col  = _db["photoshoots"]
-        _get_bg  = lambda: _db["backgrounds"]
-        _get_mf  = lambda: _db["model_faces"]
-        _get_usr = lambda: _db["users"]
-        _get_ch  = lambda: _db["credit_history"]
+        from app.database import get_upscaling_collection as _get_upscaling_global
+        _db          = motor_client[_s.MONGO_DB_NAME]
+        col          = _db["photoshoots"]
+        _get_bg      = lambda: _db["backgrounds"]
+        _get_mf      = lambda: _db["model_faces"]
+        _get_usr     = lambda: _db["users"]
+        _get_ch      = lambda: _db["credit_history"]
+        _upscaling_col = _db["upscaling_data"]
     else:
-        col      = get_photoshoots_collection()
-        _get_bg  = get_backgrounds_collection
-        _get_mf  = get_model_faces_collection
-        _get_usr = get_users_collection
-        _get_ch  = get_credit_history_collection
+        from app.database import get_upscaling_collection as _get_upscaling_global
+        col            = get_photoshoots_collection()
+        _get_bg        = get_backgrounds_collection
+        _get_mf        = get_model_faces_collection
+        _get_usr       = get_users_collection
+        _get_ch        = get_credit_history_collection
+        _upscaling_col = None  # modal_enhance_service will use its own global
 
     job_start = time.time()
 
@@ -680,7 +690,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
         logger.info("[job] STEP 3 — Launching %d pose(s) concurrently...", len(pose_prompts))
 
         tasks = [
-            _process_one_pose(idx, prompt, image_urls, photoshoot_id, req)
+            _process_one_pose(idx, prompt, image_urls, photoshoot_id, req, _upscaling_col)
             for idx, prompt in enumerate(pose_prompts, 1)
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
