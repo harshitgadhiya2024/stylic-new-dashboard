@@ -367,15 +367,11 @@ Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {
 
 [BACKGROUND — DO NOT CHANGE]
 - Copy the EXACT background from IMG{bg_img_num}. All objects, colors, lighting, shadows unchanged.
-- The model must be composited INSIDE the background scene — not floated over it or pasted in front of it.
-- Human scale: a standing adult in the background should occupy approximately 70–80% of the frame height. Leave visible background above the head (sky/ceiling) and below the feet (ground/floor/sand). The feet must be standing ON the ground plane of the background with correct perspective.
-- The background should visually surround the model — objects/environment in the BG reference that would be beside or behind a standing person must appear at their correct positions around the model.
-- Do NOT zoom into the background or stretch it to fill the model. Keep the original background framing and depth.
+- Composite the model naturally into the scene exactly as a real professional photoshoot — the model stands inside the environment, feet on the ground, with natural lighting and shadows matching the scene.
+- Do NOT paste or float the model on top of the background. The model must look like they were physically photographed in that location.
 
 [POSE]
 {clean_pose}
-- The model's feet must be planted on the ground plane visible in the background.
-- Model height must be proportionally correct — the model should NOT fill the entire frame height.
 
 [FOOTWEAR]
 Choose footwear matching the outfit style and formality (sandals/heels for ethnic/formal, sneakers for casual, boots for western).{bag_note}
