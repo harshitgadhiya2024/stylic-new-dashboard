@@ -400,8 +400,11 @@ async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> s
         "Content-Type":  "application/json",
     }
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(_CREATE_URL, headers=headers, content=payload)
-        resp.raise_for_status()
+        try:
+            resp = await client.post(_CREATE_URL, headers=headers, content=payload)
+            resp.raise_for_status()
+        except Exception as exc:
+            raise RuntimeError(f"SeedDream task submission failed: {exc}")
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise RuntimeError(f"No taskId returned: {resp.text}")
