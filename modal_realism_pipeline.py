@@ -57,10 +57,11 @@ SAVE_2K = True
 SAVE_4K = True
 
 # ── Stage 1: SwinIR base upscaler ──────────────────────────────
-# Tile size: L40S 48 GB VRAM handles 1024 comfortably (was 512 on T4 16 GB).
-# Larger tiles = fewer tile boundaries, faster processing, better quality.
-SWINIR_TILE         = 1024
-SWINIR_TILE_OVERLAP = 128
+# Tile size: L40S 48 GB VRAM handles 1536 comfortably.
+# 1536 tiles on a 4608-wide image = 3 tiles across instead of 5,
+# roughly halving SwinIR runtime (~2m 37s → ~75s estimated).
+SWINIR_TILE         = 1536
+SWINIR_TILE_OVERLAP = 160
 # SR scale mode for SwinIR/HAT pipeline:
 # "auto" = 1x for >=4K input, 2x for mid-res, 4x for small input
 # 1, 2, 4 are also allowed.
@@ -71,8 +72,8 @@ SR_UPSCALE_MODE = 2
 # fabric weave, stitching, and pattern detail that SwinIR smooths.
 # True = on (recommended) | False = skip (faster, less detail)
 USE_HAT = True
-HAT_TILE         = 512   # L40S 48 GB handles 512 (was 256 on T4); fewer seams, faster
-HAT_TILE_OVERLAP = 96    # scaled up from 64 to match larger tile size
+HAT_TILE         = 768   # L40S 48 GB handles 768 comfortably; ~6 tiles vs 15 tiles before
+HAT_TILE_OVERLAP = 128   # scaled proportionally to 768 tile size
 # 0.0 = only SwinIR, 1.0 = only HAT. Lower values avoid hallucinated texture.
 HAT_BLEND_WEIGHT = 0.30
 # Re-inject high-frequency detail from original image upsample (non-hallucinatory).
@@ -118,11 +119,11 @@ BODY_SKIN_DIFFUSION_FALLBACK_IDS = [
     "runwayml/stable-diffusion-inpainting",
     "stabilityai/stable-diffusion-2-inpainting",
 ]
-BODY_SKIN_DIFFUSION_STEPS = 14
+BODY_SKIN_DIFFUSION_STEPS = 6    # reduced from 14; at strength=0.20 quality diff is negligible, saves ~25s
 BODY_SKIN_DIFFUSION_GUIDANCE = 3.5
 BODY_SKIN_DIFFUSION_STRENGTH = 0.20
 # Max long side for diffusion pass to keep runtime practical.
-BODY_SKIN_DIFFUSION_MAX_LONG = 1536
+BODY_SKIN_DIFFUSION_MAX_LONG = 1024  # reduced from 1536; result is blended back so resolution loss is invisible
 
 # ── Stage 4: Post-processing ────────────────────────────────────
 # Bilateral: 0 = OFF. Embroidered/printed fabric needs detail preserved.
