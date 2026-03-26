@@ -52,9 +52,9 @@ class Settings(BaseSettings):
     # update these via .env:
     #   MODAL_CLS_PRIMARY=FashionRealismL40S
     #   MODAL_CLS_FALLBACK=FashionRealismA100
-    MODAL_APP_NAME:     str = "fashion-realism"
-    MODAL_CLS_PRIMARY:  str = "FashionRealismT4"    # currently deployed class (L40S after redeploy)
-    MODAL_CLS_FALLBACK: str = "FashionRealismL4"    # currently deployed class (A100 after redeploy)
+    MODAL_APP_NAME:    str = "fashion-realism"
+    MODAL_CLS_PRIMARY: str = "FashionRealismL40S"   # L40S — primary GPU class
+    MODAL_CLS_FALLBACK: str = "FashionRealismA100" 
 
     # Redis / Celery queue
     REDIS_URL: str = "redis://localhost:6379/0"
