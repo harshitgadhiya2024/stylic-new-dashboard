@@ -362,7 +362,10 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
     _, _, H, W = img_t.shape
     out_t  = torch.zeros(1, 3, H * scale, W * scale, device=device, dtype=torch.float32)
     weight = torch.zeros(1, 1, H * scale, W * scale, device=device, dtype=torch.float32)
-    win    = make_cosine_window(tile * scale, device).float()
+    # Window is built per-patch from the actual output patch size (not pre-built),
+    # because edge tiles may be smaller than tile*scale when image dims are not
+    # multiples of (tile - overlap).  Pre-building at tile*scale causes a size
+    # mismatch on those edge patches.
 
     tiles_y = math.ceil(H / (tile - overlap))
     tiles_x = math.ceil(W / (tile - overlap))
@@ -387,6 +390,18 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
 
             sy0, sy1 = y0 * scale, y1 * scale
             sx0, sx1 = x0 * scale, x1 * scale
+
+            # Build window matching the actual output patch dimensions.
+            # patch_out shape: (1, C, ph, pw) — ph/pw may differ from tile*scale
+            # on padded edge tiles.
+            _, _, ph, pw = patch_out.shape
+            if ph == pw:
+                win = make_cosine_window(ph, device).float()
+            else:
+                win_h = torch.hann_window(ph, periodic=False, device=device).float()
+                win_w = torch.hann_window(pw, periodic=False, device=device).float()
+                win   = win_h.unsqueeze(1) * win_w.unsqueeze(0)
+
             out_t[:, :, sy0:sy1, sx0:sx1]  += patch_out * win
             weight[:, :, sy0:sy1, sx0:sx1] += win
 
