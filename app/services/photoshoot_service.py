@@ -394,6 +394,8 @@ async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> s
             resp.raise_for_status()
         except Exception as exc:
             raise RuntimeError(f"SeedDream task submission failed: {exc}")
+    print(resp.json())
+    logger.info("SeedDream task submission response: %s", resp.json())
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise RuntimeError(f"No taskId returned: {resp.text}")
