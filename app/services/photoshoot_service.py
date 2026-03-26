@@ -295,6 +295,28 @@ def _build_photoshoot_prompt(
     fitting = req.get("fitting", "regular fit")
     gender  = req.get("gender", "").strip().lower()
 
+    # ── Garment type lines (what is actually provided) ─────────────────────
+    ug_type = req.get("upper_garment_type", "").strip()
+    ug_spec = req.get("upper_garment_specification", "").strip()
+    lg_type = req.get("lower_garment_type", "").strip()
+    lg_spec = req.get("lower_garment_specification", "").strip()
+    op_type = req.get("one_piece_garment_type", "").strip()
+    op_spec = req.get("one_piece_garment_specification", "").strip()
+
+    garment_type_lines = []
+    if ug_type:
+        garment_type_lines.append(f"  Upper garment: {ug_type}" + (f" ({ug_spec})" if ug_spec else ""))
+    if lg_type:
+        garment_type_lines.append(f"  Lower garment: {lg_type}" + (f" ({lg_spec})" if lg_spec else ""))
+    if op_type:
+        garment_type_lines.append(f"  One-piece: {op_type}" + (f" ({op_spec})" if op_spec else ""))
+
+    garment_type_block = (
+        "Garment type(s) in the reference image:\n" + "\n".join(garment_type_lines)
+        if garment_type_lines else ""
+    )
+
+    # ── Paired garment note ────────────────────────────────────────────────
     paired_garment_block = _build_paired_garment_instruction(req)
     clean_pose           = _sanitize_pose_prompt(pose)
 
@@ -302,15 +324,19 @@ def _build_photoshoot_prompt(
     if paired_garment_block:
         if "LOWER" in paired_garment_block:
             paired_note = (
-                "\n- Only the upper garment is in the reference. "
-                "Add a complementary lower garment (palazzo/salwar for ethnic, jeans for casual, "
-                "trousers for formal) that matches the upper garment's color and style."
+                "\n- IMPORTANT: The reference image shows ONLY the upper garment (top/blouse/shirt). "
+                "The model MUST wear a full bottom garment — choose a complementary lower garment "
+                "(palazzo pants / salwar for ethnic/boho styles, wide-leg pants or jeans for casual, "
+                "trousers for formal) that matches the upper garment's color and style. "
+                "The model must NOT have bare legs. A proper full-length or knee-length bottom is REQUIRED."
             )
         else:
             paired_note = (
-                "\n- Only the lower garment is in the reference. "
-                "Add a complementary upper garment (ethnic top/blouse for ethnic, t-shirt for casual, "
-                "formal shirt for formal) that matches the lower garment's color and style."
+                "\n- IMPORTANT: The reference image shows ONLY the lower garment (pants/skirt/bottom). "
+                "The model MUST wear a full upper garment — choose a complementary top "
+                "(ethnic top/blouse for ethnic styles, t-shirt for casual, formal shirt for formal) "
+                "that matches the lower garment's color and style. "
+                "The model must NOT have a bare torso. A proper top is REQUIRED."
             )
 
     _ornaments_lower = req.get("ornaments", "").lower()
@@ -320,22 +346,27 @@ def _build_photoshoot_prompt(
         "held naturally, matching the outfit color palette."
     ) if (gender == "female" and _bag_requested) else ""
 
+    face_img_num    = 4 if has_back_image else 2
+    bg_img_num      = 5 if has_back_image else 3
+
+    garment_type_section = f"\n{garment_type_block}" if garment_type_block else ""
+
     return f"""INSTRUCTION: You are a reference-faithful image compositor. Reproduce all three references exactly — no redesigning, beautifying, or creative changes.
 
 {image_ref}
 
 [FACE — DO NOT CHANGE]
-- Copy the EXACT face from IMG{4 if has_back_image else 2} (face reference). Non-negotiable.
+- Copy the EXACT face from IMG{face_img_num} (face reference). Non-negotiable.
 - Match 100%: face shape, eye shape/color, nose, lips, skin tone, eyebrows, jawline, hair color/texture/style.
 - Do NOT beautify, smooth, slim, or reshape the face in any way.
 Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin.
 
-[GARMENT — DO NOT CHANGE]
+[GARMENT — DO NOT CHANGE]{garment_type_section}
 {garment_note}
 - Fitting: {fitting} (only if consistent with the reference — never override what you see).{paired_note}
 
 [BACKGROUND — DO NOT CHANGE]
-- Copy the EXACT background from IMG{4 if has_back_image else 3}. All objects, colors, lighting, shadows unchanged.
+- Copy the EXACT background from IMG{bg_img_num}. All objects, colors, lighting, shadows unchanged.
 - Place the model at correct human scale consistent with background perspective and depth.
 - Model must appear physically inside the scene — not pasted over it.
 
