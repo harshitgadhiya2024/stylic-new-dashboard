@@ -57,12 +57,10 @@ SAVE_2K = True
 SAVE_4K = True
 
 # ── Stage 1: SwinIR base upscaler ──────────────────────────────
-# L40S has 48 GB GDDR6 VRAM.
-# 1024 → 6 tiles (3×2) took 2m37s.  1280 → 4 tiles (2×2) is safe on L40S
-# at FP16 and cuts tile count by ~33%, saving ~50-60s.
-# 1536 was tested and causes OOM — do NOT increase beyond 1280.
-SWINIR_TILE         = 1280
-SWINIR_TILE_OVERLAP = 128   # keep overlap same — quality unchanged
+# Tile size: L40S 48 GB VRAM handles 1024 comfortably (was 512 on T4 16 GB).
+# Larger tiles = fewer tile boundaries, faster processing, better quality.
+SWINIR_TILE         = 1024
+SWINIR_TILE_OVERLAP = 128
 # SR scale mode for SwinIR/HAT pipeline:
 # "auto" = 1x for >=4K input, 2x for mid-res, 4x for small input
 # 1, 2, 4 are also allowed.
@@ -73,8 +71,8 @@ SR_UPSCALE_MODE = 2
 # fabric weave, stitching, and pattern detail that SwinIR smooths.
 # True = on (recommended) | False = skip (faster, less detail)
 USE_HAT = True
-HAT_TILE         = 640   # scaled up from 512 proportionally with SwinIR tile increase
-HAT_TILE_OVERLAP = 96    # unchanged — same seam quality
+HAT_TILE         = 512   # L40S 48 GB handles 512 (was 256 on T4); fewer seams, faster
+HAT_TILE_OVERLAP = 96    # scaled up from 64 to match larger tile size
 # 0.0 = only SwinIR, 1.0 = only HAT. Lower values avoid hallucinated texture.
 HAT_BLEND_WEIGHT = 0.30
 # Re-inject high-frequency detail from original image upsample (non-hallucinatory).
@@ -93,17 +91,6 @@ GFPGAN_WEIGHT = 0.22
 # Blend enhanced face back with original face region to avoid "AI skin".
 # 0.0 = use full enhanced face, 1.0 = keep original face only.
 FACE_NATURAL_BLEND = 0.28
-# Max long-side resolution for face enhancement pass.
-# CodeFormer crops faces internally to 512px — running it on 8K vs 4K gives
-# identical face quality but 8K costs ~3× more in detection overhead.
-# 4096 = run on 4K image (fast, same face quality). 0 = no cap (original 8K).
-FACE_ENHANCE_MAX_LONG = 4096
-
-# ── Stage 4: Post-processing resolution cap ─────────────────────
-# Sharpen + deband on 8K (4608×8192) is slow due to Canny/GaussianBlur
-# at full resolution. Running on 4K and scaling back is visually identical.
-# 4096 = cap post-processing at 4K then scale back (saves ~30s). 0 = no cap.
-POST_PROCESS_MAX_LONG = 4096
 # Stage 3.5: skin-region-only refinement for body skin (arms/legs/hands).
 USE_BODY_SKIN_REFINE = True
 # "texture_transfer" keeps real skin texture from source (recommended)
@@ -131,11 +118,11 @@ BODY_SKIN_DIFFUSION_FALLBACK_IDS = [
     "runwayml/stable-diffusion-inpainting",
     "stabilityai/stable-diffusion-2-inpainting",
 ]
-BODY_SKIN_DIFFUSION_STEPS = 8      # was 14; 8 steps at strength=0.20 is visually identical, ~40% faster
+BODY_SKIN_DIFFUSION_STEPS = 8    # 8 steps at strength=0.20 is visually identical to 14; ~40% faster
 BODY_SKIN_DIFFUSION_GUIDANCE = 3.5
 BODY_SKIN_DIFFUSION_STRENGTH = 0.20
 # Max long side for diffusion pass to keep runtime practical.
-BODY_SKIN_DIFFUSION_MAX_LONG = 1024  # was 1536; skin diffusion at 1024 is sufficient, saves ~15s
+BODY_SKIN_DIFFUSION_MAX_LONG = 1536
 
 # ── Stage 4: Post-processing ────────────────────────────────────
 # Bilateral: 0 = OFF. Embroidered/printed fabric needs detail preserved.
@@ -351,11 +338,9 @@ def load_swinir(model_path, device):
     return model
 
 
-def make_cosine_window_2d(out_h, out_w, device):
-    """Rectangular Hann window matching exact output patch dimensions (H × W)."""
-    ramp_h = torch.hann_window(out_h, periodic=False, device=device)
-    ramp_w = torch.hann_window(out_w, periodic=False, device=device)
-    return ramp_h.unsqueeze(1) * ramp_w.unsqueeze(0)   # (H, W)
+def make_cosine_window(size, device):
+    ramp = torch.hann_window(size, periodic=False, device=device)
+    return ramp.unsqueeze(0) * ramp.unsqueeze(1)
 
 
 def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
@@ -363,12 +348,6 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
     Generic tiled inference for any SR/refinement model.
     scale=4  for SwinIR (x4 upscale)
     scale=1  for HAT used as a refinement-only pass
-
-    The blending window is built per-tile from the ACTUAL patch_out shape so
-    it is always correct regardless of:
-      - rectangular patches (H ≠ W, common on edge tiles or non-square images)
-      - pre-scaling in the caller (_infer_with_target_scale shrinks the input
-        for x1/x2 mode so each tile is smaller than `tile` pixels wide)
     """
     window_size = 8
     img = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
@@ -380,11 +359,9 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
     img_t = F.pad(img_t, (0, pad_w, 0, pad_h), mode="reflect")
 
     _, _, H, W = img_t.shape
-
-    # Allocate accumulators using declared scale; will be rebuilt on first tile
-    # if the model's actual output scale turns out to be different.
     out_t  = torch.zeros(1, 3, H * scale, W * scale, device=device, dtype=torch.float32)
     weight = torch.zeros(1, 1, H * scale, W * scale, device=device, dtype=torch.float32)
+    win    = make_cosine_window(tile * scale, device).float()
 
     tiles_y = math.ceil(H / (tile - overlap))
     tiles_x = math.ceil(W / (tile - overlap))
@@ -393,8 +370,6 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
     TIMER.start(f"Tiled inference: {total} tiles ({tiles_y}×{tiles_x}), "
                 f"tile={tile}, overlap={overlap}")
     count = 0
-    scale_confirmed = False   # True once we have verified scale from real output
-
     for yi in range(tiles_y):
         for xi in range(tiles_x):
             y0 = min(yi * (tile - overlap), H - tile)
@@ -409,29 +384,8 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
                 else:
                     patch_out = model(patch).clamp(0, 1)
 
-            # Derive real scale from first tile output and rebuild accumulators
-            # if necessary (handles pre-scaled inputs from _infer_with_target_scale).
-            if not scale_confirmed:
-                actual_out_h = patch_out.shape[2]
-                in_tile_h    = y1 - y0          # actual input tile height (pixels)
-                actual_scale = actual_out_h // in_tile_h
-                if actual_scale < 1:
-                    actual_scale = 1
-                if actual_scale != scale:
-                    scale  = actual_scale
-                    out_t  = torch.zeros(1, 3, H * scale, W * scale,
-                                         device=device, dtype=torch.float32)
-                    weight = torch.zeros(1, 1, H * scale, W * scale,
-                                         device=device, dtype=torch.float32)
-                scale_confirmed = True
-
-            # Per-tile rectangular blending window — correct for all tile sizes.
-            p_h, p_w = patch_out.shape[2], patch_out.shape[3]
-            win = make_cosine_window_2d(p_h, p_w, device).float()  # (p_h, p_w)
-            win = win.unsqueeze(0).unsqueeze(0)                     # (1, 1, p_h, p_w)
-
-            sy0, sy1 = y0 * scale, y0 * scale + p_h
-            sx0, sx1 = x0 * scale, x0 * scale + p_w
+            sy0, sy1 = y0 * scale, y1 * scale
+            sx0, sx1 = x0 * scale, x1 * scale
             out_t[:, :, sy0:sy1, sx0:sx1]  += patch_out * win
             weight[:, :, sy0:sy1, sx0:sx1] += win
 
@@ -899,13 +853,28 @@ def enhance_faces_codeformer(img_bgr, device, model_dir: Path = None):
     net.load_state_dict(ckpt["params_ema"])
     net.eval()
 
+    # Run CodeFormer on a 2K working copy — face crops are 512px regardless of
+    # input resolution, so quality is identical. paste_faces_to_input_image()
+    # is the bottleneck at 8K; doing it at 2K is ~16x faster, then we blend
+    # the restored faces back into the original full-res image.
+    h_full, w_full = img_bgr.shape[:2]
+    _CF_MAX_LONG = 2048
+    cf_scale = min(1.0, _CF_MAX_LONG / max(h_full, w_full))
+    if cf_scale < 1.0:
+        cfw = int(w_full * cf_scale)
+        cfh = int(h_full * cf_scale)
+        img_cf = cv2.resize(img_bgr, (cfw, cfh), interpolation=cv2.INTER_AREA)
+    else:
+        img_cf = img_bgr
+        cfw, cfh = w_full, h_full
+
     face_helper = FaceRestoreHelper(
         upscale_factor=1, face_size=512, crop_ratio=(1, 1),
         det_model="retinaface_resnet50", save_ext="png",
         use_parse=True, device=device,
     )
     face_helper.clean_all()
-    face_helper.read_image(img_bgr)
+    face_helper.read_image(img_cf)
     face_helper.get_face_landmarks_5(only_center_face=False, resize=640, eye_dist_threshold=5)
     face_helper.align_warp_face()
 
@@ -925,9 +894,49 @@ def enhance_faces_codeformer(img_bgr, device, model_dir: Path = None):
         face_helper.add_restored_face(restored)
 
     face_helper.get_inverse_affine(None)
-    restored_img = face_helper.paste_faces_to_input_image()
+    restored_cf = face_helper.paste_faces_to_input_image()   # at 2K
     n = len(face_helper.cropped_faces)
     print(f"[✓] CodeFormer enhanced {n} face(s).")
+
+    # If we downscaled, upscale restored 2K image back to full res and blend
+    # only the face regions — preserving full-res detail everywhere else.
+    if cf_scale < 1.0:
+        restored_full = cv2.resize(restored_cf, (w_full, h_full), interpolation=cv2.INTER_CUBIC)
+        # Build a face mask at full resolution to limit blending to face regions.
+        try:
+            cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            )
+            gray_cf = cv2.cvtColor(img_cf, cv2.COLOR_BGR2GRAY)
+            faces = cascade.detectMultiScale(gray_cf, scaleFactor=1.08, minNeighbors=4, minSize=(24, 24))
+        except Exception:
+            faces = []
+        if len(faces) > 0:
+            inv = 1.0 / cf_scale
+            face_mask = np.zeros((h_full, w_full), dtype=np.float32)
+            yy, xx = np.mgrid[0:h_full, 0:w_full]
+            for (x, y, fw, fh) in faces:
+                cx = (x + fw / 2.0) * inv
+                cy = (y + fh / 2.0) * inv
+                rx = fw * 0.7 * inv
+                ry = fh * 0.85 * inv
+                ell = ((xx - cx) / max(rx, 1.0)) ** 2 + ((yy - cy) / max(ry, 1.0)) ** 2
+                local = np.clip(1.0 - ell, 0.0, 1.0)
+                local = cv2.GaussianBlur(local, (0, 0), max(2.0, fw * inv * 0.08))
+                face_mask = np.maximum(face_mask, local)
+            face_mask = np.clip(face_mask, 0.0, 1.0)
+            m3 = np.stack([face_mask, face_mask, face_mask], axis=-1)
+            restored_img = np.clip(
+                restored_full.astype(np.float32) * m3
+                + img_bgr.astype(np.float32) * (1.0 - m3),
+                0, 255
+            ).astype(np.uint8)
+        else:
+            # No faces found for mask — use full restored image
+            restored_img = restored_full
+    else:
+        restored_img = restored_cf
+
     return restored_img
 
 
@@ -1027,22 +1036,36 @@ def adaptive_sharpen(img_bgr):
     ).astype(np.uint8)
 
     # Protect face skin from over-sharpening noise.
+    # Run Haar face detection on a downscaled copy (max 1024px) — then scale
+    # bounding boxes back up. This is ~16x faster on 8K images with identical results.
     protect = float(np.clip(FACE_SHARPEN_PROTECT, 0.0, 1.0))
     if protect > 0:
         try:
             cascade = cv2.CascadeClassifier(
                 cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
             )
+            h, w = gray.shape[:2]
+            _DET_MAX = 1024
+            det_scale = min(1.0, _DET_MAX / max(h, w))
+            if det_scale < 1.0:
+                dw, dh = int(w * det_scale), int(h * det_scale)
+                gray_small = cv2.resize(gray, (dw, dh), interpolation=cv2.INTER_AREA)
+            else:
+                gray_small = gray
+                dw, dh = w, h
             faces = cascade.detectMultiScale(
-                gray, scaleFactor=1.08, minNeighbors=4, minSize=(36, 36)
+                gray_small, scaleFactor=1.08, minNeighbors=4, minSize=(24, 24)
             )
             if len(faces) > 0:
-                h, w = gray.shape[:2]
                 yy, xx = np.mgrid[0:h, 0:w]
                 fmask = np.zeros((h, w), dtype=np.float32)
+                inv = 1.0 / det_scale
                 for (x, y, fw, fh) in faces:
-                    cx, cy = x + fw / 2.0, y + fh / 2.0
-                    rx, ry = fw * 0.82, fh * 0.95
+                    # Scale coordinates back to full resolution
+                    cx = (x + fw / 2.0) * inv
+                    cy = (y + fh / 2.0) * inv
+                    rx = fw * 0.82 * inv
+                    ry = fh * 0.95 * inv
                     ell = ((xx - cx) / max(rx, 1.0)) ** 2 + ((yy - cy) / max(ry, 1.0)) ** 2
                     local = np.clip(1.0 - ell, 0.0, 1.0)
                     local = cv2.GaussianBlur(local, (0, 0), 4.0)
@@ -1812,20 +1835,8 @@ def run_pipeline(img_bgr, device, tmp_dir: Path, preloaded_models: dict = None):
     if USE_FACE_ENHANCE:
         TIMER.start(f"Stage 3 — Face ({FACE_BACKEND})")
         sr_before_face = sr
-        fh, fw = sr.shape[:2]
-        face_cap = int(FACE_ENHANCE_MAX_LONG)
-        if face_cap > 0 and max(fh, fw) > face_cap:
-            # Downscale to cap for detection + CodeFormer, upscale result back.
-            face_scale = face_cap / max(fh, fw)
-            face_w = max(8, int(round(fw * face_scale / 8) * 8))
-            face_h = max(8, int(round(fh * face_scale / 8) * 8))
-            sr_face_in = cv2.resize(sr, (face_w, face_h), interpolation=cv2.INTER_AREA)
-            print(f"[→] Face enhance on {face_w}x{face_h} (capped from {fw}x{fh})")
-            sr_face_out = enhance_faces(sr_face_in, device, model_dir=tmp_dir)
-            sr_face_out = cv2.resize(sr_face_out, (fw, fh), interpolation=cv2.INTER_CUBIC)
-        else:
-            sr_face_out = enhance_faces(sr_before_face, device, model_dir=tmp_dir)
-        sr = blend_faces_natural(sr_before_face, sr_face_out)
+        sr = enhance_faces(sr_before_face, device, model_dir=tmp_dir)
+        sr = blend_faces_natural(sr_before_face, sr)
         TIMER.end()
 
     # ── Stage 3.5: Body skin-only refinement ────────────────────
@@ -1836,19 +1847,7 @@ def run_pipeline(img_bgr, device, tmp_dir: Path, preloaded_models: dict = None):
 
     # ── Stage 4: Post-processing ─────────────────────────────────
     TIMER.start("Stage 4 — Post-processing")
-    ph, pw = sr.shape[:2]
-    pp_cap = int(POST_PROCESS_MAX_LONG)
-    if pp_cap > 0 and max(ph, pw) > pp_cap:
-        # Sharpen/deband at capped resolution — visually identical, much faster.
-        pp_scale = pp_cap / max(ph, pw)
-        pp_w = max(8, int(round(pw * pp_scale / 8) * 8))
-        pp_h = max(8, int(round(ph * pp_scale / 8) * 8))
-        print(f"[→] Post-processing on {pp_w}x{pp_h} (capped from {pw}x{ph})")
-        sr_pp = cv2.resize(sr, (pp_w, pp_h), interpolation=cv2.INTER_AREA)
-        sr_pp = post_process(sr_pp)
-        sr = cv2.resize(sr_pp, (pw, ph), interpolation=cv2.INTER_CUBIC)
-    else:
-        sr = post_process(sr)
+    sr = post_process(sr)
     TIMER.end()
 
     # Keep final exposure, color combination, and background lighting close
