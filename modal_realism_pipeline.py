@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Fashion Realism Enhancement Pipeline — T4 GPU (Modal) Edition
-==============================================================
+Fashion Realism Enhancement Pipeline — L40S / A100-40GB GPU (Modal) Edition
+============================================================================
 High-fidelity multi-model pipeline for fashion photoshoot images.
 
 Stage 1  │ SwinIR-L x4          │ Base super-resolution (x4 upscale)
@@ -57,9 +57,10 @@ SAVE_2K = True
 SAVE_4K = True
 
 # ── Stage 1: SwinIR base upscaler ──────────────────────────────
-# Tile size: T4 16 GB handles 512 comfortably.
-SWINIR_TILE         = 512
-SWINIR_TILE_OVERLAP = 96
+# Tile size: L40S (48 GB) / A100-40GB (40 GB) can handle 1024 comfortably.
+# Larger tiles = fewer seam boundaries = sharper coherent output + faster.
+SWINIR_TILE         = 1024
+SWINIR_TILE_OVERLAP = 128
 # SR scale mode for SwinIR/HAT pipeline:
 # "auto" = 1x for >=4K input, 2x for mid-res, 4x for small input
 # 1, 2, 4 are also allowed.
@@ -70,8 +71,8 @@ SR_UPSCALE_MODE = 2
 # fabric weave, stitching, and pattern detail that SwinIR smooths.
 # True = on (recommended) | False = skip (faster, less detail)
 USE_HAT = True
-HAT_TILE         = 256   # HAT is heavier; 256 fits safely on T4
-HAT_TILE_OVERLAP = 64    # increased from 32 — removes seam artifacts on embroidery
+HAT_TILE         = 512   # L40S/A100 can handle 512 vs 256 on T4 — fewer seams, faster
+HAT_TILE_OVERLAP = 96    # increased from 64 — cleaner seams on embroidery at larger tile
 # 0.0 = only SwinIR, 1.0 = only HAT. Lower values avoid hallucinated texture.
 HAT_BLEND_WEIGHT = 0.30
 # Re-inject high-frequency detail from original image upsample (non-hallucinatory).
@@ -1991,18 +1992,22 @@ try:
 
     @app.cls(
         image=image,
-        gpu="T4",
+        gpu="L40S",
         timeout=600,
-        memory=16384,
+        memory=49152,   # 48 GB VRAM — matches L40S physical memory
         secrets=[hf_secret],
         volumes={WEIGHTS_PATH: weights_volume},
-        # Auto-scale: spin up to 10 T4 containers when demand is high,
+        # Auto-scale: spin up to 10 L40S containers when demand is high,
         # scale back to 0 when idle (cold-start ~15-25s).
         concurrency_limit=10,
         # Each container processes one image at a time (GPU-bound workload).
         allow_concurrent_inputs=1,
     )
     class FashionRealismT4:
+        """Primary GPU class — runs on L40S (48 GB, Ada Lovelace).
+        Class name kept as FashionRealismT4 for backward compatibility with
+        existing service code that calls it by name via modal.Cls.from_name().
+        """
         @modal.enter()
         def load(self):
             self.rt = _RealismRuntime()
@@ -2014,16 +2019,20 @@ try:
 
     @app.cls(
         image=image,
-        gpu="L4",
+        gpu="A100-40GB",
         timeout=600,
-        memory=24576,
+        memory=40960,   # 40 GB VRAM — matches A100-40GB physical memory
         secrets=[hf_secret],
         volumes={WEIGHTS_PATH: weights_volume},
-        # Auto-scale: spin up to 5 L4 containers (more expensive GPU, keep lower cap).
+        # Auto-scale: spin up to 5 A100-40GB containers as fallback.
         concurrency_limit=5,
         allow_concurrent_inputs=1,
     )
     class FashionRealismL4:
+        """Fallback GPU class — runs on A100-40GB (40 GB, Ampere).
+        Class name kept as FashionRealismL4 for backward compatibility with
+        existing service code that calls it by name via modal.Cls.from_name().
+        """
         @modal.enter()
         def load(self):
             self.rt = _RealismRuntime()
@@ -2040,21 +2049,21 @@ try:
             print(f"[!] Input not found: {INPUT_IMAGE}")
             return
 
-        print(f"[->] Uploading {INPUT_IMAGE} to Modal (T4 preferred, L4 fallback) ...")
+        print(f"[->] Uploading {INPUT_IMAGE} to Modal (L40S preferred, A100-40GB fallback) ...")
         print(f"     Pipeline: SwinIR/HAT dynamic scale ({SR_UPSCALE_MODE}) → {FACE_BACKEND} face → body-skin refine → post-proc")
         print(f"     (weights persist in modal.Volume: fashion-realism-weights)")
         print(f"     (models are loaded once per warm container)")
 
         payload = inp.read_bytes()
         try:
-            print("[→] Trying T4 ...")
+            print("[→] Trying L40S ...")
             outputs = FashionRealismT4().enhance.remote(payload, inp.name)
-            gpu_used = "T4"
+            gpu_used = "L40S"
         except Exception as t4_err:
-            print(f"[!] T4 failed ({type(t4_err).__name__}: {t4_err})")
-            print("[→] Falling back to L4 ...")
+            print(f"[!] L40S failed ({type(t4_err).__name__}: {t4_err})")
+            print("[→] Falling back to A100-40GB ...")
             outputs = FashionRealismL4().enhance.remote(payload, inp.name)
-            gpu_used = "L4"
+            gpu_used = "A100-40GB"
 
         print("\n" + "=" * 60)
         print(f"  ✓ Enhancement complete on {gpu_used}")

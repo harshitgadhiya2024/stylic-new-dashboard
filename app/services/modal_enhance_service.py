@@ -83,19 +83,19 @@ async def enhance_and_upload(
         async def _call_modal_async() -> dict:
             """Async Modal call — uses .remote.aio() so the event loop stays free."""
             try:
-                logger.info("[modal] Trying T4 GPU via Modal from_name (async) ...")
+                logger.info("[modal] Trying L40S GPU via Modal from_name (async) ...")
                 cls_t4  = modal.Cls.from_name("fashion-realism", "FashionRealismT4")
                 outputs = await cls_t4().enhance.remote.aio(image_bytes, filename)
-                logger.info("[modal] T4 enhancement succeeded for image_id=%s", image_id)
+                logger.info("[modal] L40S enhancement succeeded for image_id=%s", image_id)
                 return outputs
             except Exception as t4_err:
                 logger.warning(
-                    "[modal] T4 failed for image_id=%s (%s: %s) — falling back to L4",
+                    "[modal] L40S failed for image_id=%s (%s: %s) — falling back to A100-40GB",
                     image_id, type(t4_err).__name__, t4_err,
                 )
                 cls_l4  = modal.Cls.from_name("fashion-realism", "FashionRealismL4")
                 outputs = await cls_l4().enhance.remote.aio(image_bytes, filename)
-                logger.info("[modal] L4 enhancement succeeded for image_id=%s", image_id)
+                logger.info("[modal] A100-40GB enhancement succeeded for image_id=%s", image_id)
                 return outputs
 
         outputs = await _call_modal_async()
