@@ -2003,7 +2003,7 @@ try:
         # Each container processes one image at a time (GPU-bound workload).
         allow_concurrent_inputs=1,
     )
-    class FashionRealismT4:
+    class FashionRealismL40S:
         @modal.enter()
         def load(self):
             self.rt = _RealismRuntime()
@@ -2024,7 +2024,7 @@ try:
         concurrency_limit=5,
         allow_concurrent_inputs=1,
     )
-    class FashionRealismL4:
+    class FashionRealismA100:
         @modal.enter()
         def load(self):
             self.rt = _RealismRuntime()
@@ -2049,12 +2049,12 @@ try:
         payload = inp.read_bytes()
         try:
             print("[→] Trying L40S ...")
-            outputs = FashionRealismT4().enhance.remote(payload, inp.name)
+            outputs = FashionRealismL40S().enhance.remote(payload, inp.name)
             gpu_used = "L40S"
-        except Exception as t4_err:
-            print(f"[!] L40S failed ({type(t4_err).__name__}: {t4_err})")
+        except Exception as l40s_err:
+            print(f"[!] L40S failed ({type(l40s_err).__name__}: {l40s_err})")
             print("[→] Falling back to A100-40GB ...")
-            outputs = FashionRealismL4().enhance.remote(payload, inp.name)
+            outputs = FashionRealismA100().enhance.remote(payload, inp.name)
             gpu_used = "A100-40GB"
 
         print("\n" + "=" * 60)

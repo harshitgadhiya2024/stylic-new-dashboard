@@ -1,18 +1,24 @@
 """
 Modal enhancement service.
 
-Calls the deployed Modal GPU pipeline (FashionRealismT4 / FashionRealismL4) from
-modal_realism_pipeline.py, uploads the returned 8K / 4K / 2K / 1K PNG bytes to S3,
-inserts a record in the upscaling_data collection, and returns the URL map.
+Calls the deployed Modal GPU pipeline (FashionRealismL40S / FashionRealismA100)
+from modal_realism_pipeline.py, uploads the returned 8K / 4K / 2K / 1K PNG bytes
+to S3, inserts a record in the upscaling_data collection, and returns the URL map.
 
-The modal_realism_pipeline.py is used AS-IS — no changes to that file.
-We only swap the input image bytes before sending to Modal.
+GPU configuration (set in app/config.py / .env):
+    MODAL_APP_NAME     = "fashion-realism"
+    MODAL_CLS_PRIMARY  = "FashionRealismL40S"   ← L40S, 48 GB VRAM (primary)
+    MODAL_CLS_FALLBACK = "FashionRealismA100"   ← A100-40GB, 40 GB VRAM (fallback)
+
+Modal is called via .remote.aio() (native async) so multiple poses dispatched
+via asyncio.gather each get their own auto-scaled GPU container.
 """
 
 import asyncio
 import logging
 from datetime import datetime, timezone
 
+from app.config import settings
 from app.database import get_upscaling_collection
 from app.services.s3_service import upload_bytes_to_s3
 
@@ -21,15 +27,19 @@ logger = logging.getLogger("modal_enhance")
 
 async def warmup_modal() -> None:
     """
-    Trigger a lightweight warmup call so the Modal container starts loading
-    weights in the background.  Failures are silently swallowed — the app must
-    boot even when Modal is unavailable.
+    Verify the Modal package is present at startup.
+    Failures are silently swallowed — the app must boot even when Modal is unavailable.
     """
     try:
-        import modal  # noqa: F401 — just verify the package is present
-        logger.info("[modal] Modal package found — warmup skipped (weights load on first real call).")
+        import modal  # noqa: F401
+        logger.info(
+            "[modal] Modal package found — primary=%s fallback=%s app=%s",
+            settings.MODAL_CLS_PRIMARY,
+            settings.MODAL_CLS_FALLBACK,
+            settings.MODAL_APP_NAME,
+        )
     except ImportError:
-        logger.warning("[modal] Modal package not installed — enhancement will be skipped at runtime.")
+        logger.warning("[modal] Modal package not installed — GPU enhancement will be skipped at runtime.")
 
 
 async def enhance_and_upload(
@@ -58,10 +68,6 @@ async def enhance_and_upload(
 
     On any Modal failure the upscaled_* fields are left empty and the
     SeedDream originals are returned so the photoshoot still completes.
-
-    Modal is called via .remote.aio() (native async) so multiple poses running
-    concurrently via asyncio.gather all dispatch to Modal simultaneously — each
-    gets its own auto-scaled GPU container on Modal's side.
     """
     prefix = f"photoshoots/{photoshoot_id}/{image_id}"
     now    = datetime.now(timezone.utc)
@@ -71,36 +77,43 @@ async def enhance_and_upload(
     try:
         logger.info("[modal] Calling Modal GPU pipeline for image_id=%s ...", image_id)
 
-        # Use Modal's from_name API to call the already-deployed app remotely.
-        # .remote.aio() is Modal's native async method — it returns an awaitable
-        # coroutine so asyncio.gather across multiple poses dispatches all Modal
-        # calls concurrently without blocking a thread pool.
         import modal  # noqa: E402
 
-        filename = f"{image_id}.png"
+        filename    = f"{image_id}.png"
+        app_name    = settings.MODAL_APP_NAME
+        cls_primary = settings.MODAL_CLS_PRIMARY
+        cls_fallback = settings.MODAL_CLS_FALLBACK
 
         async def _call_modal_async() -> dict:
-            """Async Modal call — uses .remote.aio() so the event loop stays free."""
+            """Try primary GPU class first; fall back to secondary on any error."""
             try:
-                logger.info("[modal] Trying L40S GPU via Modal from_name (async) ...")
-                cls_t4  = modal.Cls.from_name("fashion-realism", "FashionRealismT4")
-                outputs = await cls_t4().enhance.remote.aio(image_bytes, filename)
-                logger.info("[modal] L40S enhancement succeeded for image_id=%s", image_id)
-                return outputs
-            except Exception as t4_err:
-                logger.warning(
-                    "[modal] L40S failed for image_id=%s (%s: %s) — falling back to A100-40GB",
-                    image_id, type(t4_err).__name__, t4_err,
+                logger.info(
+                    "[modal] Trying %s (%s) via Modal from_name (async) ...",
+                    cls_primary, app_name,
                 )
-                cls_l4  = modal.Cls.from_name("fashion-realism", "FashionRealismL4")
-                outputs = await cls_l4().enhance.remote.aio(image_bytes, filename)
-                logger.info("[modal] A100-40GB enhancement succeeded for image_id=%s", image_id)
+                cls = modal.Cls.from_name(app_name, cls_primary)
+                outputs = await cls().enhance.remote.aio(image_bytes, filename)
+                logger.info("[modal] %s enhancement succeeded for image_id=%s", cls_primary, image_id)
+                return outputs
+            except Exception as primary_err:
+                logger.warning(
+                    "[modal] %s failed for image_id=%s (%s: %s) — falling back to %s",
+                    cls_primary, image_id, type(primary_err).__name__, primary_err, cls_fallback,
+                )
+                cls = modal.Cls.from_name(app_name, cls_fallback)
+                outputs = await cls().enhance.remote.aio(image_bytes, filename)
+                logger.info("[modal] %s enhancement succeeded for image_id=%s", cls_fallback, image_id)
                 return outputs
 
         outputs = await _call_modal_async()
 
         # outputs = {"8k": bytes, "4k": bytes, "2k": bytes, "1k": bytes}
-        label_to_key = {"8k": "8k_upscaled", "4k": "4k_upscaled", "2k": "2k_upscaled", "1k": "1k_upscaled"}
+        label_to_key = {
+            "8k": "8k_upscaled",
+            "4k": "4k_upscaled",
+            "2k": "2k_upscaled",
+            "1k": "1k_upscaled",
+        }
         upload_tasks = {
             label: upload_bytes_to_s3(data, f"{prefix}_{label}_upscaled.png", "image/png")
             for label, data in outputs.items()

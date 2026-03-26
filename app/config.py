@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     DEFAULT_PLAN: str = "free"
     OTP_EXPIRE_MINUTES: int = 10
 
+    # Modal GPU enhancement pipeline
+    MODAL_APP_NAME:    str = "fashion-realism"
+    MODAL_CLS_PRIMARY: str = "FashionRealismL40S"   # L40S — primary GPU class
+    MODAL_CLS_FALLBACK: str = "FashionRealismA100"  # A100-40GB — fallback GPU class
+
     # Redis / Celery queue
     REDIS_URL: str = "redis://localhost:6379/0"
 
