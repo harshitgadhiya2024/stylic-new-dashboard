@@ -263,118 +263,57 @@ def _build_photoshoot_prompt(
     req: dict,
 ) -> str:
     if has_back_image:
-        image_ref = (
-            "You are provided with FOUR reference images:\n"
-            "  IMAGE 1 — GARMENT FRONT: exact outfit front view.\n"
-            "  IMAGE 2 — GARMENT BACK: exact outfit back view.\n"
-            "  IMAGE 3 — MODEL FACE: the exact face to use.\n"
-            "  IMAGE 4 — BACKGROUND: the exact background scene."
-        )
-        garment_copy_instruction = (
-            "- COPY the garment EXACTLY from IMAGE 1 (front) and IMAGE 2 (back) — this is the HIGHEST priority.\n"
-            "- Reproduce every detail from both views with absolute accuracy: "
-            "neckline shape and depth, sleeve length and shape, bodice/torso length, hem position, "
-            "waistband style, all lace/embroidery/trim/button/print details at their exact scale and placement.\n"
-            "- DO NOT alter the garment silhouette, proportions, or fit to suit the model's body. "
-            "If the garment is loose/flowy/oversized in the reference, it MUST appear the same in the output."
-        )
+        image_ref   = "Refs: IMG1=garment front, IMG2=garment back, IMG3=face, IMG4=background."
+        garment_src = "IMG1+IMG2"
     else:
-        image_ref = (
-            "You are provided with THREE reference images:\n"
-            "  IMAGE 1 — GARMENT: exact outfit to be worn.\n"
-            "  IMAGE 2 — MODEL FACE: the exact face to use.\n"
-            "  IMAGE 3 — BACKGROUND: the exact background scene."
-        )
-        garment_copy_instruction = (
-            "- COPY the garment EXACTLY from IMAGE 1 — this is the HIGHEST priority.\n"
-            "- Reproduce every detail with absolute accuracy: "
-            "neckline shape and depth, sleeve length and shape, bodice/torso length, hem position, "
-            "waistband style, all lace/embroidery/trim/button/print details at their exact scale and placement.\n"
-            "- DO NOT alter the garment silhouette, proportions, or fit to suit the model's body. "
-            "If the garment is loose/flowy/oversized in the reference, it MUST appear the same in the output."
-        )
+        image_ref   = "Refs: IMG1=garment, IMG2=face, IMG3=background."
+        garment_src = "IMG1"
 
-    fitting  = req.get("fitting", "regular fit")
-    gender   = req.get("gender", "").strip().lower()
+    fitting = req.get("fitting", "regular fit")
+    gender  = req.get("gender", "").strip().lower()
 
     paired_garment_block = _build_paired_garment_instruction(req)
     clean_pose           = _sanitize_pose_prompt(pose)
 
-    footwear_instruction = (
-        "Choose footwear that naturally complements and matches the outfit style, "
-        "color palette, and formality level shown in the garment reference image. "
-        "Examples: heels / sandals for formal/ethnic wear, sneakers / loafers for casual, "
-        "boots for western/denim, flats for relaxed everyday wear. "
-        "Footwear must look realistic, well-fitted, and appropriate for the overall look."
-    )
+    paired_note = ""
+    if paired_garment_block:
+        if "LOWER" in paired_garment_block:
+            paired_note = " Add complementary lower garment matching upper garment style."
+        else:
+            paired_note = " Add complementary upper garment matching lower garment style."
 
     _ornaments_lower = req.get("ornaments", "").lower()
     _bag_requested   = any(kw in _ornaments_lower for kw in ("bag", "purse", "handbag"))
+    bag_note = " Add matching bag/purse." if (gender == "female" and _bag_requested) else ""
 
-    female_accessory_instruction = ""
-    if gender == "female" and _bag_requested:
-        female_accessory_instruction = (
-            "\n\n[ACCESSORIES — FEMALE]\n"
-            "Evaluate the outfit style from the garment reference image:\n"
-            "- If the outfit is formal, ethnic, party-wear, or occasion-wear → add a stylish PURSE "
-            "  (clutch or small structured bag) that complements the garment's color and style.\n"
-            "- If the outfit is casual, western, denim, or everyday wear → add a HANDBAG "
-            "  (tote, sling, or shoulder bag) that matches the outfit's vibe.\n"
-            "- The bag must look natural in the model's hand or on her shoulder, matching the "
-            "  overall color palette. Do NOT add a bag if the pose makes it physically impossible."
-        )
-
-    return f"""CRITICAL INSTRUCTION: You are a reference-faithful image compositor, NOT a creative fashion artist.
-Your ONLY job is to place the model (using the face reference) wearing the EXACT garment (from the garment reference) inside the EXACT background (from the background reference) in the specified pose.
-DO NOT redesign, reimagine, stylise, or improve any reference image. Reproduce all references faithfully.
-
-{image_ref}
-
-[FACE — DO NOT CHANGE]
-Use EXACT face from the model face reference image. Match precisely: face shape, eyes, nose, lips, skin tone, eyebrows, hair colour and style.
-Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin.
-
-[GARMENT — DO NOT CHANGE — HIGHEST PRIORITY]
-{garment_copy_instruction}
-- Fitting reference: {fitting} — but ONLY if consistent with how the garment appears in the reference image. Never override what you see in the reference.{paired_garment_block}
-
-[BACKGROUND — DO NOT CHANGE — HIGHEST PRIORITY]
-- Use the EXACT background from the reference image. Reproduce every object, color, lighting condition, shadow, and spatial arrangement without any alteration.
-- Composite the model INTO the background at a natural human scale that is consistent with the background's perspective, depth, and spatial cues.
-- The model must appear to be physically standing INSIDE the background scene at the correct depth — not pasted over it.
-- DO NOT zoom in, zoom out, crop, reframe, or alter the background in any way.
-
-[POSE]
-{clean_pose}
-- Adapt the pose naturally to fit the background space. The model's scale must be proportionally correct relative to background objects (furniture, walls, floors).
-
-[FOOTWEAR]
-{footwear_instruction}{female_accessory_instruction}
-
-[STYLE] Lighting: {req.get('lighting_style', 'natural light')} | Ornaments: {req.get('ornaments', 'none')}
-
-[GARMENT INTEGRITY CHECK]
-Before finalising the image, verify:
-1. The garment neckline, sleeve length, bodice length, and hem match the reference exactly.
-2. All surface details (lace, embroidery, buttons, prints, patterns) are present at correct scale.
-3. The garment silhouette is identical to the reference — loose stays loose, fitted stays fitted.
-4. If any of the above fail, regenerate until all match.
-
-[QUALITY] Ultra-high resolution 4K, photorealistic, professional fashion photography, sharp focus, natural lighting, commercial e-commerce grade.
-
-NON-NEGOTIABLE PRIORITIES (in order):
-1. Garment = 100% identical to reference — zero changes to design, silhouette, details, or fit.
-2. Background = 100% identical to reference — zero changes to scene, objects, or lighting.
-3. Face = 100% identical to reference.
-4. Model scale fits naturally within the background perspective."""
+    return f"""{image_ref}
+Fashion photo. {req['gender']}, {req['ethnicity']}, {req['age']}, {req['skin_tone']} skin, {req['height']}, {req['weight']} build.
+FACE(IMG2): exact copy — shape, eyes, nose, lips, skin, hair. No changes.
+GARMENT({garment_src}): exact copy — neckline, sleeves, length, hem, prints/lace/trim/buttons at exact scale. Silhouette unchanged. Fit: {fitting}.{paired_note}
+BG(IMG3): exact copy — all objects, colors, lighting, shadows. Model at correct scale inside scene.
+POSE: {clean_pose}
+FOOTWEAR: suit outfit style.{bag_note}
+Lighting: {req.get('lighting_style', 'natural')}. Ornaments: {req.get('ornaments', 'none')}.
+4K photorealistic fashion photo."""
 
 
 # ---------------------------------------------------------------------------
 # SeedDream submit + poll
 # ---------------------------------------------------------------------------
 
+_SEEDDREAM_PROMPT_LIMIT = 900   # SeedDream hard limit; keep well under to be safe
+
+
 async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
-    logger.info("[%s] Submitting SeedDream task (quality=high, 9:16, %d images)...", pose_label, len(image_urls))
+    # Guard: truncate prompt if it exceeds SeedDream's character limit
+    if len(prompt) > _SEEDDREAM_PROMPT_LIMIT:
+        logger.warning(
+            "[%s] Prompt too long (%d chars > %d limit) — truncating",
+            pose_label, len(prompt), _SEEDDREAM_PROMPT_LIMIT,
+        )
+        prompt = prompt[:_SEEDDREAM_PROMPT_LIMIT]
+
+    logger.info("[%s] Submitting SeedDream task (%d chars, %d images)...", pose_label, len(prompt), len(image_urls))
     payload = json.dumps({
         "model": settings.SEEDDREAM_MODEL,
         "input": {
@@ -389,13 +328,8 @@ async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> s
         "Content-Type":  "application/json",
     }
     async with httpx.AsyncClient(timeout=30) as client:
-        try:
-            resp = await client.post(_CREATE_URL, headers=headers, content=payload)
-            resp.raise_for_status()
-        except Exception as exc:
-            raise RuntimeError(f"SeedDream task submission failed: {exc}")
-    print(resp.json())
-    logger.info("SeedDream task submission response: %s", resp.json())
+        resp = await client.post(_CREATE_URL, headers=headers, content=payload)
+        resp.raise_for_status()
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise RuntimeError(f"No taskId returned: {resp.text}")
@@ -473,7 +407,6 @@ async def _process_one_pose(
     image_urls:    List[str],
     photoshoot_id: str,
     req_snapshot:  dict,
-    upscaling_col=None,
 ) -> dict:
     """
     Full async pipeline for one pose. Returns output_image dict or raises on failure.
@@ -520,14 +453,9 @@ async def _process_one_pose(
         seeddream_4k_url=url_4k,
         seeddream_2k_url=url_2k,
         seeddream_1k_url=url_1k,
-        upscaling_col=upscaling_col,
     )
-    # enhance_and_upload always returns a dict, but guard defensively
-    if not upscale_result:
-        logger.warning("[%s] enhance_and_upload returned None — falling back to SeedDream 1K", pose_label)
-        upscale_result = {}
     logger.info("[%s] Modal enhancement complete — upscaled 1K: %s", pose_label,
-                (upscale_result.get("1k_upscaled") or "N/A")[:80])
+                upscale_result.get("1k_upscaled", "N/A")[:80])
 
     # Use the upscaled 1K as the primary display image; fall back to SeedDream 1K
     display_image = upscale_result.get("1k_upscaled") or url_1k
@@ -552,11 +480,15 @@ async def _deduct_photoshoot_credits(
     regenerate_photoshoot_id: str = "",
     image_ids: list = None,
     credit_per_image: float = None,
+    users_col=None,
+    history_col=None,
 ) -> None:
     logger.info("[credits] Deducting %.2f credits from user_id=%s for photoshoot=%s",
                 total_credit, user_id, photoshoot_id)
-    users_col   = get_users_collection()
-    history_col = get_credit_history_collection()
+    if users_col is None:
+        users_col = get_users_collection()
+    if history_col is None:
+        history_col = get_credit_history_collection()
 
     user = await users_col.find_one({"user_id": user_id})
     if not user:
@@ -603,22 +535,36 @@ async def _deduct_photoshoot_credits(
 # Public background job entry point
 # ---------------------------------------------------------------------------
 
-async def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
+async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -> None:
     """
-    Called as a FastAPI BackgroundTask. Runs the full photoshoot pipeline,
-    updates the photoshoot document, deducts credits.
+    Runs the full photoshoot pipeline, updates the photoshoot document,
+    deducts credits.
+
+    motor_client: optional AsyncIOMotorClient.  When provided (Celery path),
+    collections are derived from it so Motor never touches the closed global
+    event loop.  When None (FastAPI BackgroundTask path), the global singleton
+    collections are used as before.
     """
     logger.info("=" * 70)
     logger.info("[job] Photoshoot job STARTED — photoshoot_id=%s", photoshoot_id)
     logger.info("[job] user_id=%s | pose_option=%s", req.get("user_id"), req.get("which_pose_option"))
     logger.info("=" * 70)
 
-    col          = get_photoshoots_collection()
-    _get_bg      = get_backgrounds_collection
-    _get_mf      = get_model_faces_collection
-    _get_usr     = get_users_collection
-    _get_ch      = get_credit_history_collection
-    _upscaling_col = None
+    if motor_client is not None:
+        from app.config import settings as _s
+        _db  = motor_client[_s.MONGO_DB_NAME]
+        col  = _db["photoshoots"]
+        _get_bg  = lambda: _db["backgrounds"]
+        _get_mf  = lambda: _db["model_faces"]
+        _get_usr = lambda: _db["users"]
+        _get_ch  = lambda: _db["credit_history"]
+    else:
+        col      = get_photoshoots_collection()
+        _get_bg  = get_backgrounds_collection
+        _get_mf  = get_model_faces_collection
+        _get_usr = get_users_collection
+        _get_ch  = get_credit_history_collection
+
     job_start = time.time()
 
     try:
@@ -638,13 +584,13 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
 
         # ── Step 2: fetch background and model face URLs ──────────────────
         logger.info("[job] STEP 2 — Fetching background and model face from DB...")
-        bg_doc = await get_backgrounds_collection().find_one({"background_id": req["background_id"]})
+        bg_doc = await _get_bg().find_one({"background_id": req["background_id"]})
         if not bg_doc:
             raise ValueError(f"Background not found: {req['background_id']}")
         background_url = bg_doc["background_url"]
         logger.info("[job] Background found: %s", background_url[:80])
 
-        mf_doc = await get_model_faces_collection().find_one({"model_id": req["model_id"]})
+        mf_doc = await _get_mf().find_one({"model_id": req["model_id"]})
         if not mf_doc:
             raise ValueError(f"Model face not found: {req['model_id']}")
         model_face_url = mf_doc["face_url"]
@@ -662,7 +608,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
         logger.info("[job] STEP 3 — Launching %d pose(s) concurrently...", len(pose_prompts))
 
         tasks = [
-            _process_one_pose(idx, prompt, image_urls, photoshoot_id, req, _upscaling_col)
+            _process_one_pose(idx, prompt, image_urls, photoshoot_id, req)
             for idx, prompt in enumerate(pose_prompts, 1)
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -692,6 +638,8 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict) -> None:
             regenerate_photoshoot_id=req.get("regenerate_photoshoot_id", ""),
             image_ids=generated_image_ids,
             credit_per_image=_PHOTOSHOOT_CREDIT_PER_POSE,
+            users_col=_get_usr(),
+            history_col=_get_ch(),
         )
         logger.info("[job] STEP 4 DONE — %.2f credits deducted", total_credit)
 
