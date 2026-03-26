@@ -169,10 +169,92 @@ async def resolve_pose_prompts(
 # Prompt builder
 # ---------------------------------------------------------------------------
 
+import re as _re
+
 def _is_back_pose(pose_prompt: str) -> bool:
     back_keywords = ["back", "rear", "behind", "back-facing", "facing away", "turned away"]
     lower = pose_prompt.lower()
     return any(kw in lower for kw in back_keywords)
+
+
+def _sanitize_pose_prompt(pose: str) -> str:
+    """Strip clothing, background, gender, and garment-related words from a pose prompt.
+
+    The pose prompt should describe ONLY body position and limb placement.
+    Removing these words prevents SeedDream from re-interpreting the garment
+    or background based on pose description text.
+    """
+    strip_patterns = [
+        r'\b(wearing|dressed in|outfit|garment|clothing|cloth|clothes|fabric|'
+        r'top|bottom|skirt|pants|trousers|shirt|dress|blouse|jacket|coat|suit|'
+        r'saree|sari|kurta|lehenga|churidar|dupatta|salwar|kameez|gown|frock|'
+        r'shorts|jeans|denim|sweater|hoodie|cardigan|vest|crop|bralette|'
+        r'sleeve|collar|neckline|hem|waist|belt)\b',
+        r'\b(background|setting|environment|room|studio|outdoor|indoor|'
+        r'wall|floor|ceiling|furniture|table|chair|sofa|window|door|'
+        r'street|garden|park|beach|office|store|shop)\b',
+        r'\b(male|female|man|woman|boy|girl|he|she|his|her|they|them)\b',
+    ]
+    result = pose
+    for pattern in strip_patterns:
+        result = _re.sub(pattern, '', result, flags=_re.IGNORECASE)
+    result = _re.sub(r'\s{2,}', ' ', result).strip()
+    return result
+
+
+def _build_paired_garment_instruction(req: dict) -> str:
+    """Build the paired-garment instruction for whichever garment piece is missing.
+
+    Rules:
+    - If ONLY upper garment is provided → describe a complementary lower garment
+      that forms a natural outfit pair with it.
+    - If ONLY lower garment is provided → describe a complementary upper garment
+      that forms a natural outfit pair with it.
+    - If both are provided → no pairing needed (both come from the reference image).
+    - If one-piece is provided → no pairing needed.
+    - The pairing must be derived from the garment reference image style/color,
+      not invented out of thin air.
+    """
+    ug_type = req.get("upper_garment_type", "").strip()
+    lg_type = req.get("lower_garment_type", "").strip()
+    op_type = req.get("one_piece_garment_type", "").strip()
+
+    has_upper    = bool(ug_type)
+    has_lower    = bool(lg_type)
+    has_onepiece = bool(op_type)
+
+    if has_onepiece or (has_upper and has_lower):
+        return ""
+
+    if has_upper and not has_lower:
+        return (
+            "\n[PAIRED LOWER GARMENT — AI DECISION]\n"
+            "Only the upper garment is provided in the reference image. "
+            "You must choose a complementary lower garment (bottom wear) that:\n"
+            "- Forms a natural, stylish outfit pair with the upper garment shown.\n"
+            "- Matches the color palette, fabric style, and formality level of the upper garment.\n"
+            "- Looks like it belongs to the same outfit set or coordinated look.\n"
+            "- Examples: if upper is ethnic/printed → pair with palazzo, salwar, or skirt; "
+            "if upper is casual → pair with jeans, chinos, or shorts; "
+            "if upper is formal → pair with trousers or a pencil skirt.\n"
+            "- The lower garment must look realistic, properly fitted, and appropriate for the overall look."
+        )
+
+    if has_lower and not has_upper:
+        return (
+            "\n[PAIRED UPPER GARMENT — AI DECISION]\n"
+            "Only the lower garment is provided in the reference image. "
+            "You must choose a complementary upper garment (top wear) that:\n"
+            "- Forms a natural, stylish outfit pair with the lower garment shown.\n"
+            "- Matches the color palette, fabric style, and formality level of the lower garment.\n"
+            "- Looks like it belongs to the same outfit set or coordinated look.\n"
+            "- Examples: if lower is ethnic/printed → pair with a kurta, blouse, or ethnic top; "
+            "if lower is casual (jeans/pants) → pair with a t-shirt, shirt, or casual top; "
+            "if lower is formal trousers → pair with a formal shirt or blazer.\n"
+            "- The upper garment must look realistic, properly fitted, and appropriate for the overall look."
+        )
+
+    return ""
 
 
 def _build_photoshoot_prompt(
@@ -188,9 +270,13 @@ def _build_photoshoot_prompt(
             "  IMAGE 3 — MODEL FACE: the exact face to use.\n"
             "  IMAGE 4 — BACKGROUND: the exact background scene."
         )
-        garment_note = (
-            "- USE EXACT GARMENT from IMAGE 1 (front) and IMAGE 2 (back) — MANDATORY.\n"
-            "- Reproduce every detail from both views with 100% accuracy."
+        garment_copy_instruction = (
+            "- COPY the garment EXACTLY from IMAGE 1 (front) and IMAGE 2 (back) — this is the HIGHEST priority.\n"
+            "- Reproduce every detail from both views with absolute accuracy: "
+            "neckline shape and depth, sleeve length and shape, bodice/torso length, hem position, "
+            "waistband style, all lace/embroidery/trim/button/print details at their exact scale and placement.\n"
+            "- DO NOT alter the garment silhouette, proportions, or fit to suit the model's body. "
+            "If the garment is loose/flowy/oversized in the reference, it MUST appear the same in the output."
         )
     else:
         image_ref = (
@@ -199,25 +285,20 @@ def _build_photoshoot_prompt(
             "  IMAGE 2 — MODEL FACE: the exact face to use.\n"
             "  IMAGE 3 — BACKGROUND: the exact background scene."
         )
-        garment_note = (
-            "- USE EXACT GARMENT from IMAGE 1 — MANDATORY.\n"
-            "- Reproduce every detail with 100% accuracy."
+        garment_copy_instruction = (
+            "- COPY the garment EXACTLY from IMAGE 1 — this is the HIGHEST priority.\n"
+            "- Reproduce every detail with absolute accuracy: "
+            "neckline shape and depth, sleeve length and shape, bodice/torso length, hem position, "
+            "waistband style, all lace/embroidery/trim/button/print details at their exact scale and placement.\n"
+            "- DO NOT alter the garment silhouette, proportions, or fit to suit the model's body. "
+            "If the garment is loose/flowy/oversized in the reference, it MUST appear the same in the output."
         )
 
-    ug_type  = req.get("upper_garment_type", "")
-    ug_spec  = req.get("upper_garment_specification", "")
-    lg_type  = req.get("lower_garment_type", "")
-    lg_spec  = req.get("lower_garment_specification", "")
-    op_type  = req.get("one_piece_garment_type", "")
-    op_spec  = req.get("one_piece_garment_specification", "")
     fitting  = req.get("fitting", "regular fit")
     gender   = req.get("gender", "").strip().lower()
 
-    upper_line    = f"- Upper: {ug_type}{f' — {ug_spec}' if ug_spec else ''}" if ug_type else ""
-    lower_line    = f"- Lower: {lg_type}{f' — {lg_spec}' if lg_spec else ''}" if lg_type else ""
-    onepiece_line = f"- One-piece: {op_type}{f' — {op_spec}' if op_spec else ''}" if op_type else ""
-
-    garment_lines = "\n".join(filter(None, [upper_line, lower_line, onepiece_line]))
+    paired_garment_block = _build_paired_garment_instruction(req)
+    clean_pose           = _sanitize_pose_prompt(pose)
 
     footwear_instruction = (
         "Choose footwear that naturally complements and matches the outfit style, "
@@ -227,7 +308,6 @@ def _build_photoshoot_prompt(
         "Footwear must look realistic, well-fitted, and appropriate for the overall look."
     )
 
-    # Add bag/handbag only when ornaments field mentions bag, purse, or handbag
     _ornaments_lower = req.get("ornaments", "").lower()
     _bag_requested   = any(kw in _ornaments_lower for kw in ("bag", "purse", "handbag"))
 
@@ -244,36 +324,49 @@ def _build_photoshoot_prompt(
             "  overall color palette. Do NOT add a bag if the pose makes it physically impossible."
         )
 
-    return f"""{image_ref}
+    return f"""CRITICAL INSTRUCTION: You are a reference-faithful image compositor, NOT a creative fashion artist.
+Your ONLY job is to place the model (using the face reference) wearing the EXACT garment (from the garment reference) inside the EXACT background (from the background reference) in the specified pose.
+DO NOT redesign, reimagine, stylise, or improve any reference image. Reproduce all references faithfully.
 
-Generate a photorealistic fashion photoshoot image. Zero deviation from reference images.
+{image_ref}
 
 [FACE — DO NOT CHANGE]
-Use EXACT face from model face reference. Match: face shape, eyes, nose, lips, skin tone, eyebrows, hair. FACE VALIDATION: verify face matches reference before finalising — regenerate if any deviation.
+Use EXACT face from the model face reference image. Match precisely: face shape, eyes, nose, lips, skin tone, eyebrows, hair colour and style.
 Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin.
 
-[GARMENT — DO NOT CHANGE]
-{garment_note}
-{garment_lines}
-- Fitting: {fitting}
+[GARMENT — DO NOT CHANGE — HIGHEST PRIORITY]
+{garment_copy_instruction}
+- Fitting reference: {fitting} — but ONLY if consistent with how the garment appears in the reference image. Never override what you see in the reference.{paired_garment_block}
 
-[BACKGROUND — DO NOT CHANGE]
-Use EXACT background from reference. Match: all objects, colors, lighting, shadows, depth. No alterations.
+[BACKGROUND — DO NOT CHANGE — HIGHEST PRIORITY]
+- Use the EXACT background from the reference image. Reproduce every object, color, lighting condition, shadow, and spatial arrangement without any alteration.
+- Composite the model INTO the background at a natural human scale that is consistent with the background's perspective, depth, and spatial cues.
+- The model must appear to be physically standing INSIDE the background scene at the correct depth — not pasted over it.
+- DO NOT zoom in, zoom out, crop, reframe, or alter the background in any way.
 
-[POSE] {pose}
+[POSE]
+{clean_pose}
+- Adapt the pose naturally to fit the background space. The model's scale must be proportionally correct relative to background objects (furniture, walls, floors).
 
 [FOOTWEAR]
 {footwear_instruction}{female_accessory_instruction}
 
 [STYLE] Lighting: {req.get('lighting_style', 'natural light')} | Ornaments: {req.get('ornaments', 'none')}
 
-[BODY REALISM]
-- The model's chest/bust area should appear naturally fuller and well-defined — medium to slightly fuller than average — to give the garment a realistic, voluminous, and commercial fashion look.
-- Ensure natural body proportions: chest shape should look real, not exaggerated. The garment fabric should drape naturally over the chest area with realistic folds and tension.
+[GARMENT INTEGRITY CHECK]
+Before finalising the image, verify:
+1. The garment neckline, sleeve length, bodice length, and hem match the reference exactly.
+2. All surface details (lace, embroidery, buttons, prints, patterns) are present at correct scale.
+3. The garment silhouette is identical to the reference — loose stays loose, fitted stays fitted.
+4. If any of the above fail, regenerate until all match.
 
-[QUALITY] Ultra-high resolution 4K, photorealistic, professional fashion photography, sharp focus, seamless model-background integration, commercial e-commerce grade.
+[QUALITY] Ultra-high resolution 4K, photorealistic, professional fashion photography, sharp focus, natural lighting, commercial e-commerce grade.
 
-NON-NEGOTIABLE: 1. Face = 100% identical to reference. 2. Garment = 100% identical to reference. 3. Background = 100% identical to reference."""
+NON-NEGOTIABLE PRIORITIES (in order):
+1. Garment = 100% identical to reference — zero changes to design, silhouette, details, or fit.
+2. Background = 100% identical to reference — zero changes to scene, objects, or lighting.
+3. Face = 100% identical to reference.
+4. Model scale fits naturally within the background perspective."""
 
 
 # ---------------------------------------------------------------------------
