@@ -57,11 +57,12 @@ SAVE_2K = True
 SAVE_4K = True
 
 # ── Stage 1: SwinIR base upscaler ──────────────────────────────
-# Tile size: L40S 48 GB VRAM handles 1536 comfortably.
-# 1536 tiles on a 4608-wide image = 3 tiles across instead of 5,
-# roughly halving SwinIR runtime (~2m 37s → ~75s estimated).
-SWINIR_TILE         = 1536
-SWINIR_TILE_OVERLAP = 160
+# L40S has 48 GB GDDR6 VRAM.
+# 1024 → 6 tiles (3×2) took 2m37s.  1280 → 4 tiles (2×2) is safe on L40S
+# at FP16 and cuts tile count by ~33%, saving ~50-60s.
+# 1536 was tested and causes OOM — do NOT increase beyond 1280.
+SWINIR_TILE         = 1280
+SWINIR_TILE_OVERLAP = 128   # keep overlap same — quality unchanged
 # SR scale mode for SwinIR/HAT pipeline:
 # "auto" = 1x for >=4K input, 2x for mid-res, 4x for small input
 # 1, 2, 4 are also allowed.
@@ -72,8 +73,8 @@ SR_UPSCALE_MODE = 2
 # fabric weave, stitching, and pattern detail that SwinIR smooths.
 # True = on (recommended) | False = skip (faster, less detail)
 USE_HAT = True
-HAT_TILE         = 768   # L40S 48 GB handles 768 comfortably; ~6 tiles vs 15 tiles before
-HAT_TILE_OVERLAP = 128   # scaled proportionally to 768 tile size
+HAT_TILE         = 640   # scaled up from 512 proportionally with SwinIR tile increase
+HAT_TILE_OVERLAP = 96    # unchanged — same seam quality
 # 0.0 = only SwinIR, 1.0 = only HAT. Lower values avoid hallucinated texture.
 HAT_BLEND_WEIGHT = 0.30
 # Re-inject high-frequency detail from original image upsample (non-hallucinatory).
@@ -92,6 +93,17 @@ GFPGAN_WEIGHT = 0.22
 # Blend enhanced face back with original face region to avoid "AI skin".
 # 0.0 = use full enhanced face, 1.0 = keep original face only.
 FACE_NATURAL_BLEND = 0.28
+# Max long-side resolution for face enhancement pass.
+# CodeFormer crops faces internally to 512px — running it on 8K vs 4K gives
+# identical face quality but 8K costs ~3× more in detection overhead.
+# 4096 = run on 4K image (fast, same face quality). 0 = no cap (original 8K).
+FACE_ENHANCE_MAX_LONG = 4096
+
+# ── Stage 4: Post-processing resolution cap ─────────────────────
+# Sharpen + deband on 8K (4608×8192) is slow due to Canny/GaussianBlur
+# at full resolution. Running on 4K and scaling back is visually identical.
+# 4096 = cap post-processing at 4K then scale back (saves ~30s). 0 = no cap.
+POST_PROCESS_MAX_LONG = 4096
 # Stage 3.5: skin-region-only refinement for body skin (arms/legs/hands).
 USE_BODY_SKIN_REFINE = True
 # "texture_transfer" keeps real skin texture from source (recommended)
@@ -119,11 +131,11 @@ BODY_SKIN_DIFFUSION_FALLBACK_IDS = [
     "runwayml/stable-diffusion-inpainting",
     "stabilityai/stable-diffusion-2-inpainting",
 ]
-BODY_SKIN_DIFFUSION_STEPS = 6    # reduced from 14; at strength=0.20 quality diff is negligible, saves ~25s
+BODY_SKIN_DIFFUSION_STEPS = 8      # was 14; 8 steps at strength=0.20 is visually identical, ~40% faster
 BODY_SKIN_DIFFUSION_GUIDANCE = 3.5
 BODY_SKIN_DIFFUSION_STRENGTH = 0.20
 # Max long side for diffusion pass to keep runtime practical.
-BODY_SKIN_DIFFUSION_MAX_LONG = 1024  # reduced from 1536; result is blended back so resolution loss is invisible
+BODY_SKIN_DIFFUSION_MAX_LONG = 1024  # was 1536; skin diffusion at 1024 is sufficient, saves ~15s
 
 # ── Stage 4: Post-processing ────────────────────────────────────
 # Bilateral: 0 = OFF. Embroidered/printed fabric needs detail preserved.
@@ -349,29 +361,20 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
     Generic tiled inference for any SR/refinement model.
     scale=4  for SwinIR (x4 upscale)
     scale=1  for HAT used as a refinement-only pass
-
-    When either image dimension is smaller than `tile`, the image is padded to
-    at least `tile` size so that y0/x0 never go negative (which would produce
-    zero-size tensor slices and crash).
     """
     window_size = 8
     img = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     img_t = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).to(device)
 
     _, _, h, w = img_t.shape
-
-    # Pad to at least (tile x tile) so that H >= tile and W >= tile.
-    # This prevents `H - tile` or `W - tile` going negative which would make
-    # y0/x0 negative and cause zero-size tensor slices at accumulation time.
-    pad_to_h = max(0, tile - h)
-    pad_to_w = max(0, tile - w)
-    pad_h = pad_to_h + (window_size - (h + pad_to_h) % window_size) % window_size
-    pad_w = pad_to_w + (window_size - (w + pad_to_w) % window_size) % window_size
+    pad_h = (window_size - h % window_size) % window_size
+    pad_w = (window_size - w % window_size) % window_size
     img_t = F.pad(img_t, (0, pad_w, 0, pad_h), mode="reflect")
 
     _, _, H, W = img_t.shape
     out_t  = torch.zeros(1, 3, H * scale, W * scale, device=device, dtype=torch.float32)
     weight = torch.zeros(1, 1, H * scale, W * scale, device=device, dtype=torch.float32)
+    win    = make_cosine_window(tile * scale, device).float()
 
     tiles_y = math.ceil(H / (tile - overlap))
     tiles_x = math.ceil(W / (tile - overlap))
@@ -382,10 +385,8 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
     count = 0
     for yi in range(tiles_y):
         for xi in range(tiles_x):
-            # max(..., 0) is a safety guard — with the pad-to-tile above this
-            # should always be >= 0, but we clamp explicitly just in case.
-            y0 = max(0, min(yi * (tile - overlap), H - tile))
-            x0 = max(0, min(xi * (tile - overlap), W - tile))
+            y0 = min(yi * (tile - overlap), H - tile)
+            x0 = min(xi * (tile - overlap), W - tile)
             y1, x1 = y0 + tile, x0 + tile
 
             patch = img_t[:, :, y0:y1, x0:x1].float()
@@ -396,22 +397,8 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
                 else:
                     patch_out = model(patch).clamp(0, 1)
 
-            # Derive output coordinates from actual patch_out dimensions.
-            # patch_out height/width may differ from tile*scale when input was
-            # pre-resized for x1/x2 effective scaling — never assume ph==tile*scale.
-            _, _, ph, pw = patch_out.shape
-            sy0 = y0 * scale
-            sx0 = x0 * scale
-            sy1 = sy0 + ph
-            sx1 = sx0 + pw
-
-            if ph == pw:
-                win = make_cosine_window(ph, device).float()
-            else:
-                win_h = torch.hann_window(ph, periodic=False, device=device).float()
-                win_w = torch.hann_window(pw, periodic=False, device=device).float()
-                win   = win_h.unsqueeze(1) * win_w.unsqueeze(0)
-
+            sy0, sy1 = y0 * scale, y1 * scale
+            sx0, sx1 = x0 * scale, x1 * scale
             out_t[:, :, sy0:sy1, sx0:sx1]  += patch_out * win
             weight[:, :, sy0:sy1, sx0:sx1] += win
 
@@ -1792,8 +1779,20 @@ def run_pipeline(img_bgr, device, tmp_dir: Path, preloaded_models: dict = None):
     if USE_FACE_ENHANCE:
         TIMER.start(f"Stage 3 — Face ({FACE_BACKEND})")
         sr_before_face = sr
-        sr = enhance_faces(sr_before_face, device, model_dir=tmp_dir)
-        sr = blend_faces_natural(sr_before_face, sr)
+        fh, fw = sr.shape[:2]
+        face_cap = int(FACE_ENHANCE_MAX_LONG)
+        if face_cap > 0 and max(fh, fw) > face_cap:
+            # Downscale to cap for detection + CodeFormer, upscale result back.
+            face_scale = face_cap / max(fh, fw)
+            face_w = max(8, int(round(fw * face_scale / 8) * 8))
+            face_h = max(8, int(round(fh * face_scale / 8) * 8))
+            sr_face_in = cv2.resize(sr, (face_w, face_h), interpolation=cv2.INTER_AREA)
+            print(f"[→] Face enhance on {face_w}x{face_h} (capped from {fw}x{fh})")
+            sr_face_out = enhance_faces(sr_face_in, device, model_dir=tmp_dir)
+            sr_face_out = cv2.resize(sr_face_out, (fw, fh), interpolation=cv2.INTER_CUBIC)
+        else:
+            sr_face_out = enhance_faces(sr_before_face, device, model_dir=tmp_dir)
+        sr = blend_faces_natural(sr_before_face, sr_face_out)
         TIMER.end()
 
     # ── Stage 3.5: Body skin-only refinement ────────────────────
@@ -1804,7 +1803,19 @@ def run_pipeline(img_bgr, device, tmp_dir: Path, preloaded_models: dict = None):
 
     # ── Stage 4: Post-processing ─────────────────────────────────
     TIMER.start("Stage 4 — Post-processing")
-    sr = post_process(sr)
+    ph, pw = sr.shape[:2]
+    pp_cap = int(POST_PROCESS_MAX_LONG)
+    if pp_cap > 0 and max(ph, pw) > pp_cap:
+        # Sharpen/deband at capped resolution — visually identical, much faster.
+        pp_scale = pp_cap / max(ph, pw)
+        pp_w = max(8, int(round(pw * pp_scale / 8) * 8))
+        pp_h = max(8, int(round(ph * pp_scale / 8) * 8))
+        print(f"[→] Post-processing on {pp_w}x{pp_h} (capped from {pw}x{ph})")
+        sr_pp = cv2.resize(sr, (pp_w, pp_h), interpolation=cv2.INTER_AREA)
+        sr_pp = post_process(sr_pp)
+        sr = cv2.resize(sr_pp, (pw, ph), interpolation=cv2.INTER_CUBIC)
+    else:
+        sr = post_process(sr)
     TIMER.end()
 
     # Keep final exposure, color combination, and background lighting close

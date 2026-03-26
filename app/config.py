@@ -46,12 +46,15 @@ class Settings(BaseSettings):
     DEFAULT_PLAN: str = "free"
     OTP_EXPIRE_MINUTES: int = 10
 
-    # Modal GPU enhancement pipeline.
-    # These names MUST match the class names in the deployed Modal app.
-    # Confirmed deployed: FashionRealismL40S (L40S) + FashionRealismA100 (A100-40GB).
-    MODAL_APP_NAME:     str = "fashion-realism"
-    MODAL_CLS_PRIMARY:  str = "FashionRealismL40S"
-    MODAL_CLS_FALLBACK: str = "FashionRealismA100"
+    # Modal GPU enhancement pipeline
+    # Class names must match what is currently DEPLOYED on Modal.
+    # After running `modal deploy modal_realism_pipeline.py` with the new GPU classes,
+    # update these via .env:
+    #   MODAL_CLS_PRIMARY=FashionRealismL40S
+    #   MODAL_CLS_FALLBACK=FashionRealismA100
+    MODAL_APP_NAME:    str = "fashion-realism"
+    MODAL_CLS_PRIMARY: str = "FashionRealismL40S"   # L40S — primary GPU class
+    MODAL_CLS_FALLBACK: str = "FashionRealismA100" 
 
     # Redis / Celery queue
     REDIS_URL: str = "redis://localhost:6379/0"
