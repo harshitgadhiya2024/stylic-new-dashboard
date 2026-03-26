@@ -16,16 +16,6 @@ def get_database():
     return get_db_client()[settings.MONGO_DB_NAME]
 
 
-def make_motor_client() -> AsyncIOMotorClient:
-    """Return a brand-new Motor client bound to the current event loop.
-
-    Use this inside Celery tasks where asyncio.run() creates a fresh loop
-    for every task execution.  The caller is responsible for closing the
-    client when the coroutine finishes.
-    """
-    return AsyncIOMotorClient(settings.MONGO_URI)
-
-
 def get_users_collection() -> AsyncIOMotorCollection:
     return get_database()["users"]
 
