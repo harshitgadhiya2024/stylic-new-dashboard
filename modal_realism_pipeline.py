@@ -349,23 +349,29 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
     Generic tiled inference for any SR/refinement model.
     scale=4  for SwinIR (x4 upscale)
     scale=1  for HAT used as a refinement-only pass
+
+    When either image dimension is smaller than `tile`, the image is padded to
+    at least `tile` size so that y0/x0 never go negative (which would produce
+    zero-size tensor slices and crash).
     """
     window_size = 8
     img = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     img_t = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).to(device)
 
     _, _, h, w = img_t.shape
-    pad_h = (window_size - h % window_size) % window_size
-    pad_w = (window_size - w % window_size) % window_size
+
+    # Pad to at least (tile x tile) so that H >= tile and W >= tile.
+    # This prevents `H - tile` or `W - tile` going negative which would make
+    # y0/x0 negative and cause zero-size tensor slices at accumulation time.
+    pad_to_h = max(0, tile - h)
+    pad_to_w = max(0, tile - w)
+    pad_h = pad_to_h + (window_size - (h + pad_to_h) % window_size) % window_size
+    pad_w = pad_to_w + (window_size - (w + pad_to_w) % window_size) % window_size
     img_t = F.pad(img_t, (0, pad_w, 0, pad_h), mode="reflect")
 
     _, _, H, W = img_t.shape
     out_t  = torch.zeros(1, 3, H * scale, W * scale, device=device, dtype=torch.float32)
     weight = torch.zeros(1, 1, H * scale, W * scale, device=device, dtype=torch.float32)
-    # Window is built per-patch from the actual output patch size (not pre-built),
-    # because edge tiles may be smaller than tile*scale when image dims are not
-    # multiples of (tile - overlap).  Pre-building at tile*scale causes a size
-    # mismatch on those edge patches.
 
     tiles_y = math.ceil(H / (tile - overlap))
     tiles_x = math.ceil(W / (tile - overlap))
@@ -376,8 +382,10 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
     count = 0
     for yi in range(tiles_y):
         for xi in range(tiles_x):
-            y0 = min(yi * (tile - overlap), H - tile)
-            x0 = min(xi * (tile - overlap), W - tile)
+            # max(..., 0) is a safety guard — with the pad-to-tile above this
+            # should always be >= 0, but we clamp explicitly just in case.
+            y0 = max(0, min(yi * (tile - overlap), H - tile))
+            x0 = max(0, min(xi * (tile - overlap), W - tile))
             y1, x1 = y0 + tile, x0 + tile
 
             patch = img_t[:, :, y0:y1, x0:x1].float()
@@ -388,11 +396,9 @@ def _tiled_infer(model, img_np, device, tile, overlap, scale=1, use_fp16=True):
                 else:
                     patch_out = model(patch).clamp(0, 1)
 
-            # Use actual output patch dimensions to derive output coordinates.
-            # patch_out may have fewer rows/cols than tile*scale when the model
-            # is run in effective x1/x2 mode (pre-resized input), so we must
-            # NOT derive sy1/sx1 from y1*scale — that would leave gaps with
-            # zero weight that turn black in the final division step.
+            # Derive output coordinates from actual patch_out dimensions.
+            # patch_out height/width may differ from tile*scale when input was
+            # pre-resized for x1/x2 effective scaling — never assume ph==tile*scale.
             _, _, ph, pw = patch_out.shape
             sy0 = y0 * scale
             sx0 = x0 * scale
