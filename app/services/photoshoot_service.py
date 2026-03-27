@@ -376,7 +376,10 @@ Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {
 - Model scale must be proportionally correct relative to background objects.
 
 [FOOTWEAR]
-Choose footwear matching the outfit style and formality (sandals/heels for ethnic/formal, sneakers for casual, boots for western).{bag_note}
+- FOOTWEAR IS MANDATORY IN EVERY OUTPUT IMAGE.
+- The model must wear visible, realistic footwear suitable to the outfit and pose.
+- Barefoot output is NOT allowed. Never show bare feet, socks-only feet, or missing footwear.
+- Choose footwear matching outfit style/formality (ethnic/formal: sandals or heels; casual: sneakers/loafers; western/formal: boots or formal shoes).{bag_note}
 
 [STYLE]
 Lighting: {req.get('lighting_style', 'natural light')}. Ornaments: {req.get('ornaments', 'none')}.
