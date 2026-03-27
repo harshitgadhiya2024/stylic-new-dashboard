@@ -349,10 +349,6 @@ def _build_photoshoot_prompt(
         if garment_type_lines else ""
     )
 
-    has_upper = bool(ug_type)
-    has_lower = bool(lg_type)
-    has_onepiece = bool(op_type)
-
     # ── Paired garment note ────────────────────────────────────────────────
     paired_garment_block = _build_paired_garment_instruction(req)
     clean_pose           = _sanitize_pose_prompt(pose)
@@ -375,40 +371,6 @@ def _build_photoshoot_prompt(
                 "that matches the lower garment's color and style. "
                 "The model must NOT have a bare torso. A proper top is REQUIRED."
             )
-
-    garment_combo_rule = ""
-    if has_onepiece:
-        garment_combo_rule = (
-            "- One-piece garment is uploaded: use the one-piece exactly as reference. "
-            "Do NOT add any separate lower garment."
-        )
-    elif has_upper and has_lower:
-        garment_combo_rule = (
-            "- Upper + lower garments are uploaded: use both exactly as reference. "
-            "Do NOT replace either piece."
-        )
-    elif has_upper and not has_lower:
-        garment_combo_rule = (
-            "- Only upper garment is uploaded: lower garment is REQUIRED and must be "
-            "selected as a coordinated matching set (color palette, fabric mood, occasion, style). "
-            "No mismatch, no random bottom, and no bare legs."
-        )
-    elif has_lower and not has_upper:
-        garment_combo_rule = (
-            "- Only lower garment is uploaded: upper garment is REQUIRED and must be "
-            "selected as a coordinated matching set (color palette, fabric mood, occasion, style). "
-            "No mismatch, no random top, and no bare torso."
-        )
-    else:
-        garment_combo_rule = (
-            "- Use uploaded garment references faithfully and keep outfit logically complete."
-        )
-
-    footwear_rule = (
-        "- Footwear must be chosen based on the final garment set and occasion: "
-        "ethnic -> sandals/juttis/heels, casual -> sneakers/loafers/flats, "
-        "formal -> formal shoes/heels, western chic -> boots/heels."
-    )
 
     _ornaments_lower = req.get("ornaments", "").lower()
     _bag_requested   = any(kw in _ornaments_lower for kw in ("bag", "purse", "handbag"))
@@ -435,7 +397,6 @@ Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {
 [GARMENT — DO NOT CHANGE]{garment_type_section}
 {garment_note}
 - Fitting: {fitting} (only if consistent with the reference — never override what you see).{paired_note}
-- Garment combination rule: {garment_combo_rule}
 
 [BACKGROUND — DO NOT CHANGE]
 - Copy the EXACT background from IMG{bg_img_num}. All objects, colors, lighting, shadows unchanged.
@@ -451,23 +412,12 @@ Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {
 - FOOTWEAR IS MANDATORY IN EVERY OUTPUT IMAGE.
 - The model must wear visible, realistic footwear suitable to the outfit and pose.
 - Barefoot output is NOT allowed. Never show bare feet, socks-only feet, or missing footwear.
-{footwear_rule}{bag_note}
+- Choose footwear matching outfit style/formality (ethnic/formal: sandals or heels; casual: sneakers/loafers; western/formal: boots or formal shoes).{bag_note}
 
 [STYLE]
 Lighting: {req.get('lighting_style', 'natural light')}. Ornaments: {req.get('ornaments', 'none')}.
-[REALISM ENGINE — APPLY STRICTLY]
-- Render as a real camera photograph (not CGI, not digital painting, not plastic skin).
-- Camera look: smartphone/full-frame natural capture style (24-35mm equivalent perspective), natural optical falloff.
-- Preserve natural skin biology: visible pores, fine facial/arm skin texture, subtle subsurface scattering, realistic micro-contrast.
-- Preserve garment material physics: thread weave, seam depth, embroidery/print texture, natural fabric folds/tension/gravity.
-- Use physically plausible multi-source lighting with bounce/global illumination so subject integrates naturally into background.
-- Enforce strong contact grounding: realistic contact shadows/ambient occlusion at feet and body-scene interaction points.
-- Keep reflections/speculars physically consistent with scene lighting; avoid flat/airbrushed highlights.
-- Add very subtle camera artifacts only if natural: tiny lens softness at edges, minimal chromatic aberration, fine organic grain.
-- Keep background and garment details readable; avoid aggressive blur, haze, or stylization that hides reference details.
-- Final look must read as candid real-human photography, with natural imperfection and zero synthetic/plastic rendering.
 
-4K photorealistic professional fashion photography. Sharp focus. Commercial e-commerce grade, real-human look."""
+4K photorealistic professional fashion photography. Sharp focus. Commercial e-commerce grade."""
 
 
 # ---------------------------------------------------------------------------
