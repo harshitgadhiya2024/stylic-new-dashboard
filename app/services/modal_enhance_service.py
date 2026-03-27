@@ -49,6 +49,7 @@ async def enhance_and_upload(
     seeddream_4k_url: str,
     seeddream_2k_url: str,
     seeddream_1k_url: str,
+    upscaling_col=None,
 ) -> dict:
     """
     Send ``image_bytes`` (SeedDream 4K output) to the Modal GPU pipeline,
@@ -68,6 +69,10 @@ async def enhance_and_upload(
 
     On any Modal failure the upscaled_* fields are left empty and the
     SeedDream originals are returned so the photoshoot still completes.
+
+    upscaling_col: optional Motor collection. Celery workers must pass the
+    collection from ``make_motor_client()`` — never use the process-global
+    singleton here or you get ``Event loop is closed`` on later tasks.
     """
     prefix = f"photoshoots/{photoshoot_id}/{image_id}"
     now    = datetime.now(timezone.utc)
@@ -149,7 +154,7 @@ async def enhance_and_upload(
         "updated_at":    now,
     }
 
-    col = get_upscaling_collection()
+    col = upscaling_col if upscaling_col is not None else get_upscaling_collection()
     await col.insert_one(doc)
     logger.info("[modal] upscaling_data record inserted for image_id=%s", image_id)
 

@@ -13,8 +13,10 @@ permanently broken for future asyncio.run() calls.
 
 Fix: create a fresh AsyncIOMotorClient at the start of every asyncio.run()
 call (via make_motor_client()), pass it into the service layer, and close it
-before the loop exits.  The global singleton in database.py is left for the
-FastAPI process only.
+before the loop exits.  Every Mongo read/write in the job (including
+``poses_data`` and ``upscaling_data`` via Modal) must use that client — not
+``get_*_collection()`` globals.  The global singleton in database.py is for
+the FastAPI process only.
 
 The worker is started with --concurrency=1 so only ONE job runs at a time,
 preventing simultaneous SeedDream / Modal calls.

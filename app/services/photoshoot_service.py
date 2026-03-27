@@ -112,8 +112,6 @@ async def _generate_pose_prompt_from_image(image_url: str) -> str:
         "Output: a single concise paragraph, 2-4 sentences, describing only pose and body position."
     )
 
-    loop = asyncio.get_event_loop()
-
     def _call_gemini():
         g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
         return g_client.models.generate_content(
@@ -135,7 +133,7 @@ async def _generate_pose_prompt_from_image(image_url: str) -> str:
 
     try:
         logger.info("[poses] Calling Gemini vision to extract pose description...")
-        response = await loop.run_in_executor(None, _call_gemini)
+        response = await asyncio.get_running_loop().run_in_executor(None, _call_gemini)
         result = response.candidates[0].content.parts[0].text.strip()
         logger.info("[poses] Gemini pose description generated (%d chars)", len(result))
         return result
@@ -496,6 +494,8 @@ async def _process_one_pose(
     image_urls:    List[str],
     photoshoot_id: str,
     req_snapshot:  dict,
+    *,
+    upscaling_col=None,
 ) -> dict:
     """
     Full async pipeline for one pose. Returns output_image dict or raises on failure.
@@ -518,9 +518,9 @@ async def _process_one_pose(
 
     # ── SeedDream originals: resize 4K → 2K / 1K ─────────────────────────
     logger.info("[%s] Resizing 4K → 2K...", pose_label)
-    bytes_2k = await asyncio.get_event_loop().run_in_executor(None, _resize_image, bytes_4k, 2048)
+    bytes_2k = await asyncio.get_running_loop().run_in_executor(None, _resize_image, bytes_4k, 2048)
     logger.info("[%s] Resizing 4K → 1K...", pose_label)
-    bytes_1k = await asyncio.get_event_loop().run_in_executor(None, _resize_image, bytes_4k, 1024)
+    bytes_1k = await asyncio.get_running_loop().run_in_executor(None, _resize_image, bytes_4k, 1024)
     logger.info("[%s] Resize complete", pose_label)
 
     prefix = f"photoshoots/{photoshoot_id}/{image_id}"
@@ -542,6 +542,7 @@ async def _process_one_pose(
         seeddream_4k_url=url_4k,
         seeddream_2k_url=url_2k,
         seeddream_1k_url=url_1k,
+        upscaling_col=upscaling_col,
     )
     logger.info("[%s] Modal enhancement complete — upscaled 1K: %s", pose_label,
                 upscale_result.get("1k_upscaled", "N/A")[:80])
@@ -644,6 +645,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
         _db  = motor_client[_s.MONGO_DB_NAME]
         col  = _db["photoshoots"]
         poses_col = _db["poses_data"]
+        upscaling_col = _db["upscaling_data"]
         _get_bg  = lambda: _db["backgrounds"]
         _get_mf  = lambda: _db["model_faces"]
         _get_usr = lambda: _db["users"]
@@ -651,6 +653,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
     else:
         col      = get_photoshoots_collection()
         poses_col = None
+        upscaling_col = None
         _get_bg  = get_backgrounds_collection
         _get_mf  = get_model_faces_collection
         _get_usr = get_users_collection
@@ -700,7 +703,10 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
         logger.info("[job] STEP 3 — Launching %d pose(s) concurrently...", len(pose_prompts))
 
         tasks = [
-            _process_one_pose(idx, prompt, image_urls, photoshoot_id, req)
+            _process_one_pose(
+                idx, prompt, image_urls, photoshoot_id, req,
+                upscaling_col=upscaling_col,
+            )
             for idx, prompt in enumerate(pose_prompts, 1)
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)

@@ -6,6 +6,12 @@ _client: AsyncIOMotorClient = None
 
 
 def get_db_client() -> AsyncIOMotorClient:
+    """Process-global client for FastAPI / long-lived asyncio app.
+
+    Do **not** use from Celery tasks wrapped in ``asyncio.run()`` — that closes
+    the loop while this client may still be bound to it. Use
+    :func:`make_motor_client` per task instead.
+    """
     global _client
     if _client is None:
         _client = AsyncIOMotorClient(settings.MONGO_URI)
