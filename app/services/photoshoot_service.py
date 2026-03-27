@@ -56,9 +56,11 @@ _PHOTOSHOOT_CREDIT_PER_POSE = 2.0
 # Pose prompt resolution
 # ---------------------------------------------------------------------------
 
-async def _fetch_default_pose_prompts(pose_ids: List[str]) -> List[str]:
+async def _fetch_default_pose_prompts(pose_ids: List[str], poses_col=None) -> List[str]:
     logger.info("[poses] Fetching %d default pose prompt(s) from DB", len(pose_ids))
-    col     = get_poses_collection()
+    # Celery: must use collection from the task-scoped Motor client — not the FastAPI
+    # global singleton (that client is tied to a loop that asyncio.run() has closed).
+    col = poses_col if poses_col is not None else get_poses_collection()
     prompts = []
     for pid in pose_ids:
         doc = await col.find_one({"pose_id": pid})
@@ -147,10 +149,11 @@ async def resolve_pose_prompts(
     poses_ids: List[str],
     poses_images: List[str],
     poses_prompts: List[str],
+    poses_col=None,
 ) -> List[str]:
     logger.info("[poses] Resolving poses — option=%s", which_pose_option)
     if which_pose_option == "default":
-        result = await _fetch_default_pose_prompts(poses_ids)
+        result = await _fetch_default_pose_prompts(poses_ids, poses_col=poses_col)
     elif which_pose_option == "custom":
         result = await asyncio.gather(*[_generate_pose_prompt_from_image(url) for url in poses_images])
         result = list(result)
@@ -640,12 +643,14 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
         from app.config import settings as _s
         _db  = motor_client[_s.MONGO_DB_NAME]
         col  = _db["photoshoots"]
+        poses_col = _db["poses_data"]
         _get_bg  = lambda: _db["backgrounds"]
         _get_mf  = lambda: _db["model_faces"]
         _get_usr = lambda: _db["users"]
         _get_ch  = lambda: _db["credit_history"]
     else:
         col      = get_photoshoots_collection()
+        poses_col = None
         _get_bg  = get_backgrounds_collection
         _get_mf  = get_model_faces_collection
         _get_usr = get_users_collection
@@ -661,6 +666,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
             poses_ids=req.get("poses_ids") or [],
             poses_images=req.get("poses_images") or [],
             poses_prompts=req.get("poses_prompts") or [],
+            poses_col=poses_col,
         )
 
         if not pose_prompts:
