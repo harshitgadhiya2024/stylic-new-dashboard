@@ -28,7 +28,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 import httpx
 from PIL import Image
@@ -53,25 +53,32 @@ _PHOTOSHOOT_CREDIT_PER_POSE = 2.0
 
 
 # ---------------------------------------------------------------------------
-# Pose prompt resolution
+# Pose resolution
 # ---------------------------------------------------------------------------
 
-async def _fetch_default_pose_prompts(pose_ids: List[str], poses_col=None) -> List[str]:
-    logger.info("[poses] Fetching %d default pose prompt(s) from DB", len(pose_ids))
+async def _fetch_default_pose_entries(pose_ids: List[str], poses_col=None) -> List[dict]:
+    logger.info("[poses] Fetching %d default pose image reference(s) from DB", len(pose_ids))
     # Celery: must use collection from the task-scoped Motor client — not the FastAPI
     # global singleton (that client is tied to a loop that asyncio.run() has closed).
     col = poses_col if poses_col is not None else get_poses_collection()
-    prompts = []
+    entries = []
     for pid in pose_ids:
         doc = await col.find_one({"pose_id": pid})
-        if doc and doc.get("pose_prompt"):
-            logger.info("[poses] Found prompt for pose_id=%s", pid)
-            prompts.append(doc["pose_prompt"])
+        pose_image_url = (doc or {}).get("image_url", "")
+        pose_prompt = (doc or {}).get("pose_prompt", "")
+
+        if pose_image_url:
+            logger.info("[poses] Found image_url for pose_id=%s", pid)
         else:
-            logger.warning("[poses] No prompt found for pose_id=%s — using fallback", pid)
-            prompts.append(f"Standing in a natural, relaxed fashion model pose — pose id: {pid}")
-    logger.info("[poses] Resolved %d default pose prompt(s)", len(prompts))
-    return prompts
+            logger.warning("[poses] No image_url found for pose_id=%s — pose reference image will be skipped", pid)
+
+        entries.append({
+            "pose_prompt": pose_prompt,
+            "pose_image_url": pose_image_url,
+        })
+
+    logger.info("[poses] Resolved %d default pose entry(ies)", len(entries))
+    return entries
 
 
 async def _generate_pose_prompt_from_image(image_url: str) -> str:
@@ -142,26 +149,31 @@ async def _generate_pose_prompt_from_image(image_url: str) -> str:
         return f"Natural standing fashion model pose — vision error: {exc}"
 
 
-async def resolve_pose_prompts(
+async def resolve_poses(
     which_pose_option: str,
     poses_ids: List[str],
     poses_images: List[str],
     poses_prompts: List[str],
     poses_col=None,
-) -> List[str]:
+) -> List[dict]:
     logger.info("[poses] Resolving poses — option=%s", which_pose_option)
     if which_pose_option == "default":
-        result = await _fetch_default_pose_prompts(poses_ids, poses_col=poses_col)
+        result = await _fetch_default_pose_entries(poses_ids, poses_col=poses_col)
     elif which_pose_option == "custom":
-        result = await asyncio.gather(*[_generate_pose_prompt_from_image(url) for url in poses_images])
-        result = list(result)
-        logger.info("[poses] %d custom pose prompts generated via Gemini", len(result))
+        prompts = await asyncio.gather(*[_generate_pose_prompt_from_image(url) for url in poses_images])
+        result = [{"pose_prompt": p, "pose_image_url": ""} for p in prompts]
+        logger.info("[poses] %d custom pose prompt(s) generated via Gemini", len(result))
     else:
         logger.info("[poses] Using %d user-provided pose prompts directly", len(poses_prompts))
-        result = list(poses_prompts)
+        result = [{"pose_prompt": p, "pose_image_url": ""} for p in poses_prompts]
 
-    for i, prompt in enumerate(result, 1):
-        logger.info("[poses] Pose #%d prompt:\n%s", i, prompt)
+    for i, pose in enumerate(result, 1):
+        logger.info(
+            "[poses] Pose #%d resolved | prompt_chars=%d | has_pose_image=%s",
+            i,
+            len((pose.get("pose_prompt") or "").strip()),
+            bool((pose.get("pose_image_url") or "").strip()),
+        )
 
     return result
 
@@ -262,15 +274,26 @@ def _build_photoshoot_prompt(
     pose: str,
     has_back_image: bool,
     req: dict,
+    pose_reference_img_num: Optional[int] = None,
 ) -> str:
     if has_back_image:
-        image_ref = (
-            "You are provided with FOUR reference images:\n"
-            "  IMG1 — GARMENT FRONT: exact outfit front view.\n"
-            "  IMG2 — GARMENT BACK: exact outfit back view.\n"
-            "  IMG3 — MODEL FACE: the exact face to use.\n"
-            "  IMG4 — BACKGROUND: the exact background scene."
-        )
+        if pose_reference_img_num is not None:
+            image_ref = (
+                "You are provided with FIVE reference images:\n"
+                "  IMG1 — GARMENT FRONT: exact outfit front view.\n"
+                "  IMG2 — GARMENT BACK: exact outfit back view.\n"
+                "  IMG3 — MODEL FACE: the exact face to use.\n"
+                "  IMG4 — BACKGROUND: the exact background scene.\n"
+                f"  IMG{pose_reference_img_num} — POSE REFERENCE: match body pose from this image."
+            )
+        else:
+            image_ref = (
+                "You are provided with FOUR reference images:\n"
+                "  IMG1 — GARMENT FRONT: exact outfit front view.\n"
+                "  IMG2 — GARMENT BACK: exact outfit back view.\n"
+                "  IMG3 — MODEL FACE: the exact face to use.\n"
+                "  IMG4 — BACKGROUND: the exact background scene."
+            )
         garment_src  = "IMG1 (front) and IMG2 (back)"
         garment_note = (
             "- Copy the garment EXACTLY from IMG1 and IMG2.\n"
@@ -279,12 +302,21 @@ def _build_photoshoot_prompt(
             "- Do NOT alter silhouette, proportions, or fit. Loose/flowy in reference = loose/flowy in output."
         )
     else:
-        image_ref = (
-            "You are provided with THREE reference images:\n"
-            "  IMG1 — GARMENT: exact outfit to be worn.\n"
-            "  IMG2 — MODEL FACE: the exact face to use.\n"
-            "  IMG3 — BACKGROUND: the exact background scene."
-        )
+        if pose_reference_img_num is not None:
+            image_ref = (
+                "You are provided with FOUR reference images:\n"
+                "  IMG1 — GARMENT: exact outfit to be worn.\n"
+                "  IMG2 — MODEL FACE: the exact face to use.\n"
+                "  IMG3 — BACKGROUND: the exact background scene.\n"
+                f"  IMG{pose_reference_img_num} — POSE REFERENCE: match body pose from this image."
+            )
+        else:
+            image_ref = (
+                "You are provided with THREE reference images:\n"
+                "  IMG1 — GARMENT: exact outfit to be worn.\n"
+                "  IMG2 — MODEL FACE: the exact face to use.\n"
+                "  IMG3 — BACKGROUND: the exact background scene."
+            )
         garment_src  = "IMG1"
         garment_note = (
             "- Copy the garment EXACTLY from IMG1.\n"
@@ -411,7 +443,8 @@ Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {
 - Model must appear physically inside the scene — not pasted over it.
 
 [POSE]
-{clean_pose}
+{clean_pose if clean_pose else "Match the body pose from the provided pose reference image exactly."}
+- If a pose reference image is provided, body orientation/limb/head positions must follow it exactly.
 - Model scale must be proportionally correct relative to background objects.
 
 [FOOTWEAR]
@@ -547,6 +580,7 @@ async def _process_one_pose(
     image_urls:    List[str],
     photoshoot_id: str,
     req_snapshot:  dict,
+    pose_image_url: str = "",
     *,
     upscaling_col=None,
 ) -> dict:
@@ -560,7 +594,13 @@ async def _process_one_pose(
 
     logger.info("[%s] Building SeedDream generation prompt...", pose_label)
     has_back = bool(req_snapshot.get("back_garment_image", ""))
-    prompt   = _build_photoshoot_prompt(pose_prompt, has_back, req_snapshot)
+    pose_reference_img_num = len(image_urls) if pose_image_url else None
+    prompt   = _build_photoshoot_prompt(
+        pose_prompt,
+        has_back,
+        req_snapshot,
+        pose_reference_img_num=pose_reference_img_num,
+    )
     logger.info("[%s] Generation prompt built (%d chars, back_image=%s)", pose_label, len(prompt), has_back)
 
     task_id = await _submit_task(prompt, image_urls, pose_label)
@@ -716,8 +756,8 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
 
     try:
         # ── Step 1: resolve pose prompts ──────────────────────────────────
-        logger.info("[job] STEP 1 — Resolving pose prompts...")
-        pose_prompts = await resolve_pose_prompts(
+        logger.info("[job] STEP 1 — Resolving poses...")
+        poses = await resolve_poses(
             which_pose_option=req["which_pose_option"],
             poses_ids=req.get("poses_ids") or [],
             poses_images=req.get("poses_images") or [],
@@ -725,10 +765,10 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
             poses_col=poses_col,
         )
 
-        if not pose_prompts:
-            raise ValueError("No pose prompts could be resolved.")
+        if not poses:
+            raise ValueError("No poses could be resolved.")
 
-        logger.info("[job] STEP 1 DONE — %d pose prompt(s) ready", len(pose_prompts))
+        logger.info("[job] STEP 1 DONE — %d pose(s) ready", len(poses))
 
         # ── Step 2: fetch background and model face URLs ──────────────────
         logger.info("[job] STEP 2 — Fetching background and model face from DB...")
@@ -744,23 +784,31 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
         model_face_url = mf_doc["face_url"]
         logger.info("[job] Model face found: %s", model_face_url[:80])
 
-        image_urls = [req["front_garment_image"]]
+        base_image_urls = [req["front_garment_image"]]
         if req.get("back_garment_image"):
-            image_urls.append(req["back_garment_image"])
+            base_image_urls.append(req["back_garment_image"])
             logger.info("[job] Back garment image included")
-        image_urls.append(model_face_url)
-        image_urls.append(background_url)
-        logger.info("[job] STEP 2 DONE — %d reference images assembled", len(image_urls))
+        base_image_urls.append(model_face_url)
+        base_image_urls.append(background_url)
+        logger.info("[job] STEP 2 DONE — %d base reference image(s) assembled", len(base_image_urls))
 
         # ── Step 3: process all poses concurrently ────────────────────────
-        logger.info("[job] STEP 3 — Launching %d pose(s) concurrently...", len(pose_prompts))
+        logger.info("[job] STEP 3 — Launching %d pose(s) concurrently...", len(poses))
 
         tasks = [
             _process_one_pose(
-                idx, prompt, image_urls, photoshoot_id, req,
+                idx,
+                pose.get("pose_prompt") or "",
+                [
+                    *base_image_urls,
+                    *(([pose.get("pose_image_url")] if (pose.get("pose_image_url") or "").strip() else [])),
+                ],
+                photoshoot_id,
+                req,
+                pose_image_url=pose.get("pose_image_url") or "",
                 upscaling_col=upscaling_col,
             )
-            for idx, prompt in enumerate(pose_prompts, 1)
+            for idx, pose in enumerate(poses, 1)
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -779,7 +827,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
 
         # ── Step 4: deduct credits ────────────────────────────────────────
         logger.info("[job] STEP 4 — Deducting credits...")
-        total_credit = len(pose_prompts) * _PHOTOSHOOT_CREDIT_PER_POSE
+        total_credit = len(poses) * _PHOTOSHOOT_CREDIT_PER_POSE
         generated_image_ids = [img["image_id"] for img in output_images]
         await _deduct_photoshoot_credits(
             req["user_id"],
