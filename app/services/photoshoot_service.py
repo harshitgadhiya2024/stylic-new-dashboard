@@ -191,8 +191,6 @@ def _sanitize_pose_prompt(pose: str) -> str:
         r'saree|sari|kurta|lehenga|churidar|dupatta|salwar|kameez|gown|frock|'
         r'shorts|jeans|denim|sweater|hoodie|cardigan|vest|crop|bralette|'
         r'sleeve|collar|neckline|hem|waist|belt)\b',
-        r'\b(background|setting|environment|room|studio|outdoor|indoor|'
-        r'wall|floor|ceiling|furniture|table|chair|sofa|window|door|'
         r'street|garden|park|beach|office|store|shop)\b',
         r'\b(male|female|man|woman|boy|girl|he|she|his|her|they|them)\b',
     ]
@@ -316,27 +314,28 @@ def _build_photoshoot_prompt(
 
     garment_type_section = f"\n{garment_type_block}" if garment_type_block else ""
 
-    return f"""INSTRUCTION: You are a reference-faithful image compositor. Reproduce all three references exactly — no redesigning, beautifying, or creative changes.
+    return f"""Real photoshoot photo — model physically present inside the scene, NOT composited or pasted over it.
 
 {image_ref}
 
-[Realism: candid 35mm/full-frame photo. Face: natural freckles, skin pores. Surfaces: roughness, micro-scratches, dust, smudges, fabric weave — no smoothness. Logos/text: physically integrated (reflective/stitched/embossed). Skin: SSS, pores, hair follicles, muscle anatomy, realistic grip/compression. Lighting: multi-source ambient+directional, global illumination, color bleed, sharp specular — no flat studio. Reflections: ray-traced, slightly distorted, full scene. Shadows: soft-contact AO, distance-softened edges, no floating. Composition: handheld framing, eye-level, organic asymmetric. DoF: pin-sharp subject, creamy bokeh bg. Atmosphere: haze, dust motes, humidity. Film grain: Kodak Portra-style, chromatic aberration on edges, lens flare. Color: ambient-matched warm/cool tones, no oversaturation.]
-
-[FACE] Use EXACT face from IMG{face_img_num} — match all features and Add minimal natural freckles in skin so we got realistic skin texture.
-Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin.
+[SCENE INTEGRATION — CRITICAL] The model must be fully embedded in the background — feet/body touching the ground surface, contact shadow underneath, background lighting wrapping the model's skin and clothes. No floating. No cutout look. The model's shadow must fall naturally on the ground matching the background light direction.
 
 [GARMENT — DO NOT CHANGE]{garment_type_section}
 {garment_note}
-- Fitting: {fitting} (only if consistent with the reference — never override what you see).{paired_note}
+- Fitting: {fitting} — reproduce silhouette exactly as in reference.{paired_note}
 
-[BACKGROUND] Copy EXACT background from IMG{bg_img_num} unchanged. Model at correct scale, inside the scene.
+[FACE] EXACT face from IMG{face_img_num} — all features unchanged, natural skin texture with subtle pores.
+Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin.
+
+[BACKGROUND] EXACT scene from IMG{bg_img_num} — colors, lighting, objects, shadows all unchanged. Model standing/sitting inside this real environment.
 
 [POSE] {clean_pose if clean_pose else "Natural, relaxed full-body fashion model pose."}
 
-[FOOTWEAR] Mandatory — wear appropriate footwear matching outfit style. No bare feet.{bag_note}
+[REALISM] Candid 35mm film photo. Background light wraps model. Soft ground shadow. Film grain, natural DoF, ambient color bleed. No studio look.
 
-[STYLE]
-Ornaments: {req.get('ornaments', 'none')}."""
+[FOOTWEAR] Appropriate footwear matching outfit — visible on ground. No bare feet.{bag_note}
+
+[STYLE] Ornaments: {req.get('ornaments', 'none')}."""
 
 
 # ---------------------------------------------------------------------------
