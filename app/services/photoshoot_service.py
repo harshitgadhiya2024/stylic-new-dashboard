@@ -228,32 +228,10 @@ def _build_paired_garment_instruction(req: dict) -> str:
         return ""
 
     if has_upper and not has_lower:
-        return (
-            "\n[PAIRED LOWER GARMENT — AI DECISION]\n"
-            "Only the upper garment is provided in the reference image. "
-            "You must choose a complementary lower garment (bottom wear) that:\n"
-            "- Forms a natural, stylish outfit pair with the upper garment shown.\n"
-            "- Matches the color palette, fabric style, and formality level of the upper garment.\n"
-            "- Looks like it belongs to the same outfit set or coordinated look.\n"
-            "- Examples: if upper is ethnic/printed → pair with palazzo, salwar, or skirt; "
-            "if upper is casual → pair with jeans, chinos, or shorts; "
-            "if upper is formal → pair with trousers or a pencil skirt.\n"
-            "- The lower garment must look realistic, properly fitted, and appropriate for the overall look."
-        )
+        return "\n[PAIRED LOWER GARMENT] Add a complementary lower garment matching the upper garment's style and color."
 
     if has_lower and not has_upper:
-        return (
-            "\n[PAIRED UPPER GARMENT — AI DECISION]\n"
-            "Only the lower garment is provided in the reference image. "
-            "You must choose a complementary upper garment (top wear) that:\n"
-            "- Forms a natural, stylish outfit pair with the lower garment shown.\n"
-            "- Matches the color palette, fabric style, and formality level of the lower garment.\n"
-            "- Looks like it belongs to the same outfit set or coordinated look.\n"
-            "- Examples: if lower is ethnic/printed → pair with a kurta, blouse, or ethnic top; "
-            "if lower is casual (jeans/pants) → pair with a t-shirt, shirt, or casual top; "
-            "if lower is formal trousers → pair with a formal shirt or blazer.\n"
-            "- The upper garment must look realistic, properly fitted, and appropriate for the overall look."
-        )
+        return "\n[PAIRED UPPER GARMENT] Add a complementary upper garment matching the lower garment's style and color."
 
     return ""
 
@@ -322,21 +300,9 @@ def _build_photoshoot_prompt(
     paired_note = ""
     if paired_garment_block:
         if "LOWER" in paired_garment_block:
-            paired_note = (
-                "\n- IMPORTANT: The reference image shows ONLY the upper garment (top/blouse/shirt). "
-                "The model MUST wear a full bottom garment — choose a complementary lower garment "
-                "(palazzo pants / salwar for ethnic/boho styles, wide-leg pants or jeans for casual, "
-                "trousers for formal) that matches the upper garment's color and style. "
-                "The model must NOT have bare legs. A proper full-length or knee-length bottom is REQUIRED."
-            )
+            paired_note = "\n- IMPORTANT: Add a matching bottom garment — no bare legs."
         else:
-            paired_note = (
-                "\n- IMPORTANT: The reference image shows ONLY the lower garment (pants/skirt/bottom). "
-                "The model MUST wear a full upper garment — choose a complementary top "
-                "(ethnic top/blouse for ethnic styles, t-shirt for casual, formal shirt for formal) "
-                "that matches the lower garment's color and style. "
-                "The model must NOT have a bare torso. A proper top is REQUIRED."
-            )
+            paired_note = "\n- IMPORTANT: Add a matching top garment — no bare torso."
 
     _ornaments_lower = req.get("ornaments", "").lower()
     _bag_requested   = any(kw in _ornaments_lower for kw in ("bag", "purse", "handbag"))
@@ -354,32 +320,20 @@ def _build_photoshoot_prompt(
 
 {image_ref}
 
-{_UNIVERSAL_REALISM_BLOCK}
+[Realism: candid 35mm/full-frame photo. Face: natural freckles, skin pores. Surfaces: roughness, micro-scratches, dust, smudges, fabric weave — no smoothness. Logos/text: physically integrated (reflective/stitched/embossed). Skin: SSS, pores, hair follicles, muscle anatomy, realistic grip/compression. Lighting: multi-source ambient+directional, global illumination, color bleed, sharp specular — no flat studio. Reflections: ray-traced, slightly distorted, full scene. Shadows: soft-contact AO, distance-softened edges, no floating. Composition: handheld framing, eye-level, organic asymmetric. DoF: pin-sharp subject, creamy bokeh bg. Atmosphere: haze, dust motes, humidity. Film grain: Kodak Portra-style, chromatic aberration on edges, lens flare. Color: ambient-matched warm/cool tones, no oversaturation.]
 
-[FACE — DO NOT CHANGE]
-- Copy the EXACT face from IMG{face_img_num} (face reference). Non-negotiable.
-- Match 100%: face shape, eye shape/color, nose, lips, skin tone, eyebrows, jawline, hair color/texture/style.
-- Do NOT beautify, smooth, slim, or reshape the face in any way.
+[FACE] Use EXACT face from IMG{face_img_num} — match all features and Add minimal natural freckles in skin so we got realistic skin texture.
 Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin.
 
 [GARMENT — DO NOT CHANGE]{garment_type_section}
 {garment_note}
 - Fitting: {fitting} (only if consistent with the reference — never override what you see).{paired_note}
 
-[BACKGROUND — DO NOT CHANGE]
-- Copy the EXACT background from IMG{bg_img_num}. All objects, colors, lighting, shadows unchanged.
-- Place the model at correct human scale consistent with background perspective and depth.
-- Model must appear physically inside the scene — not pasted over it.
+[BACKGROUND] Copy EXACT background from IMG{bg_img_num} unchanged. Model at correct scale, inside the scene.
 
-[POSE]
-{clean_pose if clean_pose else "Natural, relaxed full-body fashion model pose suited to the garment and background."}
-- Model scale must be proportionally correct relative to background objects.
+[POSE] {clean_pose if clean_pose else "Natural, relaxed full-body fashion model pose."}
 
-[FOOTWEAR]
-- FOOTWEAR IS MANDATORY IN EVERY OUTPUT IMAGE.
-- The model must wear visible, realistic footwear suitable to the outfit and pose.
-- Barefoot output is NOT allowed. Never show bare feet, socks-only feet, or missing footwear.
-- Choose footwear matching outfit style/formality (ethnic/formal: sandals or heels; casual: sneakers/loafers; western/formal: boots or formal shoes).{bag_note}
+[FOOTWEAR] Mandatory — wear appropriate footwear matching outfit style. No bare feet.{bag_note}
 
 [STYLE]
 Ornaments: {req.get('ornaments', 'none')}."""
@@ -391,29 +345,14 @@ Ornaments: {req.get('ornaments', 'none')}."""
 
 _SEEDDREAM_PROMPT_LIMIT = 3000   # kie.ai official limit per API docs
 
-# Dense universal realism block (required in every prompt). Placed early in _build_photoshoot_prompt so
-# if the full string exceeds the API cap, a tail truncate still keeps this block in almost all cases.
-_UNIVERSAL_REALISM_BLOCK = (
-    "[REALISM — REQUIRED]\n"
-    "Canon 24mm DSLR; 4K 9:16; luxury; soft gradient bg; very low angle. "
-    "Candid full-frame/35mm film—real optics, not CGI.\n"
-    "Skin: light freckles; pores+texture; SSS; no plastic skin.\n"
-    "Surfaces: weave, dust, micro-scratches, smudges, prints; no perfect smoothness. "
-    "Logos/text material-true (reflect/stitch/emboss); seams varied, anatomical.\n"
-    "Body: correct anatomy; relaxed pose; believable grip; contact skin compression; hair follicles where relevant.\n"
-    "Light: multi-source+GI+bounce+bleed; sharp speculars; no flat studio.\n"
-    "Reflect/refract: scene-true reflections (slight warp); correct glass/water refraction.\n"
-    "Shadows+AO: soft contact shadows; grounded; no float.\n"
-    "Comp: handheld candid; eye-level/POV; asymmetric; natural.\n"
-    "DoF: sharp subject; creamy bokeh.\n"
-    "Air: faint haze, lit dust, humidity depth.\n"
-    "Lens: Portra-like grain; subtle CA; flares toward lights.\n"
-    "Grade: ambient warm/cool match; no oversat or sterile neutrals.\n"
-    "4K photoreal fashion; sharp; e-commerce grade."
-)
-
 async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
 
+    if len(prompt) > _SEEDDREAM_PROMPT_LIMIT:
+        logger.warning(
+            "[%s] Prompt exceeds %d chars (%d) — truncating to limit",
+            pose_label, _SEEDDREAM_PROMPT_LIMIT, len(prompt),
+        )
+        prompt = prompt[:_SEEDDREAM_PROMPT_LIMIT]
     logger.info("[%s] Submitting SeedDream task (%d chars, %d images)...", pose_label, len(prompt), len(image_urls))
     payload = json.dumps({
         "model": settings.SEEDDREAM_MODEL,
