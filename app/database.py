@@ -68,6 +68,10 @@ def get_upscaling_collection() -> AsyncIOMotorCollection:
     return get_database()["upscaling_data"]
 
 
+def get_templates_collection() -> AsyncIOMotorCollection:
+    return get_database()["templates"]
+
+
 async def create_indexes() -> None:
     """Create all collection indexes. Call once at application startup."""
     db = get_database()
@@ -108,3 +112,8 @@ async def create_indexes() -> None:
 
     poses_data = db["poses_data"]
     await poses_data.create_index("pose_id")
+
+    templates = db["templates"]
+    await templates.create_index("template_id", unique=True)
+    await templates.create_index("user_id")
+    await templates.create_index([("user_id", ASCENDING), ("is_default", ASCENDING)])
