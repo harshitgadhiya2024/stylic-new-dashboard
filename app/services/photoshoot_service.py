@@ -318,7 +318,21 @@ def _build_photoshoot_prompt(
 
 {image_ref}
 
-[SCENE INTEGRATION — CRITICAL] The model must be fully embedded in the background — feet/body touching the ground surface, contact shadow underneath, background lighting wrapping the model's skin and clothes. No floating. No cutout look. The model's shadow must fall naturally on the ground matching the background light direction.
+[SCENE INTEGRATION — CRITICAL]
+**Clicked on Canon DSLR 24mm lens. 4k 9:16 size. luxury photoshoot style. lightly gradient backdrop. Very low angle.
+Render as a candid, high-resolution real camera photograph (35mm film / full-frame digital). Apply all rules below to emulate real-world light physics.
+Face realism: Add minimal natural freckles in skin so we got realistic skin texture.
+Surface Micro-Textures: Mandatory imperfections on all surfaces — roughness, micro-scratches, dust, smudges, fingerprints, skin pores, fabric weave. Zero perfect smoothness.
+Physical Component Realism: All text/logos physically integrated with correct material properties (reflective, stitched, embossed). Mechanical parts (latches, seams, joints) anatomically accurate, non-repetitive.
+Living Form & Anatomy: Complex skin textures, subsurface scattering (SSS), visible pores, natural hair follicles, accurate muscle/joint anatomy. Relaxed poses, realistic grip, skin compression on contact.
+Complex Lighting: Multi-source real-world lighting (ambient + directional). Full global illumination — light bounces and color-bleeds all surfaces. Sharp specular highlights defining geometry. No flat studio lighting.
+Ray-Traced Reflections/Refractions: Full unbiased ray tracing — reflections slightly distorted, reflecting full scene + light sources. Accurate refraction through transparent materials.
+Shadow Fidelity + AO: Multi-layered shadows with soft-contact ambient occlusion at all touch points. Shadow edges soften with distance. No floating objects.
+Candid Composition: Handheld/spontaneous framing — eye-level or first-person. Organic, asymmetric balance. Natural, undiscovered feel.
+Shallow Depth of Field: Pin-sharp focal point. All foreground/background in creamy, diffused bokeh.
+Atmospheric Realism: Subtle haze, illuminated dust motes, humidity. Air must have visible texture/depth.
+Lens Artifacts + Film Grain: Organic fine-grain (Kodak Portra-style) across full image. Subtle chromatic aberration on high-contrast edges. Lens flare toward light sources.
+Color Grading: Organic, ambient-matched tones (warm/creamy interior; cool exterior). No oversaturation or sterile neutral processing. Color = consequence of physical light.
 
 [GARMENT — DO NOT CHANGE]{garment_type_section}
 {garment_note}
@@ -342,7 +356,7 @@ Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {
 # SeedDream submit + poll
 # ---------------------------------------------------------------------------
 
-_SEEDDREAM_PROMPT_LIMIT = 3000   # kie.ai official limit per API docs
+_SEEDDREAM_PROMPT_LIMIT = 10000   # kie.ai official limit per API docs
 
 async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
 
@@ -354,12 +368,12 @@ async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> s
         prompt = prompt[:_SEEDDREAM_PROMPT_LIMIT]
     logger.info("[%s] Submitting SeedDream task (%d chars, %d images)...", pose_label, len(prompt), len(image_urls))
     payload = json.dumps({
-        "model": settings.SEEDDREAM_MODEL,
+        "model": "nano-banana-pro",
         "input": {
             "prompt":       prompt,
-            "image_urls":   image_urls,
+            "image_input":   image_urls,
             "aspect_ratio": "9:16",
-            "quality":      "high",
+            "resolution":      "4k",
         },
     })
     headers = {
