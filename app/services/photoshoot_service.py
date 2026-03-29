@@ -191,7 +191,7 @@ def _sanitize_pose_prompt(pose: str) -> str:
         r'saree|sari|kurta|lehenga|churidar|dupatta|salwar|kameez|gown|frock|'
         r'shorts|jeans|denim|sweater|hoodie|cardigan|vest|crop|bralette|'
         r'sleeve|collar|neckline|hem|waist|belt)\b',
-        r'street|garden|park|beach|office|store|shop)\b',
+        r'\b(street|garden|park|beach|office|store|shop)\b',
         r'\b(male|female|man|woman|boy|girl|he|she|his|her|they|them)\b',
     ]
     result = pose
@@ -360,12 +360,6 @@ _SEEDDREAM_PROMPT_LIMIT = 10000   # kie.ai official limit per API docs
 
 async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
 
-    if len(prompt) > _SEEDDREAM_PROMPT_LIMIT:
-        logger.warning(
-            "[%s] Prompt exceeds %d chars (%d) — truncating to limit",
-            pose_label, _SEEDDREAM_PROMPT_LIMIT, len(prompt),
-        )
-        prompt = prompt[:_SEEDDREAM_PROMPT_LIMIT]
     logger.info("[%s] Submitting SeedDream task (%d chars, %d images)...", pose_label, len(prompt), len(image_urls))
     payload = json.dumps({
         "model": "nano-banana-pro",
