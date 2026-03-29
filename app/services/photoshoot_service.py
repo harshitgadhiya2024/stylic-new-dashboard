@@ -16,7 +16,7 @@ Responsibilities:
        g. Send 4K bytes to Modal GPU pipeline for enhancement.
        h. Upload enhanced 8K, 4K, 2K, 1K to S3 and save to upscaling_data.
   5. Build output_images mapping — each entry stores the upscaled 1K URL as `image`.
-  6. Deduct credits and record history.
+  6. Deduct credits and record history only for poses that fully succeeded (SeedDream + Modal upscale + S3 output).
   7. Update photoshoot document: output_images, status, is_completed, is_credit_deducted.
      On any unhandled error → status="failed", error field set.
 """
@@ -367,7 +367,7 @@ async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> s
             "prompt":       prompt,
             "image_input":   image_urls,
             "aspect_ratio": "9:16",
-            "resolution":      "4k",
+            "resolution":      "4K",
         },
     })
     headers = {
@@ -588,8 +588,8 @@ async def _deduct_photoshoot_credits(
 
 async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -> None:
     """
-    Runs the full photoshoot pipeline, updates the photoshoot document,
-    deducts credits.
+    Runs the full photoshoot pipeline, updates the photoshoot document.
+    Credits are deducted only for poses that complete the full pipeline including Modal upscale.
 
     motor_client: optional AsyncIOMotorClient.  When provided (Celery path),
     collections are derived from it so Motor never touches the closed global
@@ -685,22 +685,29 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
         logger.info("[job] STEP 3 DONE — %d succeeded, %d failed",
                     len(output_images), len(failed_poses))
 
-        # ── Step 4: deduct credits ────────────────────────────────────────
-        logger.info("[job] STEP 4 — Deducting credits...")
-        total_credit = len(pose_prompts) * _PHOTOSHOOT_CREDIT_PER_POSE
+        # ── Step 4: deduct credits only for fully successful poses ───────
+        # Each success includes SeedDream → Modal upscale → S3 (see _process_one_pose).
+        successful_count = len(output_images)
+        total_credit = round(successful_count * _PHOTOSHOOT_CREDIT_PER_POSE, 4)
         generated_image_ids = [img["image_id"] for img in output_images]
-        await _deduct_photoshoot_credits(
-            req["user_id"],
-            total_credit,
-            photoshoot_id,
-            regeneration_type=req.get("regeneration_type", ""),
-            regenerate_photoshoot_id=req.get("regenerate_photoshoot_id", ""),
-            image_ids=generated_image_ids,
-            credit_per_image=_PHOTOSHOOT_CREDIT_PER_POSE,
-            users_col=_get_usr(),
-            history_col=_get_ch(),
-        )
-        logger.info("[job] STEP 4 DONE — %.2f credits deducted", total_credit)
+
+        if total_credit > 0:
+            logger.info("[job] STEP 4 — Deducting %.2f credits for %d completed image(s)...",
+                        total_credit, successful_count)
+            await _deduct_photoshoot_credits(
+                req["user_id"],
+                total_credit,
+                photoshoot_id,
+                regeneration_type=req.get("regeneration_type", ""),
+                regenerate_photoshoot_id=req.get("regenerate_photoshoot_id", ""),
+                image_ids=generated_image_ids,
+                credit_per_image=_PHOTOSHOOT_CREDIT_PER_POSE,
+                users_col=_get_usr(),
+                history_col=_get_ch(),
+            )
+            logger.info("[job] STEP 4 DONE — %.2f credits deducted", total_credit)
+        else:
+            logger.info("[job] STEP 4 — No credits deducted (no pose completed full pipeline)")
 
         # ── Step 5: update photoshoot document ───────────────────────────
         logger.info("[job] STEP 5 — Updating photoshoot document in DB...")
@@ -711,7 +718,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
                 "output_images":       output_images,
                 "failed_poses":        failed_poses,
                 "total_credit":        total_credit,
-                "is_credit_deducted":  True,
+                "is_credit_deducted":  bool(total_credit > 0),
                 "is_completed":        True,
                 "status":              final_status,
                 "updated_at":          datetime.now(timezone.utc),
