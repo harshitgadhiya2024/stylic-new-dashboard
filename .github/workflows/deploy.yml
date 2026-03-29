@@ -38,7 +38,12 @@ jobs:
             source venv/bin/activate
             pip install -r requirements.txt --quiet
 
+            modal deploy modal_realism_pipeline.py
+
             # Restart the app via systemd
             sudo systemctl restart stylic-ai
+
+            sudo systemctl restart celery-photoshoot
+            sudo systemctl restart flower
 
             echo "Deployment completed successfully"
