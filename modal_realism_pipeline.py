@@ -2101,8 +2101,8 @@ try:
     @app.cls(
         image=image,
         gpu="T4",
-        timeout=1000,
-        memory=49152,   # 48 GB VRAM + headroom; L40S has 48 GB GDDR6 VRAM
+        timeout=2500,
+        memory=16384,   # 16 GB VRAM + headroom; L40S has 48 GB GDDR6 VRAM
         secrets=[hf_secret],
         volumes={WEIGHTS_PATH: weights_volume},
         # Auto-scale: spin up to 10 L40S containers when demand is high,
@@ -2124,8 +2124,8 @@ try:
     @app.cls(
         image=image,
         gpu="L4",
-        timeout=1000,
-        memory=40960,   # 40 GB HBM2 VRAM on A100-40GB
+        timeout=2500,
+        memory=24576,   # 24 GB HBM2 VRAM on A100-40GB
         secrets=[hf_secret],
         volumes={WEIGHTS_PATH: weights_volume},
         # Auto-scale: spin up to 5 A100-40GB containers (premium GPU, keep lower cap).
