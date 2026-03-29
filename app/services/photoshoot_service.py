@@ -248,10 +248,14 @@ def _build_photoshoot_prompt(
             "  IMG4 — BACKGROUND: the exact background scene."
         )
         garment_note = (
-            "- Copy the garment EXACTLY from IMG1 and IMG2.\n"
-            "- Reproduce with 100% accuracy: neckline shape/depth, sleeve length/shape, "
-            "bodice length, hem, waistband, all lace/embroidery/trim/buttons/prints at exact scale and placement.\n"
-            "- Do NOT alter silhouette, proportions, or fit. Loose/flowy in reference = loose/flowy in output."
+            "- Copy the garment EXACTLY from IMG1 (front) and IMG2 (back) — the same outfit as shown, for any category "
+            "(casual, formal, ethnic, dress, suit, outerwear, etc.), not a similar substitute.\n"
+            "- COLOR LOCK: Every fabric, print, border, and trim must match the garment references — same hues and values. "
+            "No re-tinting, no warming/cooling drift, no extra saturation or exposure shifts on the clothes.\n"
+            "- DESIGN & WEARING STYLE: Reproduce whatever the reference shows — cut, length, layering, neckline, sleeves, "
+            "waist, hem, drape, pleats, gathers, structure, weave, pattern scale, closures, and all surface detail "
+            "(embroidery, lace, beading, buttons, belts). Match how the garment sits on the body in the reference.\n"
+            "- Do NOT simplify into a generic piece or change garment type. Loose/tailored/structured in ref = same on the model."
         )
     else:
         image_ref = (
@@ -261,10 +265,14 @@ def _build_photoshoot_prompt(
             "  IMG3 — BACKGROUND: the exact background scene."
         )
         garment_note = (
-            "- Copy the garment EXACTLY from IMG1.\n"
-            "- Reproduce with 100% accuracy: neckline shape/depth, sleeve length/shape, "
-            "bodice length, hem, waistband, all lace/embroidery/trim/buttons/prints at exact scale and placement.\n"
-            "- Do NOT alter silhouette, proportions, or fit. Loose/flowy in reference = loose/flowy in output."
+            "- Copy the garment EXACTLY from IMG1 — the same outfit as shown, for any category "
+            "(casual, formal, ethnic, dress, suit, outerwear, etc.), not a substitute.\n"
+            "- COLOR LOCK: Every fabric, print, border, and trim must match IMG1 — same hues and values. "
+            "No re-tinting, no warming/cooling drift, no extra saturation or exposure shifts on the clothes.\n"
+            "- DESIGN & WEARING STYLE: Reproduce whatever IMG1 shows — cut, length, layering, neckline, sleeves, waist, hem, "
+            "drape, pleats, gathers, structure, weave, pattern scale, closures, and all surface detail "
+            "(embroidery, lace, beading, buttons, belts). Match how the garment sits on the body in the reference.\n"
+            "- Do NOT simplify into a generic piece or change garment type. Loose/tailored/structured in ref = same on the model."
         )
 
     fitting = req.get("fitting", "regular fit")
@@ -332,20 +340,27 @@ Candid Composition: Handheld/spontaneous framing — eye-level or first-person. 
 Shallow Depth of Field: Pin-sharp focal point. All foreground/background in creamy, diffused bokeh.
 Atmospheric Realism: Subtle haze, illuminated dust motes, humidity. Air must have visible texture/depth.
 Lens Artifacts + Film Grain: Organic fine-grain (Kodak Portra-style) across full image. Subtle chromatic aberration on high-contrast edges. Lens flare toward light sources.
-Color Grading: Organic, ambient-matched tones (warm/creamy interior; cool exterior). No oversaturation or sterile neutral processing. Color = consequence of physical light.
+Color & light (identity vs illumination): Match the background scene’s lighting — direction, softness, sun or studio character, bounce, and ambient wrap from IMG{bg_img_num}. Skin and garments must receive the same light as a real subject in that place: brighter where the sun or key hits, softer in shade, believable specular on fabric — that blending is required and looks correct. Preserve the underlying identity of skin (undertone, hue from the face reference) and of fabrics (dye hue, print colors from garment reference(s)); do not globally retint or swap those colors — only apply physically correct illumination and local contrast.
 
 [GARMENT — DO NOT CHANGE]{garment_type_section}
 {garment_note}
-- Fitting: {fitting} — reproduce silhouette exactly as in reference.{paired_note}
+- Fitting: {fitting} — only as the reference garment allows; never override design or color.{paired_note}
 
-[FACE] EXACT face from IMG{face_img_num} — all features unchanged, natural skin texture with subtle pores.
-Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin.
+[FACE — IDENTITY LOCK — CRITICAL]
+The head/face must be the SAME person as IMG{face_img_num} in this and every pose — not a lookalike, not a new face.
+Lock: face shape, eye shape/size/color, eyebrows, nose, lips, jaw, cheekbones, ears, hairline, hair color/part/length/texture, baseline skin tone.
+Scene light may add real highlights (e.g. sun on cheek) and shadows — that is correct blending; keep the same person and undertone as the face reference, not a recolored face.
+Add sparse minimal natural freckles and visible fine pores for realism; keep skin human, not airbrushed plastic.
+Do NOT change ethnicity, age, or facial proportions; do NOT beautify, slim the face, enlarge eyes, or swap identity. Expression and head angle may follow the pose; features stay identical.
+Model (body sizing only): {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin — face still copied only from IMG{face_img_num}.
 
 [BACKGROUND] EXACT scene from IMG{bg_img_num} — colors, lighting, objects, shadows all unchanged. Model standing/sitting inside this real environment.
 
+[LIGHTING — SCENE BLEND] Subject lighting must follow this background: same key direction, rim, fill, and color temperature as the scene. Props or body parts can catch light and read brighter where lit; shadows fall naturally — same as a real photoshoot. This is separate from recoloring: do not change base skin undertone or garment color away from the face/garment references.
+
 [POSE] {clean_pose if clean_pose else "Natural, relaxed full-body fashion model pose."}
 
-[REALISM] Candid 35mm film photo. Background light wraps model. Soft ground shadow. Film grain, natural DoF, ambient color bleed. No studio look.
+[REALISM] Candid 35mm film photo. Light wraps and grounds the model in the scene. Soft contact shadow. Film grain, natural DoF. No flat cutout look.
 
 [FOOTWEAR] Appropriate footwear matching outfit — visible on ground. No bare feet.{bag_note}
 
