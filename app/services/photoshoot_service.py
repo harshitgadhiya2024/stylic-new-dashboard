@@ -8,15 +8,19 @@ Responsibilities:
   3. Fetch model face image URL from model_faces collection.
   4. For each pose — concurrently via asyncio.gather:
        a. Build a detailed generation prompt.
-       b. Submit SeedDream task (quality=high, aspect=9:16).
-       c. Poll until done.
-       d. Download 4K result bytes.
-       e. Resize to 2K and 1K (SeedDream originals).
-       f. Upload SeedDream 4K, 2K, 1K to S3.
-       g. Send 4K bytes to Modal GPU pipeline for enhancement.
+       b. Stage A — kie.ai PHOTOSHOOT_GENERATE_MODEL (default nano-banana-pro): full scene
+          generation from garment(s) + face + background refs (image_input, 4K / 9:16).
+       c. Upload stage-A output to S3 (stable URL for stage B).
+       d. Stage B — kie.ai SEEDDREAM_MODEL (seedream/4.5-edit): edit pass with composite
+          + face + garment ref(s). Locks background, lighting, and global composition;
+          replaces face to match the face reference; replaces garment only if it does not
+          already match the garment reference(s).
+       e. Poll until each stage completes; download final 4K bytes from stage B.
+       f. Resize to 2K and 1K; upload 4K / 2K / 1K to S3.
+       g. Send stage-B 4K bytes to Modal GPU pipeline for enhancement.
        h. Upload enhanced 8K, 4K, 2K, 1K to S3 and save to upscaling_data.
   5. Build output_images mapping — each entry stores the upscaled 1K URL as `image`.
-  6. Deduct credits and record history only for poses that fully succeeded (SeedDream + Modal upscale + S3 output).
+  6. Deduct credits and record history only for poses that fully succeeded (full pipeline + S3 output).
   7. Update photoshoot document: output_images, status, is_completed, is_credit_deducted.
      On any unhandled error → status="failed", error field set.
 """
@@ -367,22 +371,106 @@ Model (body sizing only): {req['gender']}, {req['ethnicity']}, {req['age']} ({re
 [STYLE] Ornaments: {req.get('ornaments', 'none')}."""
 
 
+def _split_garment_face_bg(image_urls: List[str], has_back_image: bool) -> tuple[str, str | None, str, str]:
+    """Return (garment_front, garment_back|None, face_url, background_url) from ordered refs."""
+    front = image_urls[0]
+    if has_back_image:
+        if len(image_urls) < 4:
+            raise ValueError("Expected 4 reference URLs when back garment is present.")
+        return front, image_urls[1], image_urls[2], image_urls[3]
+    if len(image_urls) < 3:
+        raise ValueError("Expected at least 3 reference URLs (garment, face, background).")
+    return front, None, image_urls[1], image_urls[2]
+
+
+def _build_seeddream_edit_prompt(has_back_image: bool) -> str:
+    """
+    Stage-B edit: lock composite scene; swap face to match ref; garment only if mismatched.
+    Image order matches _build_edit_image_urls: composite, face, garment(s).
+    """
+    if has_back_image:
+        return f"""You are an INPAINTING / LOCAL EDIT model. You receive reference images in this order:
+
+IMAGE 1 — BASE COMPOSITE (master shot from an earlier generator): full-body fashion frame with background, pose, lighting, and overall grade. Treat this as the SPATIAL and PHOTOREALISTIC anchor.
+
+IMAGE 2 — FACE REFERENCE: the ONLY allowed identity for the model's face and visible hairline/hair in frame.
+
+IMAGE 3 — GARMENT FRONT REFERENCE: exact front of the outfit.
+
+IMAGE 4 — GARMENT BACK REFERENCE: exact back of the outfit.
+
+[GLOBAL LOCK — NON-NEGOTIABLE]
+- Preserve IMAGE 1's background, environment, props, floor, horizon, depth of field, bokeh, color temperature, shadow placement, and global lighting on the SCENE. Do NOT move, relight, recolor, or redraw the background.
+- Preserve body pose, limb positions, camera angle, framing (9:16), and scale unless a listed edit below explicitly requires a tiny blend at boundaries.
+- Do NOT change skin on body outside the face/neck transition zone needed for the face swap.
+- Do NOT add/remove jewelry, bags, or accessories unless the garment edit section requires aligning with the garment reference.
+
+[FACE — ALWAYS APPLY]
+- Replace the face (and any visible hair in the face crop) in IMAGE 1 so it is the SAME person as IMAGE 2: identical bone structure, eyes, nose, lips, brows, ears, skin undertone, hair color/texture/line.
+- Keep natural re-lighting from the SCENE in IMAGE 1 (highlights/shadows that come from that environment) while preserving identity from IMAGE 2. No beauty morph, no age/ethnicity drift.
+
+[GARMENT — CONDITIONAL]
+- First, decide whether the clothing on the person in IMAGE 1 already matches IMAGE 3 and IMAGE 4 (same design, colors, pattern, cut, and how it is worn).
+- If it ALREADY matches: do NOT change any garment pixels. Leave fabric, folds, and accessories on the body unchanged.
+- If it does NOT match (wrong item, wrong colors/print, missing piece, or clearly different outfit): replace ONLY the garment regions so the outfit matches IMAGE 3 + IMAGE 4. Do not alter background, face (after face pass), or pose.
+
+[QUALITY]
+- Seamless edges at face/neck and garment boundaries; no halos or cutout look.
+- Photorealistic, high resolution, fashion e-commerce grade.
+
+Output: one edited image; same canvas size and aspect as IMAGE 1."""
+
+    return f"""You are an INPAINTING / LOCAL EDIT model. You receive reference images in this order:
+
+IMAGE 1 — BASE COMPOSITE (master shot from an earlier generator): full-body fashion frame with background, pose, lighting, and overall grade. Treat this as the SPATIAL and PHOTOREALISTIC anchor.
+
+IMAGE 2 — FACE REFERENCE: the ONLY allowed identity for the model's face and visible hairline/hair in frame.
+
+IMAGE 3 — GARMENT REFERENCE: the exact outfit to wear (single flat/reference view).
+
+[GLOBAL LOCK — NON-NEGOTIABLE]
+- Preserve IMAGE 1's background, environment, props, floor, horizon, depth of field, bokeh, color temperature, shadow placement, and global lighting on the SCENE. Do NOT move, relight, recolor, or redraw the background.
+- Preserve body pose, limb positions, camera angle, framing (9:16), and scale unless a listed edit below explicitly requires a tiny blend at boundaries.
+- Do NOT change skin on body outside the face/neck transition zone needed for the face swap.
+- Do NOT add/remove jewelry, bags, or accessories unless the garment edit section requires aligning with the garment reference.
+
+[FACE — ALWAYS APPLY]
+- Replace the face (and any visible hair in the face crop) in IMAGE 1 so it is the SAME person as IMAGE 2: identical bone structure, eyes, nose, lips, brows, ears, skin undertone, hair color/texture/line.
+- Keep natural re-lighting from the SCENE in IMAGE 1 while preserving identity from IMAGE 2. No beauty morph, no age/ethnicity drift.
+
+[GARMENT — CONDITIONAL]
+- First, decide whether the clothing on the person in IMAGE 1 already matches IMAGE 3 (same design, colors, pattern, cut, and how it is worn).
+- If it ALREADY matches: do NOT change any garment pixels.
+- If it does NOT match: replace ONLY the garment regions so the outfit matches IMAGE 3. Do not alter background, face (after face pass), or pose.
+
+[QUALITY]
+- Seamless edges at face/neck and garment boundaries; no halos or cutout look.
+- Photorealistic, high resolution, fashion e-commerce grade.
+
+Output: one edited image; same canvas size and aspect as IMAGE 1."""
+
+
 # ---------------------------------------------------------------------------
-# SeedDream submit + poll
+# kie.ai — stage A (nano-banana-pro) + stage B (seedream/4.5-edit) + poll
 # ---------------------------------------------------------------------------
 
 _SEEDDREAM_PROMPT_LIMIT = 10000   # kie.ai official limit per API docs
 
-async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
 
-    logger.info("[%s] Submitting SeedDream task (%d chars, %d images)...", pose_label, len(prompt), len(image_urls))
+async def _submit_nano_generate_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
+    """Stage A: full-scene generation (nano-banana-pro). Uses image_input."""
+    model = settings.PHOTOSHOOT_GENERATE_MODEL
+    logger.info(
+        "[%s] Stage A — submitting %s (%d chars, %d images)...",
+        pose_label, model, len(prompt), len(image_urls),
+    )
     payload = json.dumps({
-        "model": "nano-banana-pro",
+        "model": model,
         "input": {
-            "prompt":       prompt,
+            "prompt":        prompt,
             "image_input":   image_urls,
-            "aspect_ratio": "9:16",
-            "resolution":      "4K",
+            "aspect_ratio":  "9:16",
+            "resolution":    "4K",
         },
     })
     headers = {
@@ -392,11 +480,39 @@ async def _submit_task(prompt: str, image_urls: List[str], pose_label: str) -> s
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(_CREATE_URL, headers=headers, content=payload)
         resp.raise_for_status()
-    print(resp.json())
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
-        raise RuntimeError(f"No taskId returned: {resp.text}")
-    logger.info("[%s] Task submitted — task_id=%s", pose_label, task_id)
+        raise RuntimeError(f"No taskId returned (stage A): {resp.text}")
+    logger.info("[%s] Stage A submitted — task_id=%s", pose_label, task_id)
+    return task_id
+
+
+async def _submit_seeddream_edit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
+    """Stage B: face + conditional garment edit (seedream/4.5-edit). Uses image_urls."""
+    logger.info(
+        "[%s] Stage B — submitting %s (%d chars, %d images)...",
+        pose_label, settings.SEEDDREAM_MODEL, len(prompt), len(image_urls),
+    )
+    payload = json.dumps({
+        "model": settings.SEEDDREAM_MODEL,
+        "input": {
+            "prompt":        prompt,
+            "image_urls":    image_urls,
+            "aspect_ratio":  settings.SEEDDREAM_ASPECT,
+            "quality":       settings.SEEDDREAM_QUALITY,
+        },
+    })
+    headers = {
+        "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
+        "Content-Type":  "application/json",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(_CREATE_URL, headers=headers, content=payload)
+        resp.raise_for_status()
+    task_id = resp.json().get("data", {}).get("taskId")
+    if not task_id:
+        raise RuntimeError(f"No taskId returned (stage B): {resp.text}")
+    logger.info("[%s] Stage B submitted — task_id=%s", pose_label, task_id)
     return task_id
 
 
@@ -478,17 +594,34 @@ async def _process_one_pose(
     """
     pose_label = f"pose-{pose_idx:02d}"
     image_id   = str(uuid.uuid4())
+    prefix     = f"photoshoots/{photoshoot_id}/{image_id}"
     logger.info("[%s] ── Starting pose pipeline ──────────────────────", pose_label)
     logger.info("[%s] Pose prompt:\n%s", pose_label, pose_prompt)
 
-    logger.info("[%s] Building SeedDream generation prompt...", pose_label)
+    logger.info("[%s] Building stage-A generation prompt...", pose_label)
     has_back = bool(req_snapshot.get("back_garment_image", ""))
-    prompt   = _build_photoshoot_prompt(pose_prompt, has_back, req_snapshot)
-    logger.info("[%s] Generation prompt built (%d chars, back_image=%s)", pose_label, len(prompt), has_back)
+    prompt_a = _build_photoshoot_prompt(pose_prompt, has_back, req_snapshot)
+    logger.info("[%s] Stage-A prompt built (%d chars, back_image=%s)", pose_label, len(prompt_a), has_back)
 
-    task_id = await _submit_task(prompt, image_urls, pose_label)
-    result_url_4k = await _poll_task(task_id, pose_label)
-    logger.info("[%s] 4K result URL received", pose_label)
+    g_front, g_back, face_url, _bg_url = _split_garment_face_bg(image_urls, has_back)
+
+    task_a = await _submit_nano_generate_task(prompt_a, image_urls, pose_label)
+    url_a  = await _poll_task(task_a, pose_label)
+    logger.info("[%s] Stage A complete — composite URL received", pose_label)
+
+    bytes_a = await _download_bytes(url_a, f"{pose_label}-stageA")
+    url_composite_s3 = await upload_bytes_to_s3(bytes_a, f"{prefix}_nano_composite.png", "image/png")
+    logger.info("[%s] Stage-A composite stored: %s", pose_label, url_composite_s3[:80])
+
+    edit_urls: List[str] = [url_composite_s3, face_url, g_front]
+    if g_back:
+        edit_urls.append(g_back)
+    prompt_b = _build_seeddream_edit_prompt(has_back)
+    logger.info("[%s] Stage B — %d edit reference image(s)", pose_label, len(edit_urls))
+
+    task_b = await _submit_seeddream_edit_task(prompt_b, edit_urls, pose_label)
+    result_url_4k = await _poll_task(task_b, pose_label)
+    logger.info("[%s] Stage B complete — final 4K URL received", pose_label)
 
     bytes_4k = await _download_bytes(result_url_4k, pose_label)
 
@@ -499,8 +632,7 @@ async def _process_one_pose(
     bytes_1k = await asyncio.get_running_loop().run_in_executor(None, _resize_image, bytes_4k, 1024)
     logger.info("[%s] Resize complete", pose_label)
 
-    prefix = f"photoshoots/{photoshoot_id}/{image_id}"
-    logger.info("[%s] Uploading SeedDream 4K / 2K / 1K to S3 (prefix=%s)...", pose_label, prefix)
+    logger.info("[%s] Uploading final 4K / 2K / 1K to S3 (prefix=%s)...", pose_label, prefix)
 
     url_4k, url_2k, url_1k = await asyncio.gather(
         upload_bytes_to_s3(bytes_4k, f"{prefix}_4k.png", "image/png"),
