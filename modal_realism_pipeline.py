@@ -86,17 +86,17 @@ USE_FACE_ENHANCE    = True
 FACE_BACKEND        = "codeformer"
 # CodeFormer w: higher = closer to the SR face (less codebook "restoration").
 # Lower values look etched/sharp vs body; 0.85–0.92 usually matches diffuse gen better.
-CODEFORMER_FIDELITY = 0.88
+CODEFORMER_FIDELITY = 0.60
 # GFPGAN paste weight: 0.5 = natural blend, 1.0 = full GFPGAN (over-smooth)
 # Lower = more original texture preserved, less plastic look
-GFPGAN_WEIGHT = 0.22
+GFPGAN_WEIGHT = 0.10
 # Blend enhanced face back with original face region to avoid "AI skin".
 # 0.0 = use full enhanced face, 1.0 = keep original face only.
-FACE_NATURAL_BLEND = 0.48
+FACE_NATURAL_BLEND = 0.65
 # Stage 3.5 excludes the face from body-skin diffusion; limbs get softer while
 # CodeFormer keeps the face crisp. Gently blend face toward a smoothed copy so
 # texture matches arms/chest (0 = off; ~0.12–0.22 typical).
-FACE_POST_BODY_HARMONY = 0.16
+FACE_POST_BODY_HARMONY = 0.28
 # Stage 3.5: skin-region-only refinement for body skin (arms/legs/hands).
 USE_BODY_SKIN_REFINE = True
 # "texture_transfer" keeps real skin texture from source (recommended)
