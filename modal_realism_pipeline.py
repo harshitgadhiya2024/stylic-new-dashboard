@@ -6,7 +6,7 @@ High-fidelity multi-model pipeline for fashion photoshoot images.
 
 Stage 1  │ SwinIR-L x4          │ Base super-resolution (x4 upscale)
 Stage 2  │ HAT (tiled)          │ Fabric & pattern detail refinement
-Stage 3  │ RestoreFormer++ / GFPGAN │ Face & skin photorealism
+Stage 3  │ CodeFormer / RestoreFormer++ / GFPGAN │ Face realism
 Stage 4  │ Post-processing      │ Bilateral smooth → CLAHE → deband
 
 Run on Modal:
@@ -84,13 +84,19 @@ USE_FACE_ENHANCE    = True
 # "restoreformer" = photorealistic skin texture (optional)
 # "gfpgan"        = fastest fallback
 FACE_BACKEND        = "codeformer"
-CODEFORMER_FIDELITY = 0.75
+# CodeFormer w: higher = closer to the SR face (less codebook "restoration").
+# Lower values look etched/sharp vs body; 0.85–0.92 usually matches diffuse gen better.
+CODEFORMER_FIDELITY = 0.88
 # GFPGAN paste weight: 0.5 = natural blend, 1.0 = full GFPGAN (over-smooth)
 # Lower = more original texture preserved, less plastic look
 GFPGAN_WEIGHT = 0.22
 # Blend enhanced face back with original face region to avoid "AI skin".
 # 0.0 = use full enhanced face, 1.0 = keep original face only.
-FACE_NATURAL_BLEND = 0.28
+FACE_NATURAL_BLEND = 0.48
+# Stage 3.5 excludes the face from body-skin diffusion; limbs get softer while
+# CodeFormer keeps the face crisp. Gently blend face toward a smoothed copy so
+# texture matches arms/chest (0 = off; ~0.12–0.22 typical).
+FACE_POST_BODY_HARMONY = 0.16
 # Stage 3.5: skin-region-only refinement for body skin (arms/legs/hands).
 USE_BODY_SKIN_REFINE = True
 # "texture_transfer" keeps real skin texture from source (recommended)
@@ -1214,6 +1220,69 @@ def blend_faces_natural(pre_face_bgr, enhanced_bgr):
     return out
 
 
+def harmonize_face_after_body_skin(img_bgr, blend: float = 0.0):
+    """
+    Body-skin refinement deliberately skips the face (_exclude_face_regions), so
+    after diffusion retouch the limbs are often softer than the CodeFormer face.
+    Blend a small amount of Gaussian-smoothed color/texture into loose face
+    ovals to align apparent sharpness without another model pass.
+    """
+    blend = float(np.clip(blend, 0.0, 1.0))
+    if blend <= 0.0:
+        return img_bgr
+
+    h, w = img_bgr.shape[:2]
+    sigma = max(0.85, min(h, w) * 0.0004)
+    soft = cv2.GaussianBlur(img_bgr, (0, 0), sigma)
+
+    _DET_MAX = 1024
+    det_scale = min(1.0, _DET_MAX / max(h, w))
+    try:
+        cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        if det_scale < 1.0:
+            dw, dh = int(w * det_scale), int(h * det_scale)
+            gray_small = cv2.resize(
+                cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY),
+                (dw, dh), interpolation=cv2.INTER_AREA,
+            )
+        else:
+            gray_small = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        faces = cascade.detectMultiScale(
+            gray_small, scaleFactor=1.08, minNeighbors=4, minSize=(24, 24)
+        )
+    except Exception as e:
+        print(f"[!] Face post-body harmony skipped ({e})")
+        return img_bgr
+
+    if len(faces) == 0:
+        return img_bgr
+
+    inv = 1.0 / det_scale
+    mask = np.zeros((h, w), dtype=np.float32)
+    yy, xx = np.mgrid[0:h, 0:w]
+    for (x, y, fw, fh) in faces:
+        cx = (x + fw / 2.0) * inv
+        cy = (y + fh / 2.0) * inv
+        rx = fw * 0.74 * inv
+        ry = fh * 0.90 * inv
+        ell = ((xx - cx) / max(rx, 1.0)) ** 2 + ((yy - cy) / max(ry, 1.0)) ** 2
+        local = np.clip(1.0 - ell, 0.0, 1.0).astype(np.float32)
+        local = cv2.GaussianBlur(local, (0, 0), max(3.5, fw * inv * 0.11))
+        mask = np.maximum(mask, local)
+
+    mask = np.clip(mask, 0.0, 1.0)
+    eff = (mask * blend)[..., np.newaxis]
+    out = (
+        img_bgr.astype(np.float32) * (1.0 - eff)
+        + soft.astype(np.float32) * eff
+    )
+    out = np.clip(out, 0, 255).astype(np.uint8)
+    print(f"[✓] Face post-body harmony (faces={len(faces)}, blend={blend:.2f})")
+    return out
+
+
 def _skin_mask_hsv_ycrcb(img_bgr):
     """
     Build robust skin mask using HSV + YCrCb intersection.
@@ -1883,6 +1952,9 @@ def run_pipeline(img_bgr, device, tmp_dir: Path, preloaded_models: dict = None):
         TIMER.start("Stage 3.5 — Body skin refinement")
         sr = refine_body_skin_only(sr, img_bgr, device=device, preloaded_models=preloaded_models)
         TIMER.end()
+        hb = float(np.clip(FACE_POST_BODY_HARMONY, 0.0, 1.0))
+        if hb > 0.0 and USE_FACE_ENHANCE:
+            sr = harmonize_face_after_body_skin(sr, blend=hb)
 
     # ── Stage 4: Post-processing ─────────────────────────────────
     TIMER.start("Stage 4 — Post-processing")
