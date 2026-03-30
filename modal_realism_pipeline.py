@@ -6,7 +6,7 @@ High-fidelity multi-model pipeline for fashion photoshoot images.
 
 Stage 1  │ SwinIR-L x4          │ Base super-resolution (x4 upscale)
 Stage 2  │ HAT (tiled)          │ Fabric & pattern detail refinement
-Stage 3  │ CodeFormer / RestoreFormer++ / GFPGAN │ Face realism
+Stage 3  │ CodeFormer (face deblur/restore) + optional skin deblur │ No extra “realism”
 Stage 4  │ Post-processing      │ Bilateral smooth → CLAHE → deband
 
 Run on Modal:
@@ -78,56 +78,50 @@ HAT_BLEND_WEIGHT = 0.30
 # Re-inject high-frequency detail from original image upsample (non-hallucinatory).
 DETAIL_PRESERVE_BLEND = 0.36
 
-# ── Stage 3: Face & skin realism ───────────────────────────────
+# ── Stage 3: Face deblur / restore + skin deblur ONLY ───────────
+# Upstream (nano-banana-pro + SeedDream) already delivers scene realism. Here we only
+# lift blur on faces (CodeFormer) and on visible body skin (mild unsharp), not new
+# texture, pores, or diffusion “beauty” passes.
 USE_FACE_ENHANCE    = True
-# "codeformer"    = best stability + identity preservation (recommended)
-# "restoreformer" = photorealistic skin texture (optional)
+# "codeformer"    = face deblur/restore for high-res zoom
+# "restoreformer" = optional heavier restoration
 # "gfpgan"        = fastest fallback
 FACE_BACKEND        = "codeformer"
-# CodeFormer w: higher = closer to the SR face (less codebook "restoration").
-# Lower values look etched/sharp vs body; 0.85–0.92 usually matches diffuse gen better.
-CODEFORMER_FIDELITY = 0.60
-# GFPGAN paste weight: 0.5 = natural blend, 1.0 = full GFPGAN (over-smooth)
-# Lower = more original texture preserved, less plastic look
+# CodeFormer w: lower = stronger deblur/restoration from codebook; higher = closer
+# to input (stays softer). ~0.55–0.68 targets “remove blur” without max etched look.
+CODEFORMER_FIDELITY = 0.62
+# GFPGAN paste weight (only if FACE_BACKEND=gfpgan)
 GFPGAN_WEIGHT = 0.10
-# Blend enhanced face back with original face region to avoid "AI skin".
-# 0.0 = use full enhanced face, 1.0 = keep original face only.
-FACE_NATURAL_BLEND = 0.65
-# Stage 3.5 excludes the face from body-skin diffusion; limbs get softer while
-# CodeFormer keeps the face crisp. Gently blend face toward a smoothed copy so
-# texture matches arms/chest (0 = off; ~0.12–0.22 typical).
-FACE_POST_BODY_HARMONY = 0.28
-# Stage 3.5: skin-region-only refinement for body skin (arms/legs/hands).
+# How much to keep pre–face-enhance pixels in the face region. Lower = more deblur
+# visible (good when input is already photorealistic).
+FACE_NATURAL_BLEND = 0.22
+# Post–body pass face harmonize (was for matching diffusion-retouched limbs). Off
+# when using deblur-only skin — avoids fighting upstream realism.
+FACE_POST_BODY_HARMONY = 0.0
+# Stage 3.5: visible skin outside face — deblur only (no SD inpainting / pores).
 USE_BODY_SKIN_REFINE = True
-# "texture_transfer" keeps real skin texture from source (recommended)
-# "legacy_smooth" keeps old smoothing behavior
-# "diffusion_retouch" uses model-based skin retouch (heavier/slower)
-BODY_SKIN_BACKEND = "diffusion_retouch"
-# Overall blend strength for skin-only refinement.
-BODY_SKIN_REFINE_STRENGTH = 0.38
-# How much source microtexture is re-injected after smoothing.
+# "deblur_only"       = mild unsharp on skin mask only (recommended with upstream gen)
+# "texture_transfer" / "legacy_smooth" / "diffusion_retouch" = legacy realism paths
+BODY_SKIN_BACKEND = "deblur_only"
+BODY_SKIN_REFINE_STRENGTH = 0.42
+# Unused for deblur_only — kept for other backends if you switch back.
 BODY_SKIN_TEXTURE_RESTORE = 0.90
-# Very subtle grain to avoid waxy/plastic flat skin patches.
-# 0.0 = off, typical useful range 0.2 - 0.8
-BODY_SKIN_MICRO_GRAIN = 0.18
-# Additional synthetic pore boost (used mostly when source detail is weak).
-# 0.0 = off, 0.3~0.8 recommended
-BODY_SKIN_SYNTH_PORE_STRENGTH = 0.55
-# Skin-local luminance contrast recovery (keeps natural volume).
-BODY_SKIN_LOCAL_CONTRAST = 0.18
-# Use face-tone guidance to avoid modifying non-skin objects.
+BODY_SKIN_MICRO_GRAIN = 0.0
+BODY_SKIN_SYNTH_PORE_STRENGTH = 0.0
+BODY_SKIN_LOCAL_CONTRAST = 0.0
 SKIN_FACE_GUIDED_MASK = True
-# Diffusion skin retouch settings (only used when BODY_SKIN_BACKEND=diffusion_retouch)
-# Use public inpainting model IDs (no gated access required).
+# Mild unsharp on skin (deblur_only): radius (px) and strength — keep moderate
+# to avoid halos at 8K.
+SKIN_DEBLUR_SIGMA = 1.12
+SKIN_DEBLUR_AMOUNT = 0.32
 BODY_SKIN_DIFFUSION_MODEL_ID = "runwayml/stable-diffusion-inpainting"
 BODY_SKIN_DIFFUSION_FALLBACK_IDS = [
     "runwayml/stable-diffusion-inpainting",
     "stabilityai/stable-diffusion-2-inpainting",
 ]
-BODY_SKIN_DIFFUSION_STEPS = 8    # 8 steps at strength=0.20 is visually identical to 14; ~40% faster
+BODY_SKIN_DIFFUSION_STEPS = 8
 BODY_SKIN_DIFFUSION_GUIDANCE = 3.5
 BODY_SKIN_DIFFUSION_STRENGTH = 0.20
-# Max long side for diffusion pass to keep runtime practical.
 BODY_SKIN_DIFFUSION_MAX_LONG = 1536
 
 # ── Stage 4: Post-processing ────────────────────────────────────
@@ -140,9 +134,8 @@ CLAHE_CLIP = 0.0
 # Deband: imperceptible dither to break SR colour banding.
 DEBAND_STRENGTH = 1
 
-# Sharpening: unsharp mask for embroidery thread crispness.
-# 0.0 = off | 0.12 = subtle | 0.25 = strong | 0.4 = very strong
-SHARPEN_STRENGTH = 0.10
+# Global sharpen after SR: keep low — upstream gen already detailed; Stage 3 handles skin/face.
+SHARPEN_STRENGTH = 0.06
 # Reduce sharpening intensity on detected face regions to prevent noisy skin.
 # 0.0 = no protection, 1.0 = full protection on faces.
 FACE_SHARPEN_PROTECT = 0.85
@@ -1537,8 +1530,9 @@ def _refine_body_skin_diffusion(img_bgr, skin_safe, device, diffuser_pipe):
 
 def refine_body_skin_only(img_bgr, original_bgr, device=None, preloaded_models=None):
     """
-    Stage 3.5: refine non-face skin realism while protecting fabric edges
-    and keeping background untouched.
+    Stage 3.5: optional skin pass on body (face excluded). With BODY_SKIN_BACKEND
+    deblur_only, applies mild unsharp only inside skin masks — no diffusion or
+    synthetic pore passes.
     """
     strength = float(np.clip(BODY_SKIN_REFINE_STRENGTH, 0.0, 1.0))
     tex = float(np.clip(BODY_SKIN_TEXTURE_RESTORE, 0.0, 1.0))
@@ -1583,7 +1577,13 @@ def refine_body_skin_only(img_bgr, original_bgr, device=None, preloaded_models=N
         else:
             return _refine_body_skin_diffusion(img_bgr, skin_safe, device, diff_pipe)
 
-    if backend == "legacy_smooth":
+    if backend == "deblur_only":
+        sigma = float(np.clip(SKIN_DEBLUR_SIGMA, 0.5, 4.0))
+        amt = float(np.clip(SKIN_DEBLUR_AMOUNT, 0.05, 0.9))
+        blur = cv2.GaussianBlur(img_bgr, (0, 0), sigma)
+        skin_refined = cv2.addWeighted(img_bgr, 1.0 + amt, blur, -amt, 0)
+        skin_refined = np.clip(skin_refined, 0, 255).astype(np.uint8)
+    elif backend == "legacy_smooth":
         # Very mild smoothing only to remove synthetic blotches.
         smooth = cv2.bilateralFilter(img_bgr, d=5, sigmaColor=14, sigmaSpace=7)
         cur_low = cv2.GaussianBlur(img_bgr, (0, 0), 1.0)
@@ -1864,8 +1864,8 @@ def run_pipeline(img_bgr, device, tmp_dir: Path, preloaded_models: dict = None):
       Stage 1 — SwinIR x{1|2|4} upscale  (base super-resolution)
       Stage 2 — HAT x{1|2|4} upscale     (fabric/pattern detail, run on ORIGINAL
                                           input; outputs blended with SwinIR)
-      Stage 3 — Face realism
-      Stage 3.5 — Body skin-only refinement
+      Stage 3 — Face deblur/restore (CodeFormer)
+      Stage 3.5 — Body skin deblur-only (no diffusion realism)
       Stage 4 — Post-processing
 
     Why blend instead of chain?
@@ -1979,7 +1979,7 @@ def main():
     print("  Fashion Realism Pipeline  —  T4 GPU Edition")
     print(f"  Input     : {INPUT_IMAGE}")
     print(f"  Device    : {device}")
-    print(f"  Stages    : SwinIR/HAT dynamic scale ({SR_UPSCALE_MODE}) → {FACE_BACKEND} face → body-skin refine → post-proc")
+    print(f"  Stages    : SwinIR/HAT ({SR_UPSCALE_MODE}) → {FACE_BACKEND} face deblur → {BODY_SKIN_BACKEND} skin → post-proc")
     print(f"  Outputs   : {stem}_realism_[1k|2k|4k|8k].png")
     print("=" * 60)
 

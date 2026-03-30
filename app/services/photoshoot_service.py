@@ -11,10 +11,9 @@ Responsibilities:
        b. Stage A — kie.ai PHOTOSHOOT_GENERATE_MODEL (default nano-banana-pro): full scene
           generation from garment(s) + face + background refs (image_input, 4K / 9:16).
        c. Upload stage-A output to S3 (stable URL for stage B).
-       d. Stage B — kie.ai SEEDDREAM_MODEL (seedream/4.5-edit): edit pass with composite
-          + face + garment ref(s). Locks background, lighting, and global composition;
-          replaces face to match the face reference; replaces garment only if it does not
-          already match the garment reference(s).
+       d. Stage B — kie.ai SEEDDREAM_MODEL (seedream/4.5-edit): strict local edit —
+          replace face to match reference; fix garment only if mismatched; lock background,
+          lighting, grade, and all body skin outside the face/neck blend.
        e. Poll until each stage completes; download final 4K bytes from stage B.
        f. Resize to 2K and 1K; upload 4K / 2K / 1K to S3.
        g. Send stage-B 4K bytes to Modal GPU pipeline for enhancement.
@@ -330,13 +329,14 @@ def _build_photoshoot_prompt(
 
 {image_ref}
 
+[REFERENCE LOCKS — HIGHEST PRIORITY — OVERRIDES OTHER STYLE TEXT]
+- EXACT GARMENT: The outfit must be the SAME garment as the reference image(s): identical design, pattern, color, trims, construction, embellishments, fabric behavior, and EVERY wearing-detail (how it drapes, wraps, tucks, layers; neckline, sleeves, waist, hem, fit on body). Do not substitute a “similar” item or reinterpret the reference — match the reference garment and its wearing style exactly.
+- EXACT FACE: The face and visible hair must match IMG{face_img_num} exactly — same identity, proportions, features, skin tone, hairline and hair. Lock the face to the reference; no different person, no beautification, no feature drift. Pose/expression may change; identity does not.
+
 [SCENE INTEGRATION — CRITICAL]
 **Clicked on Canon DSLR 24mm lens. 4k 9:16 size. luxury photoshoot style. lightly gradient backdrop. Very low angle.
 Render as a candid, high-resolution real camera photograph (35mm film / full-frame digital). Apply all rules below to emulate real-world light physics.
-Face realism: Add minimal natural freckles in skin so we got realistic skin texture.
-Surface Micro-Textures: Mandatory imperfections on all surfaces — roughness, micro-scratches, dust, smudges, fingerprints, skin pores, fabric weave. Zero perfect smoothness.
 Physical Component Realism: All text/logos physically integrated with correct material properties (reflective, stitched, embossed). Mechanical parts (latches, seams, joints) anatomically accurate, non-repetitive.
-Living Form & Anatomy: Complex skin textures, subsurface scattering (SSS), visible pores, natural hair follicles, accurate muscle/joint anatomy. Relaxed poses, realistic grip, skin compression on contact.
 Complex Lighting: Multi-source real-world lighting (ambient + directional). Full global illumination — light bounces and color-bleeds all surfaces. Sharp specular highlights defining geometry. No flat studio lighting.
 Ray-Traced Reflections/Refractions: Full unbiased ray tracing — reflections slightly distorted, reflecting full scene + light sources. Accurate refraction through transparent materials.
 Shadow Fidelity + AO: Multi-layered shadows with soft-contact ambient occlusion at all touch points. Shadow edges soften with distance. No floating objects.
@@ -344,27 +344,21 @@ Candid Composition: Handheld/spontaneous framing — eye-level or first-person. 
 Shallow Depth of Field: Pin-sharp focal point. All foreground/background in creamy, diffused bokeh.
 Atmospheric Realism: Subtle haze, illuminated dust motes, humidity. Air must have visible texture/depth.
 Lens Artifacts + Film Grain: Organic fine-grain (Kodak Portra-style) across full image. Subtle chromatic aberration on high-contrast edges. Lens flare toward light sources.
-Color & light (identity vs illumination): Match the background scene’s lighting — direction, softness, sun or studio character, bounce, and ambient wrap from IMG{bg_img_num}. Skin and garments must receive the same light as a real subject in that place: brighter where the sun or key hits, softer in shade, believable specular on fabric — that blending is required and looks correct. Preserve the underlying identity of skin (undertone, hue from the face reference) and of fabrics (dye hue, print colors from garment reference(s)); do not globally retint or swap those colors — only apply physically correct illumination and local contrast.
+Color & light: Match the background scene’s lighting — direction, softness, sun or studio character, bounce, and ambient wrap from IMG{bg_img_num}. Keep physically correct illumination and local contrast so the model is naturally blended into the same scene light.
 
 [GARMENT — DO NOT CHANGE]{garment_type_section}
 {garment_note}
-- Fitting: {fitting} — only as the reference garment allows; never override design or color.{paired_note}
+- Fitting: {fitting} — only as the reference garment allows; never override design, color, or how the garment is worn vs the reference.{paired_note}
 
-[FACE — IDENTITY LOCK — CRITICAL]
-The head/face must be the SAME person as IMG{face_img_num} in this and every pose — not a lookalike, not a new face.
-Lock: face shape, eye shape/size/color, eyebrows, nose, lips, jaw, cheekbones, ears, hairline, hair color/part/length/texture, baseline skin tone.
-Scene light may add real highlights (e.g. sun on cheek) and shadows — that is correct blending; keep the same person and undertone as the face reference, not a recolored face.
-Add sparse minimal natural freckles and visible fine pores for realism; keep skin human, not airbrushed plastic.
-Do NOT change ethnicity, age, or facial proportions; do NOT beautify, slim the face, enlarge eyes, or swap identity. Expression and head angle may follow the pose; features stay identical.
-Model (body sizing only): {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin — face still copied only from IMG{face_img_num}.
+[FACE — IDENTITY LOCK]
+The head/face must be the SAME person as IMG{face_img_num} — not a lookalike.
+Lock: face shape, eyes, brows, nose, lips, jaw, cheekbones, ears, hairline, hair color/texture, baseline skin tone. Scene light may add highlights/shadows; identity and undertone stay locked to IMG{face_img_num}.
+Do NOT change ethnicity, age, or facial proportions; do NOT beautify or swap identity. Expression and head angle follow the pose; features stay identical.
+Model (body sizing only): {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin — face copied only from IMG{face_img_num}.
 
-[BACKGROUND] EXACT scene from IMG{bg_img_num} — colors, lighting, objects, shadows all unchanged. Model standing/sitting inside this real environment.
-
-[LIGHTING — SCENE BLEND] Subject lighting must follow this background: same key direction, rim, fill, and color temperature as the scene. Props or body parts can catch light and read brighter where lit; shadows fall naturally — same as a real photoshoot. This is separate from recoloring: do not change base skin undertone or garment color away from the face/garment references.
+[BACKGROUND] EXACT scene from IMG{bg_img_num} — geometry, colors, and lighting of the environment unchanged.
 
 [POSE] {clean_pose if clean_pose else "Natural, relaxed full-body fashion model pose."}
-
-[REALISM] Candid 35mm film photo. Light wraps and grounds the model in the scene. Soft contact shadow. Film grain, natural DoF. No flat cutout look.
 
 [FOOTWEAR] Appropriate footwear matching outfit — visible on ground. No bare feet.{bag_note}
 
@@ -385,69 +379,61 @@ def _split_garment_face_bg(image_urls: List[str], has_back_image: bool) -> tuple
 
 def _build_seeddream_edit_prompt(has_back_image: bool) -> str:
     """
-    Stage-B edit: lock composite scene; swap face to match ref; garment only if mismatched.
-    Image order matches _build_edit_image_urls: composite, face, garment(s).
+    Stage-B edit: replace face to match ref; fix garment only if needed. Everything
+    else (skin, background, lighting) stays locked to IMAGE 1.
     """
     if has_back_image:
-        return f"""You are an INPAINTING / LOCAL EDIT model. You receive reference images in this order:
+        return f"""You are a STRICT LOCAL-EDIT / INPAINTING model. Image order:
 
-IMAGE 1 — BASE COMPOSITE (master shot from an earlier generator): full-body fashion frame with background, pose, lighting, and overall grade. Treat this as the SPATIAL and PHOTOREALISTIC anchor.
+IMAGE 1 — BASE COMPOSITE (anchor): full-body frame — background, skin, lighting, pose, grade.
 
-IMAGE 2 — FACE REFERENCE: the ONLY allowed identity for the model's face and visible hairline/hair in frame.
+IMAGE 2 — FACE REFERENCE: sole allowed face identity (and hairline/hair visible in frame).
 
-IMAGE 3 — GARMENT FRONT REFERENCE: exact front of the outfit.
+IMAGE 3 — GARMENT FRONT REFERENCE.
 
-IMAGE 4 — GARMENT BACK REFERENCE: exact back of the outfit.
+IMAGE 4 — GARMENT BACK REFERENCE.
 
-[GLOBAL LOCK — NON-NEGOTIABLE]
-- Preserve IMAGE 1's background, environment, props, floor, horizon, depth of field, bokeh, color temperature, shadow placement, and global lighting on the SCENE. Do NOT move, relight, recolor, or redraw the background.
-- Preserve body pose, limb positions, camera angle, framing (9:16), and scale unless a listed edit below explicitly requires a tiny blend at boundaries.
-- Do NOT change skin on body outside the face/neck transition zone needed for the face swap.
-- Do NOT add/remove jewelry, bags, or accessories unless the garment edit section requires aligning with the garment reference.
+[ALLOWED CHANGES ONLY]
+1) FACE: Always replace the face in IMAGE 1 with the identity from IMAGE 2 (features, skin tone, hair at face). Blend only a minimal neck/jaw transition so the swap is seamless.
+2) GARMENT: If and ONLY IF the clothing on the person does not already match IMAGE 3 + IMAGE 4, replace garment pixels so the outfit matches those references. If it already matches, change ZERO garment pixels.
 
-[FACE — ALWAYS APPLY]
-- Replace the face (and any visible hair in the face crop) in IMAGE 1 so it is the SAME person as IMAGE 2: identical bone structure, eyes, nose, lips, brows, ears, skin undertone, hair color/texture/line.
-- Keep natural re-lighting from the SCENE in IMAGE 1 (highlights/shadows that come from that environment) while preserving identity from IMAGE 2. No beauty morph, no age/ethnicity drift.
-
-[GARMENT — CONDITIONAL]
-- First, decide whether the clothing on the person in IMAGE 1 already matches IMAGE 3 and IMAGE 4 (same design, colors, pattern, cut, and how it is worn).
-- If it ALREADY matches: do NOT change any garment pixels. Leave fabric, folds, and accessories on the body unchanged.
-- If it does NOT match (wrong item, wrong colors/print, missing piece, or clearly different outfit): replace ONLY the garment regions so the outfit matches IMAGE 3 + IMAGE 4. Do not alter background, face (after face pass), or pose.
+[ABSOLUTE LOCK — DO NOT CHANGE ANY OF THE FOLLOWING]
+- Background, set, floor, horizon, props, bokeh, depth of field, and every non-subject region: must stay pixel-consistent with IMAGE 1 except tiny unavoidable seams near edits.
+- Global lighting, exposure, white balance, color grade, shadow pattern on the scene, and light direction on the environment: LOCKED to IMAGE 1. Do not relight the shot or the background.
+- All body SKIN outside the minimal face-to-neck blend zone (arms, hands, legs, torso, décolletage): LOCKED — no retouching, no smoothing, no recolor, no texture change, no “beauty” pass.
+- Pose, body shape, limb positions, camera angle, framing (9:16), scale: LOCKED to IMAGE 1.
+- Jewelry, bags, accessories: do NOT add or remove unless a garment correction strictly requires aligning a visible garment-attached piece with IMAGE 3/4.
 
 [QUALITY]
-- Seamless edges at face/neck and garment boundaries; no halos or cutout look.
-- Photorealistic, high resolution, fashion e-commerce grade.
+- Invisible boundaries at face/neck and garment seams; no halos, cutouts, or pasted look.
+- High resolution, fashion e-commerce grade.
 
-Output: one edited image; same canvas size and aspect as IMAGE 1."""
+Output: one image; same size and aspect as IMAGE 1."""
 
-    return f"""You are an INPAINTING / LOCAL EDIT model. You receive reference images in this order:
+    return f"""You are a STRICT LOCAL-EDIT / INPAINTING model. Image order:
 
-IMAGE 1 — BASE COMPOSITE (master shot from an earlier generator): full-body fashion frame with background, pose, lighting, and overall grade. Treat this as the SPATIAL and PHOTOREALISTIC anchor.
+IMAGE 1 — BASE COMPOSITE (anchor): full-body frame — background, skin, lighting, pose, grade.
 
-IMAGE 2 — FACE REFERENCE: the ONLY allowed identity for the model's face and visible hairline/hair in frame.
+IMAGE 2 — FACE REFERENCE: sole allowed face identity (and hairline/hair visible in frame).
 
-IMAGE 3 — GARMENT REFERENCE: the exact outfit to wear (single flat/reference view).
+IMAGE 3 — GARMENT REFERENCE: exact outfit.
 
-[GLOBAL LOCK — NON-NEGOTIABLE]
-- Preserve IMAGE 1's background, environment, props, floor, horizon, depth of field, bokeh, color temperature, shadow placement, and global lighting on the SCENE. Do NOT move, relight, recolor, or redraw the background.
-- Preserve body pose, limb positions, camera angle, framing (9:16), and scale unless a listed edit below explicitly requires a tiny blend at boundaries.
-- Do NOT change skin on body outside the face/neck transition zone needed for the face swap.
-- Do NOT add/remove jewelry, bags, or accessories unless the garment edit section requires aligning with the garment reference.
+[ALLOWED CHANGES ONLY]
+1) FACE: Always replace the face in IMAGE 1 with the identity from IMAGE 2. Blend only a minimal neck/jaw transition so the swap is seamless.
+2) GARMENT: If and ONLY IF the clothing on the person does not already match IMAGE 3, replace garment pixels so the outfit matches IMAGE 3. If it already matches, change ZERO garment pixels.
 
-[FACE — ALWAYS APPLY]
-- Replace the face (and any visible hair in the face crop) in IMAGE 1 so it is the SAME person as IMAGE 2: identical bone structure, eyes, nose, lips, brows, ears, skin undertone, hair color/texture/line.
-- Keep natural re-lighting from the SCENE in IMAGE 1 while preserving identity from IMAGE 2. No beauty morph, no age/ethnicity drift.
-
-[GARMENT — CONDITIONAL]
-- First, decide whether the clothing on the person in IMAGE 1 already matches IMAGE 3 (same design, colors, pattern, cut, and how it is worn).
-- If it ALREADY matches: do NOT change any garment pixels.
-- If it does NOT match: replace ONLY the garment regions so the outfit matches IMAGE 3. Do not alter background, face (after face pass), or pose.
+[ABSOLUTE LOCK — DO NOT CHANGE ANY OF THE FOLLOWING]
+- Background, set, floor, horizon, props, bokeh, depth of field, and every non-subject region: must stay consistent with IMAGE 1 except tiny unavoidable seams near edits.
+- Global lighting, exposure, white balance, color grade, and shadow pattern on the scene: LOCKED to IMAGE 1. Do not relight the shot or the background.
+- All body SKIN outside the minimal face-to-neck blend zone: LOCKED — no retouch, smoothing, recolor, or texture change.
+- Pose, body shape, limbs, camera angle, framing (9:16), scale: LOCKED to IMAGE 1.
+- Jewelry, bags, accessories: do NOT add or remove unless a garment correction strictly requires it.
 
 [QUALITY]
-- Seamless edges at face/neck and garment boundaries; no halos or cutout look.
-- Photorealistic, high resolution, fashion e-commerce grade.
+- Invisible boundaries at face/neck and garment seams; no halos or cutouts.
+- High resolution, fashion e-commerce grade.
 
-Output: one edited image; same canvas size and aspect as IMAGE 1."""
+Output: one image; same size and aspect as IMAGE 1."""
 
 
 # ---------------------------------------------------------------------------
