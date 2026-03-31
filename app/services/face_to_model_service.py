@@ -187,7 +187,7 @@ async def _submit_task(prompt: str, image_url: str) -> str:
             "prompt":       prompt,
             "image_urls":   [image_url],
             "aspect_ratio": settings.SEEDDREAM_ASPECT,
-            "quality":      settings.SEEDDREAM_QUALITY,
+            "quality":      "basic",
         },
     })
     headers = {

@@ -97,7 +97,7 @@ async def create_model_face(
     current_user: dict = Depends(get_current_user),
 ):
     check_sufficient_credits(current_user)
-
+    body.model_category = body.model_category.lower().replace(" ", "_")
     async def event_stream() -> AsyncGenerator[str, None]:
         generated_face_url: str | None = None
 
@@ -170,7 +170,7 @@ async def create_model_face_with_ai(
     current_user: dict = Depends(get_current_user),
 ):
     check_sufficient_credits(current_user)
-
+    body.model_category = body.model_category.lower().replace(" ", "_")
     overrides = {}
     if body.face_configurations:
         overrides = {
