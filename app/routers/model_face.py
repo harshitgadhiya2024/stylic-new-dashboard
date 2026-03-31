@@ -2,7 +2,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import AsyncGenerator, List, Literal
+from typing import AsyncGenerator, List, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -21,6 +21,11 @@ from app.services.credit_service import check_sufficient_credits, deduct_credits
 
 router = APIRouter(prefix="/api/v1/model-faces", tags=["Model Faces"])
 
+# Stored in Mongo as snake_case; API accepts these labels (any case / spaces ok).
+_MODEL_CATEGORY_DB_VALUES = frozenset(
+    {"adult_male", "adult_female", "kid_boy", "kid_girl", "baby"}
+)
+
 _SSE_HEADERS = {
     "Cache-Control":    "no-cache",
     "X-Accel-Buffering": "no",
@@ -32,6 +37,32 @@ def _clean_face(doc: dict) -> dict:
     doc = dict(doc)
     doc.pop("_id", None)
     return doc
+
+
+def _normalize_model_category_filter(raw: Optional[str]) -> Optional[str]:
+    """
+    Map frontend labels (e.g. \"Adult Male\", \"Kid Girl\") or snake_case to DB value.
+    Returns None when ``raw`` is empty (no filter). Raises HTTPException 422 if unknown.
+    """
+    if raw is None:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    key = s.lower().replace(" ", "_").replace("-", "_")
+    # Collapse accidental double underscores
+    while "__" in key:
+        key = key.replace("__", "_")
+    if key in _MODEL_CATEGORY_DB_VALUES:
+        return key
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=(
+            f"Invalid model_category {raw!r}. "
+            "Use one of: Adult Male, Adult Female, Kid Boy, Kid Girl, Baby "
+            "(or adult_male, adult_female, kid_boy, kid_girl, baby)."
+        ),
+    )
 
 
 def _sse(event: str, data: dict) -> str:
@@ -47,6 +78,8 @@ def _sse(event: str, data: dict) -> str:
         "`type=default` — returns all platform default faces (is_default=True). "
         "`type=custom` — returns faces created by the current user (user_id match, is_active=True), "
         "sorted with favorites first then newest first. "
+        "Optional filters: `is_favorite` (true/false), `model_category` "
+        "(e.g. Adult Male, Adult Female, Kid Boy, Kid Girl, Baby — matched to stored snake_case). "
         "Use `page` and `limit` to control pagination."
     ),
 )
@@ -54,15 +87,38 @@ async def get_model_faces(
     type:  Literal["default", "custom"] = Query(..., description="'default' for platform faces, 'custom' for user-created faces"),
     page:  int = Query(default=1,  ge=1,        description="Page number (1-based)"),
     limit: int = Query(default=10, ge=1, le=100, description="Number of items per page"),
+    is_favorite: Optional[bool] = Query(
+        default=None,
+        description="When set, return only favorites (true) or only non-favorites (false). Omit for no filter.",
+    ),
+    model_category: Optional[str] = Query(
+        default=None,
+        description=(
+            "Optional. One of: Adult Male, Adult Female, Kid Boy, Kid Girl, Baby "
+            "(any case / spaces), or adult_male, adult_female, kid_boy, kid_girl, baby."
+        ),
+    ),
     current_user: dict = Depends(get_current_user),
 ):
     col = get_model_faces_collection()
 
+    cat = _normalize_model_category_filter(model_category)
+
     if type == "default":
-        docs = await col.find({"is_default": True}).to_list(length=None)
+        query: dict = {"is_default": True}
     else:
-        docs = await col.find({"user_id": current_user["user_id"], "is_active": True}).to_list(length=None)
-        docs.sort(key=lambda d: (not d.get("is_favorite", False), d.get("created_at") or ""))
+        query = {"user_id": current_user["user_id"], "is_active": True}
+
+    if cat is not None:
+        query["model_category"] = cat
+    if is_favorite is not None:
+        query["is_favorite"] = is_favorite
+
+    if type == "custom":
+        cursor = col.find(query).sort([("is_favorite", -1), ("created_at", -1)])
+    else:
+        cursor = col.find(query)
+    docs = await cursor.to_list(length=None)
 
     total       = len(docs)
     skip        = (page - 1) * limit
@@ -75,6 +131,10 @@ async def get_model_faces(
         "limit":       limit,
         "total":       total,
         "total_pages": total_pages,
+        "filters":     {
+            "is_favorite":    is_favorite,
+            "model_category": cat,
+        },
         "data":        [_clean_face(doc) for doc in paged],
     }
 
