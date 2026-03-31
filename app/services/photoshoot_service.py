@@ -876,3 +876,25 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
                 "updated_at": datetime.now(timezone.utc),
             }},
         )
+
+
+def merge_photoshoot_batch_configs(default_config: dict, list_item: dict) -> dict:
+    """
+    Merge shared defaults with one row. ``list_item`` keys override ``default_config``.
+    Keys with value ``None`` are ignored (they do not override).
+    """
+    base = {k: v for k, v in default_config.items() if v is not None}
+    over = {k: v for k, v in list_item.items() if v is not None}
+    return {**base, **over}
+
+
+def count_poses_in_merged_config(merged: dict) -> int:
+    """Return pose count for credit calculation (same rules as single create)."""
+    opt = merged.get("which_pose_option")
+    if opt == "default":
+        return len(merged.get("poses_ids") or [])
+    if opt == "custom":
+        return len(merged.get("poses_images") or [])
+    if opt == "prompt":
+        return len(merged.get("poses_prompts") or [])
+    return 0

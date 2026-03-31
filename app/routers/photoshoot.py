@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import ValidationError
 
 from app.database import (
     get_photoshoots_collection,
@@ -13,6 +14,7 @@ from app.database import (
 from app.dependencies import get_current_user
 from app.models.photoshoot import (
     CreatePhotoshootRequest,
+    CreateMultiplePhotoshootsRequest,
     UpscalePhotoshootRequest,
     RegeneratePhotoshootRequest,
     DeletePhotoshootsRequest,
@@ -27,6 +29,7 @@ from app.models.photoshoot import (
     ColorPhotoshootRequest,
 )
 from app.tasks.photoshoot_tasks import run_photoshoot_task
+from app.services.photoshoot_service import merge_photoshoot_batch_configs, count_poses_in_merged_config
 
 router = APIRouter(prefix="/api/v1/photoshoots", tags=["Photoshoots"])
 
@@ -151,6 +154,153 @@ async def create_photoshoot(
         "total_poses":    total_poses,
         "total_credit":   total_credit,
         "status":         "processing",
+    }
+
+
+@router.post(
+    "/batch",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Create multiple photoshoots (batch)",
+    description=(
+        "Merges each entry in ``photoshoot_list_config`` with ``default_config`` (per-field overrides), "
+        "validates the result as a full photoshoot payload, checks credits for the entire batch, "
+        "then creates one photoshoot document and one Celery job per row — same pipeline as POST /."
+    ),
+)
+async def create_multiple_photoshoots(
+    body: CreateMultiplePhotoshootsRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    batch_photoshoot_id = str(uuid.uuid4())
+    defaults_dump = body.default_config.model_dump(exclude_none=True)
+
+    validated: list[tuple[int, CreatePhotoshootRequest, int]] = []
+
+    for idx, item in enumerate(body.photoshoot_list_config):
+        merged = merge_photoshoot_batch_configs(
+            defaults_dump,
+            item.model_dump(exclude_none=True),
+        )
+        try:
+            row_req = CreatePhotoshootRequest.model_validate(merged)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "message": f"Merged config invalid at photoshoot_list_config index {idx}",
+                    "index":   idx,
+                    "errors":  exc.errors(),
+                },
+            ) from exc
+
+        n_poses = count_poses_in_merged_config(merged)
+        if n_poses == 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"No poses resolved at photoshoot_list_config index {idx} "
+                    f"(which_pose_option='{row_req.which_pose_option}')."
+                ),
+            )
+        validated.append((idx, row_req, n_poses))
+
+    total_credit_batch = sum(n * _CREDIT_PER_POSE for _, _, n in validated)
+    current_credits    = float(current_user.get("credits", 0))
+
+    if current_credits < total_credit_batch:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Insufficient credits. This batch requires {total_credit_batch} credits "
+                f"but you only have {current_credits}."
+            ),
+        )
+
+    col = get_photoshoots_collection()
+    now = datetime.now(timezone.utc)
+    results: list[dict] = []
+
+    for idx, row_req, total_poses in validated:
+        photoshoot_id = str(uuid.uuid4())
+        total_credit    = total_poses * _CREDIT_PER_POSE
+
+        doc = {
+            "photoshoot_id":       photoshoot_id,
+            "user_id":             user_id,
+            "batch_photoshoot_id": batch_photoshoot_id,
+            "batch_index":         idx,
+            "sku_id":              row_req.sku_id or "",
+            "input_parameter": {
+                "front_garment_image":             row_req.front_garment_image,
+                "back_garment_image":              row_req.back_garment_image or "",
+                "ethnicity":                       row_req.ethnicity,
+                "gender":                          row_req.gender,
+                "skin_tone":                       row_req.skin_tone,
+                "age":                             row_req.age,
+                "age_group":                       row_req.age_group,
+                "weight":                          row_req.weight,
+                "height":                          row_req.height,
+                "upper_garment_type":              row_req.upper_garment_type,
+                "upper_garment_specification":     row_req.upper_garment_specification,
+                "lower_garment_type":              row_req.lower_garment_type,
+                "lower_garment_specification":     row_req.lower_garment_specification,
+                "one_piece_garment_type":          row_req.one_piece_garment_type,
+                "one_piece_garment_specification": row_req.one_piece_garment_specification,
+                "fitting":                         row_req.fitting,
+                "background_id":                   row_req.background_id,
+                "which_pose_option":               row_req.which_pose_option,
+                "poses_ids":                       row_req.poses_ids or [],
+                "poses_images":                    row_req.poses_images or [],
+                "poses_prompts":                   row_req.poses_prompts or [],
+                "model_id":                        row_req.model_id,
+                "lighting_style":                  row_req.lighting_style,
+                "ornaments":                       row_req.ornaments or "",
+                "regeneration_type":               row_req.regeneration_type or "",
+                "regenerate_photoshoot_id":        row_req.regenerate_photoshoot_id or "",
+                "batch_photoshoot_id":             batch_photoshoot_id,
+                "batch_index":                     idx,
+            },
+            "output_images":             [],
+            "failed_poses":              [],
+            "total_credit":              total_credit,
+            "is_credit_deducted":      False,
+            "is_completed":              False,
+            "status":                    "processing",
+            "error":                     None,
+            "regeneration_type":         row_req.regeneration_type or "",
+            "regenerate_photoshoot_id":  row_req.regenerate_photoshoot_id or "",
+            "is_active":                 True,
+            "created_at":                now,
+            "updated_at":                now,
+        }
+
+        await col.insert_one(doc)
+
+        job_payload = {
+            **doc["input_parameter"],
+            "user_id": user_id,
+        }
+        task = run_photoshoot_task.apply_async(
+            args=[photoshoot_id, job_payload],
+            queue="photoshoots",
+        )
+
+        results.append({
+            "batch_index":    idx,
+            "photoshoot_id":  photoshoot_id,
+            "task_id":        task.id,
+            "total_poses":    total_poses,
+            "total_credit":   total_credit,
+            "status":         "processing",
+        })
+
+    return {
+        "message":             "Batch photoshoots started successfully. Each job runs in background.",
+        "batch_photoshoot_id": batch_photoshoot_id,
+        "total_photoshoots":   len(results),
+        "total_credit":        total_credit_batch,
+        "photoshoots":         results,
     }
 
 

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Literal
 from datetime import datetime
 
@@ -109,3 +109,84 @@ class CreatePhotoshootRequest(BaseModel):
     sku_id:                       Optional[str]  = ""
     regeneration_type:            Optional[str]  = ""
     regenerate_photoshoot_id:     Optional[str]  = ""
+
+
+class PhotoshootBatchFieldMixin(BaseModel):
+    """Shared optional fields for batch defaults and per-item overrides (merge: item wins)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ethnicity: Optional[str] = None
+    gender: Optional[str] = None
+    skin_tone: Optional[str] = None
+    age: Optional[str] = None
+    age_group: Optional[str] = None
+    weight: Optional[str] = None
+    height: Optional[str] = None
+    upper_garment_type: Optional[str] = None
+    upper_garment_specification: Optional[str] = None
+    lower_garment_type: Optional[str] = None
+    lower_garment_specification: Optional[str] = None
+    one_piece_garment_type: Optional[str] = None
+    one_piece_garment_specification: Optional[str] = None
+    fitting: Optional[str] = None
+    background_id: Optional[str] = None
+    which_pose_option: Optional[Literal["default", "custom", "prompt"]] = None
+    poses_ids: Optional[List[str]] = None
+    poses_images: Optional[List[str]] = None
+    poses_prompts: Optional[List[str]] = None
+    model_id: Optional[str] = None
+    lighting_style: Optional[str] = None
+    ornaments: Optional[str] = None
+    front_garment_image: Optional[str] = None
+    back_garment_image: Optional[str] = None
+    sku_id: Optional[str] = None
+    regeneration_type: Optional[str] = None
+    regenerate_photoshoot_id: Optional[str] = None
+
+
+class PhotoshootBatchDefaults(PhotoshootBatchFieldMixin):
+    """Fields shared by every photoshoot in a batch. Omitted keys can be set per list item."""
+
+
+class PhotoshootBatchListItem(BaseModel):
+    """One photoshoot in a batch. Non-null fields override ``default_config`` for this row only."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ethnicity: Optional[str] = None
+    gender: Optional[str] = None
+    skin_tone: Optional[str] = None
+    age: Optional[str] = None
+    age_group: Optional[str] = None
+    weight: Optional[str] = None
+    height: Optional[str] = None
+    upper_garment_type: Optional[str] = None
+    upper_garment_specification: Optional[str] = None
+    lower_garment_type: Optional[str] = None
+    lower_garment_specification: Optional[str] = None
+    one_piece_garment_type: Optional[str] = None
+    one_piece_garment_specification: Optional[str] = None
+    fitting: Optional[str] = None
+    background_id: Optional[str] = None
+    which_pose_option: Optional[Literal["default", "custom", "prompt"]] = None
+    poses_ids: Optional[List[str]] = None
+    poses_images: Optional[List[str]] = None
+    poses_prompts: Optional[List[str]] = None
+    model_id: Optional[str] = None
+    lighting_style: Optional[str] = None
+    ornaments: Optional[str] = None
+    front_garment_image: Optional[str] = None
+    back_garment_image: Optional[str] = None
+    sku_id: Optional[str] = None
+    regeneration_type: Optional[str] = None
+    regenerate_photoshoot_id: Optional[str] = None
+
+
+class CreateMultiplePhotoshootsRequest(BaseModel):
+    default_config: PhotoshootBatchDefaults
+    photoshoot_list_config: List[PhotoshootBatchListItem] = Field(
+        ...,
+        min_length=1,
+        description="Each entry is merged onto default_config and processed as one independent photoshoot.",
+    )
