@@ -1,14 +1,19 @@
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import AsyncGenerator, Literal
+from typing import AsyncGenerator, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
 from app.database import get_backgrounds_collection
 from app.dependencies import get_current_user
-from app.models.background import CreateBackgroundRequest, CreateBackgroundWithAIRequest, DeleteBackgroundsRequest
+from app.models.background import (
+    BackgroundSchema,
+    CreateBackgroundRequest,
+    CreateBackgroundWithAIRequest,
+    DeleteBackgroundsRequest,
+)
 from app.services.background_service import generate_background_stream, generate_background_with_ai_stream
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
 
@@ -28,6 +33,7 @@ def _sse(event: str, data: dict) -> str:
 def _clean_bg(doc: dict) -> dict:
     doc = dict(doc)
     doc.pop("_id", None)
+    doc.setdefault("is_favorite", False)
     return doc
 
 
@@ -36,7 +42,8 @@ def _clean_bg(doc: dict) -> dict:
     status_code=status.HTTP_201_CREATED,
     summary="Create Background (Streaming)",
     description=(
-        "Accepts a background image URL and name. Streams real-time progress via SSE. "
+        "Accepts a background image URL, name, and background_type (Indoor | Outdoor | Studio; stored lowercase). "
+        "Streams real-time progress via SSE. "
         "Validates the URL, generates an enhanced background via SeedDream (16:9), "
         "uploads to S3, saves to DB, and deducts 2.5 credits in the background. "
         "Secured — user_id is taken from the auth token. "
@@ -67,7 +74,7 @@ async def create_background(
                     doc = {
                         "background_id":   str(uuid.uuid4()),
                         "user_id":         current_user["user_id"],
-                        "background_type": body.background_name,
+                        "background_type": body.background_type,
                         "background_name": body.background_name,
                         "background_url":  generated_bg_url,
                         "count":           0,
@@ -75,6 +82,7 @@ async def create_background(
                         "notes":           body.notes or "",
                         "is_default":      False,
                         "is_active":       True,
+                        "is_favorite":     False,
                         "created_at":      now.isoformat(),
                         "updated_at":      now.isoformat(),
                     }
@@ -110,7 +118,8 @@ async def create_background(
     summary="Create Background Using AI (Streaming)",
     description=(
         "Generates a professional fashion photoshoot background from a text description "
-        "using Gemini AI (9:16 aspect ratio). Streams real-time progress via SSE. "
+        "using Gemini AI (9:16 aspect ratio). Requires background_type: Indoor, Outdoor, or Studio (stored lowercase). "
+        "Streams real-time progress via SSE. "
         "Uploads the result to S3, saves to DB, and deducts 2.5 credits in the background. "
         "Secured — user_id is taken from the auth token. "
         "Response is `text/event-stream`. Final event `done` contains the full background record. "
@@ -140,7 +149,7 @@ async def create_background_with_ai(
                     doc = {
                         "background_id":   str(uuid.uuid4()),
                         "user_id":         current_user["user_id"],
-                        "background_type": body.background_name,
+                        "background_type": body.background_type,
                         "background_name": body.background_name,
                         "background_url":  generated_bg_url,
                         "count":           0,
@@ -148,6 +157,7 @@ async def create_background_with_ai(
                         "notes":           body.notes or "",
                         "is_default":      False,
                         "is_active":       True,
+                        "is_favorite":     False,
                         "created_at":      now.isoformat(),
                         "updated_at":      now.isoformat(),
                     }
@@ -184,7 +194,8 @@ async def create_background_with_ai(
         "Returns a paginated list of backgrounds based on `type`. "
         "`type=default` — returns all platform default backgrounds (is_default=True). "
         "`type=custom` — returns backgrounds created by the current user (user_id match, is_active=True), "
-        "sorted by creation date (newest first). "
+        "sorted with favorites first, then newest first. "
+        "Optional filter: `is_favorite` (true/false). Omit for no filter. "
         "Use `page` and `limit` to control pagination."
     ),
 )
@@ -192,15 +203,27 @@ async def get_backgrounds(
     type:  Literal["default", "custom"] = Query(..., description="'default' for platform backgrounds, 'custom' for user-created backgrounds"),
     page:  int = Query(default=1,  ge=1,        description="Page number (1-based)"),
     limit: int = Query(default=10, ge=1, le=100, description="Number of items per page"),
+    is_favorite: Optional[bool] = Query(
+        default=None,
+        description="When set, return only favorites (true) or only non-favorites (false). Omit for no filter.",
+    ),
     current_user: dict = Depends(get_current_user),
 ):
     col = get_backgrounds_collection()
 
     if type == "default":
-        docs = await col.find({"is_default": True}).to_list(length=None)
+        query: dict = {"is_default": True}
     else:
-        docs = await col.find({"user_id": current_user["user_id"], "is_active": True}).to_list(length=None)
-        docs.sort(key=lambda d: d.get("created_at") or "", reverse=True)
+        query = {"user_id": current_user["user_id"], "is_active": True}
+
+    if is_favorite is not None:
+        query["is_favorite"] = is_favorite
+
+    if type == "custom":
+        cursor = col.find(query).sort([("is_favorite", -1), ("created_at", -1)])
+    else:
+        cursor = col.find(query)
+    docs = await cursor.to_list(length=None)
 
     total       = len(docs)
     skip        = (page - 1) * limit
@@ -213,8 +236,56 @@ async def get_backgrounds(
         "limit":       limit,
         "total":       total,
         "total_pages": total_pages,
+        "filters":     {"is_favorite": is_favorite},
         "data":        [_clean_bg(doc) for doc in paged],
     }
+
+
+@router.patch(
+    "/{background_id}/toggle-favorite",
+    response_model=BackgroundSchema,
+    summary="Toggle Favorite",
+    description=(
+        "Switch is_favorite between true and false for a background. "
+        "Secured — only the owner can toggle. Default platform backgrounds cannot be favorited."
+    ),
+)
+async def toggle_background_favorite(
+    background_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    col = get_backgrounds_collection()
+
+    doc = await col.find_one({"background_id": background_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Background not found.",
+        )
+
+    if doc.get("is_default", False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Default backgrounds cannot be marked as favorite.",
+        )
+
+    if doc.get("user_id") != current_user["user_id"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to update this background.",
+        )
+
+    new_value = not doc.get("is_favorite", False)
+    now = datetime.now(timezone.utc)
+
+    await col.update_one(
+        {"background_id": background_id},
+        {"$set": {"is_favorite": new_value, "updated_at": now}},
+    )
+
+    doc["is_favorite"] = new_value
+    doc["updated_at"]  = now
+    return _clean_bg(doc)
 
 
 @router.delete(
