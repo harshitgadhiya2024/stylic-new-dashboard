@@ -19,6 +19,9 @@ from app.services.credit_service import check_sufficient_credits, deduct_credits
 
 router = APIRouter(prefix="/api/v1/backgrounds", tags=["Backgrounds"])
 
+# Stored in Mongo as lowercase; query accepts labels (any case / spaces ok).
+_ALLOWED_BACKGROUND_TYPE_DB_VALUES = frozenset({"indoor", "outdoor", "studio"})
+
 _SSE_HEADERS = {
     "Cache-Control":     "no-cache",
     "X-Accel-Buffering": "no",
@@ -35,6 +38,31 @@ def _clean_bg(doc: dict) -> dict:
     doc.pop("_id", None)
     doc.setdefault("is_favorite", False)
     return doc
+
+
+def _normalize_background_type_filter(raw: Optional[str]) -> Optional[str]:
+    """
+    Map frontend labels (e.g. \"Indoor\", \"Outdoor\") or snake_case to DB value.
+    Returns None when ``raw`` is empty (no filter). Raises HTTPException 422 if unknown.
+    """
+    if raw is None:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    key = s.lower().replace(" ", "_").replace("-", "_")
+    while "__" in key:
+        key = key.replace("__", "_")
+    if key in _ALLOWED_BACKGROUND_TYPE_DB_VALUES:
+        return key
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=(
+            f"Invalid background_type {raw!r}. "
+            "Use one of: Indoor, Outdoor, Studio "
+            "(or indoor, outdoor, studio)."
+        ),
+    )
 
 
 @router.post(
@@ -195,7 +223,8 @@ async def create_background_with_ai(
         "`type=default` — returns all platform default backgrounds (is_default=True). "
         "`type=custom` — returns backgrounds created by the current user (user_id match, is_active=True), "
         "sorted with favorites first, then newest first. "
-        "Optional filter: `is_favorite` (true/false). Omit for no filter. "
+        "Optional filters: `is_favorite` (true/false), `background_type` "
+        "(Indoor, Outdoor, Studio — matched to stored lowercase). Omit either for no filter. "
         "Use `page` and `limit` to control pagination."
     ),
 )
@@ -207,15 +236,26 @@ async def get_backgrounds(
         default=None,
         description="When set, return only favorites (true) or only non-favorites (false). Omit for no filter.",
     ),
+    background_type: Optional[str] = Query(
+        default=None,
+        description=(
+            "Optional. One of: Indoor, Outdoor, Studio (any case / spaces), "
+            "or indoor, outdoor, studio."
+        ),
+    ),
     current_user: dict = Depends(get_current_user),
 ):
     col = get_backgrounds_collection()
+
+    bg_type = _normalize_background_type_filter(background_type)
 
     if type == "default":
         query: dict = {"is_default": True}
     else:
         query = {"user_id": current_user["user_id"], "is_active": True}
 
+    if bg_type is not None:
+        query["background_type"] = bg_type
     if is_favorite is not None:
         query["is_favorite"] = is_favorite
 
@@ -236,7 +276,10 @@ async def get_backgrounds(
         "limit":       limit,
         "total":       total,
         "total_pages": total_pages,
-        "filters":     {"is_favorite": is_favorite},
+        "filters":     {
+            "is_favorite":     is_favorite,
+            "background_type": bg_type,
+        },
         "data":        [_clean_bg(doc) for doc in paged],
     }
 

@@ -98,6 +98,7 @@ async def create_indexes() -> None:
     await backgrounds.create_index("user_id")
     await backgrounds.create_index("is_default")
     await backgrounds.create_index("is_favorite")
+    await backgrounds.create_index("background_type")
 
     photoshoots = db["photoshoots"]
     await photoshoots.create_index("photoshoot_id", unique=True)
