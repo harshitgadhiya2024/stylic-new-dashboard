@@ -236,7 +236,6 @@ async def _generate_background_image_with_gemini(
 
     prompt = (
         f"Generate a highly realistic, professional fashion photoshoot background image.\n\n"
-        f"Background name: {readable_name}\n"
         f"Background description and configuration: {background_configuration}\n\n"
         f"[REQUIREMENTS]\n"
         f"- Professional studio or location photography quality\n"
