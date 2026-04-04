@@ -113,7 +113,11 @@ async def create_indexes() -> None:
     await upscaling.create_index("image_id")
 
     poses_data = db["poses_data"]
-    await poses_data.create_index("pose_id")
+    await poses_data.create_index("pose_id", unique=True)
+    await poses_data.create_index("user_id")
+    await poses_data.create_index("pose_type")
+    await poses_data.create_index("is_favorite")
+    await poses_data.create_index("is_default")
 
     templates = db["templates"]
     await templates.create_index("template_id", unique=True)
