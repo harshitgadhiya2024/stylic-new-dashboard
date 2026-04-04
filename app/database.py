@@ -113,7 +113,11 @@ async def create_indexes() -> None:
     await upscaling.create_index("image_id")
 
     poses_data = db["poses_data"]
-    await poses_data.create_index("pose_id", unique=True)
+    # Named explicitly: legacy DBs often have non-unique auto-named "pose_id_1";
+    # requesting unique=True with the same default name causes IndexKeySpecsConflict.
+    await poses_data.create_index(
+        [("pose_id", ASCENDING)], unique=True, name="pose_id_unique"
+    )
     await poses_data.create_index("user_id")
     await poses_data.create_index("pose_type")
     await poses_data.create_index("is_favorite")
