@@ -238,127 +238,65 @@ def _build_photoshoot_prompt(
     has_back_image: bool,
     req: dict,
 ) -> str:
-    if has_back_image:
-        image_ref = (
-            "You are provided with FOUR reference images:\n"
-            "  IMG1 — GARMENT FRONT: exact outfit front view.\n"
-            "  IMG2 — GARMENT BACK: exact outfit back view.\n"
-            "  IMG3 — MODEL FACE: the exact face to use.\n"
-            "  IMG4 — BACKGROUND: the exact background scene."
-        )
-        garment_note = (
-            "- Copy the garment EXACTLY from IMG1 (front) and IMG2 (back) — the same outfit as shown, for any category "
-            "(casual, formal, ethnic, dress, suit, outerwear, etc.), not a similar substitute.\n"
-            "- COLOR LOCK: Every fabric, print, border, and trim must match the garment references — same hues and values. "
-            "No re-tinting, no warming/cooling drift, no extra saturation or exposure shifts on the clothes.\n"
-            "- DESIGN & WEARING STYLE: Reproduce whatever the reference shows — cut, length, layering, neckline, sleeves, "
-            "waist, hem, drape, pleats, gathers, structure, weave, pattern scale, closures, and all surface detail "
-            "(embroidery, lace, beading, buttons, belts). Match how the garment sits on the body in the reference.\n"
-            "- Do NOT simplify into a generic piece or change garment type. Loose/tailored/structured in ref = same on the model."
-        )
-    else:
-        image_ref = (
-            "You are provided with THREE reference images:\n"
-            "  IMG1 — GARMENT: exact outfit to be worn.\n"
-            "  IMG2 — MODEL FACE: the exact face to use.\n"
-            "  IMG3 — BACKGROUND: the exact background scene."
-        )
-        garment_note = (
-            "- Copy the garment EXACTLY from IMG1 — the same outfit as shown, for any category "
-            "(casual, formal, ethnic, dress, suit, outerwear, etc.), not a substitute.\n"
-            "- COLOR LOCK: Every fabric, print, border, and trim must match IMG1 — same hues and values. "
-            "No re-tinting, no warming/cooling drift, no extra saturation or exposure shifts on the clothes.\n"
-            "- DESIGN & WEARING STYLE: Reproduce whatever IMG1 shows — cut, length, layering, neckline, sleeves, waist, hem, "
-            "drape, pleats, gathers, structure, weave, pattern scale, closures, and all surface detail "
-            "(embroidery, lace, beading, buttons, belts). Match how the garment sits on the body in the reference.\n"
-            "- Do NOT simplify into a generic piece or change garment type. Loose/tailored/structured in ref = same on the model."
-        )
-
     fitting = req.get("fitting", "regular fit")
     gender  = req.get("gender", "").strip().lower()
 
-    # ── Garment type lines (what is actually provided) ─────────────────────
-    ug_type = req.get("upper_garment_type", "").strip()
-    ug_spec = req.get("upper_garment_specification", "").strip()
-    lg_type = req.get("lower_garment_type", "").strip()
-    lg_spec = req.get("lower_garment_specification", "").strip()
-    op_type = req.get("one_piece_garment_type", "").strip()
-    op_spec = req.get("one_piece_garment_specification", "").strip()
+    if has_back_image:
+        img_ref = "IMG1=garment front, IMG2=garment back, IMG3=face, IMG4=background."
+        garment_src = "IMG1 (front) + IMG2 (back)"
+        face_n, bg_n = 3, 4
+    else:
+        img_ref = "IMG1=garment, IMG2=face, IMG3=background."
+        garment_src = "IMG1"
+        face_n, bg_n = 2, 3
 
-    garment_type_lines = []
-    if ug_type:
-        garment_type_lines.append(f"  Upper garment: {ug_type}" + (f" ({ug_spec})" if ug_spec else ""))
-    if lg_type:
-        garment_type_lines.append(f"  Lower garment: {lg_type}" + (f" ({lg_spec})" if lg_spec else ""))
-    if op_type:
-        garment_type_lines.append(f"  One-piece: {op_type}" + (f" ({op_spec})" if op_spec else ""))
+    ug = req.get("upper_garment_type", "").strip()
+    lg = req.get("lower_garment_type", "").strip()
+    op = req.get("one_piece_garment_type", "").strip()
+    g_parts = []
+    if ug:
+        spec = req.get("upper_garment_specification", "").strip()
+        g_parts.append(f"Upper: {ug}" + (f" ({spec})" if spec else ""))
+    if lg:
+        spec = req.get("lower_garment_specification", "").strip()
+        g_parts.append(f"Lower: {lg}" + (f" ({spec})" if spec else ""))
+    if op:
+        spec = req.get("one_piece_garment_specification", "").strip()
+        g_parts.append(f"One-piece: {op}" + (f" ({spec})" if spec else ""))
+    g_type_line = (" | ".join(g_parts) + "\n") if g_parts else ""
 
-    garment_type_block = (
-        "Garment type(s) in the reference image:\n" + "\n".join(garment_type_lines)
-        if garment_type_lines else ""
-    )
-
-    # ── Paired garment note ────────────────────────────────────────────────
-    paired_garment_block = _build_paired_garment_instruction(req)
-    clean_pose           = _sanitize_pose_prompt(pose)
-
-    paired_note = ""
-    if paired_garment_block:
-        if "LOWER" in paired_garment_block:
-            paired_note = "\n- IMPORTANT: Add a matching bottom garment — no bare legs."
+    paired = _build_paired_garment_instruction(req)
+    paired_line = ""
+    if paired:
+        if "LOWER" in paired:
+            paired_line = " Add matching bottom -- no bare legs."
         else:
-            paired_note = "\n- IMPORTANT: Add a matching top garment — no bare torso."
+            paired_line = " Add matching top -- no bare torso."
 
-    _ornaments_lower = req.get("ornaments", "").lower()
-    _bag_requested   = any(kw in _ornaments_lower for kw in ("bag", "purse", "handbag"))
-    bag_note = (
-        "\n- Add a matching bag/purse (clutch for ethnic/formal, handbag for casual) "
-        "held naturally, matching the outfit color palette."
-    ) if (gender == "female" and _bag_requested) else ""
+    clean_pose = _sanitize_pose_prompt(pose)
+    ornaments  = req.get("ornaments", "none")
 
-    face_img_num    = 3 if has_back_image else 2
-    bg_img_num      = 4 if has_back_image else 3
+    _orn_lower     = ornaments.lower()
+    _bag_requested = any(kw in _orn_lower for kw in ("bag", "purse", "handbag"))
+    bag_line = " Add a matching bag/purse held naturally." if (gender == "female" and _bag_requested) else ""
 
-    garment_type_section = f"\n{garment_type_block}" if garment_type_block else ""
+    return f"""Real photoshoot -- model physically in the scene, not composited.
+Refs: {img_ref}
 
-    return f"""Real photoshoot photo — model physically present inside the scene, NOT composited or pasted over it.
+[GARMENT] Copy EXACTLY from {garment_src} -- same design, pattern, color, trims, fabric, drape, embellishments, fit. No substitutions. Lock all hues/values; no re-tinting or saturation drift.
+{g_type_line}Fitting: {fitting}.{paired_line}
 
-{image_ref}
+[FACE] Must be SAME person as IMG{face_n} -- identical identity, features, skin tone, hairline, hair. No beautification or drift.
+Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']}, {req['height']}, {req['skin_tone']} skin.
 
-[REFERENCE LOCKS — HIGHEST PRIORITY — OVERRIDES OTHER STYLE TEXT]
-- EXACT GARMENT: The outfit must be the SAME garment as the reference image(s): identical design, pattern, color, trims, construction, embellishments, fabric behavior, and EVERY wearing-detail (how it drapes, wraps, tucks, layers; neckline, sleeves, waist, hem, fit on body). Do not substitute a “similar” item or reinterpret the reference — match the reference garment and its wearing style exactly.
-- EXACT FACE: The face and visible hair must match IMG{face_img_num} exactly — same identity, proportions, features, skin tone, hairline and hair. Lock the face to the reference; no different person, no beautification, no feature drift. Pose/expression may change; identity does not.
+[SCENE] Canon DSLR 24mm, 4K 9:16, luxury photoshoot. Candid high-res photograph. Multi-source realistic lighting matching IMG{bg_n} -- direction, softness, bounce, global illumination. Shallow DOF, subtle film grain, natural composition.
 
-[SCENE INTEGRATION — CRITICAL]
-**Clicked on Canon DSLR 24mm lens. 4k 9:16 size. luxury photoshoot style. lightly gradient backdrop. Very low angle.
-Render as a candid, high-resolution real camera photograph (35mm film / full-frame digital). Apply all rules below to emulate real-world light physics.
-Physical Component Realism: All text/logos physically integrated with correct material properties (reflective, stitched, embossed). Mechanical parts (latches, seams, joints) anatomically accurate, non-repetitive.
-Complex Lighting: Multi-source real-world lighting (ambient + directional). Full global illumination — light bounces and color-bleeds all surfaces. Sharp specular highlights defining geometry. No flat studio lighting.
-Ray-Traced Reflections/Refractions: Full unbiased ray tracing — reflections slightly distorted, reflecting full scene + light sources. Accurate refraction through transparent materials.
-Shadow Fidelity + AO: Multi-layered shadows with soft-contact ambient occlusion at all touch points. Shadow edges soften with distance. No floating objects.
-Candid Composition: Handheld/spontaneous framing — eye-level or first-person. Organic, asymmetric balance. Natural, undiscovered feel.
-Shallow Depth of Field: Pin-sharp focal point. All foreground/background in creamy, diffused bokeh.
-Atmospheric Realism: Subtle haze, illuminated dust motes, humidity. Air must have visible texture/depth.
-Lens Artifacts + Film Grain: Organic fine-grain (Kodak Portra-style) across full image. Subtle chromatic aberration on high-contrast edges. Lens flare toward light sources.
-Color & light: Match the background scene’s lighting — direction, softness, sun or studio character, bounce, and ambient wrap from IMG{bg_img_num}. Keep physically correct illumination and local contrast so the model is naturally blended into the same scene light.
+[BACKGROUND] Exact scene from IMG{bg_n} -- unchanged.
 
-[GARMENT — DO NOT CHANGE]{garment_type_section}
-{garment_note}
-- Fitting: {fitting} — only as the reference garment allows; never override design, color, or how the garment is worn vs the reference.{paired_note}
+[POSE] {clean_pose if clean_pose else "Natural full-body fashion model pose."}
 
-[FACE — IDENTITY LOCK]
-The head/face must be the SAME person as IMG{face_img_num} — not a lookalike.
-Lock: face shape, eyes, brows, nose, lips, jaw, cheekbones, ears, hairline, hair color/texture, baseline skin tone. Scene light may add highlights/shadows; identity and undertone stay locked to IMG{face_img_num}.
-Do NOT change ethnicity, age, or facial proportions; do NOT beautify or swap identity. Expression and head angle follow the pose; features stay identical.
-Model (body sizing only): {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin — face copied only from IMG{face_img_num}.
-
-[BACKGROUND] EXACT scene from IMG{bg_img_num} — geometry, colors, and lighting of the environment unchanged.
-
-[POSE] {clean_pose if clean_pose else "Natural, relaxed full-body fashion model pose."}
-
-[FOOTWEAR] Appropriate footwear matching outfit — visible on ground. No bare feet.{bag_note}
-
-[STYLE] Ornaments: {req.get('ornaments', 'none')}."""
+[FOOTWEAR] Matching footwear on ground. No bare feet.{bag_line}
+Ornaments: {ornaments}."""
 
 
 def _validate_reference_image_urls(image_urls: List[str], has_back_image: bool) -> None:
@@ -375,7 +313,7 @@ def _validate_reference_image_urls(image_urls: List[str], has_back_image: bool) 
 # kie.ai — SeedDream (SEEDDREAM_MODEL) + poll
 # ---------------------------------------------------------------------------
 
-_SEEDDREAM_PROMPT_LIMIT = 10000   # kie.ai official limit per API docs
+_SEEDDREAM_PROMPT_LIMIT = 3000   # kie.ai official limit per API docs
 
 
 async def _submit_seeddream_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
