@@ -325,68 +325,40 @@ def _build_photoshoot_prompt(
 
     garment_type_section = f"\n{garment_type_block}" if garment_type_block else ""
 
-    weight = req.get("weight", "regular").strip().lower()
-    height = req.get("height", "regular").strip().lower()
-
-    weight_instruction = {
-        "fat":     "Visibly heavy / plus-size build — broader torso, thicker arms, fuller waist. NOT regular or slim.",
-        "slim":    "Slim / lean build — narrow shoulders, defined waist, slender limbs. NOT regular or heavy.",
-    }.get(weight, "Normal / average build — natural proportions, neither slim nor heavy.")
-
-    height_instruction = {
-        "short":   "Noticeably shorter than average stature — shorter limbs and torso relative to frame.",
-        "tall":    "Noticeably tall — longer limbs and torso, above-average stature.",
-    }.get(height, "Average / regular height — standard proportions.")
-
-    bg_type = req.get("background_type", "").strip().lower()
-    bg_type_label = bg_type if bg_type in ("indoor", "outdoor", "studio") else "general"
-
     return f"""Real photoshoot photo — model physically present inside the scene, NOT composited or pasted over it.
 
 {image_ref}
 
-=====================================================================
-  PRIORITY ORDER (strictly follow — higher priority wins any conflict)
-  P1 = GARMENT  |  P2 = FACE  |  P3 = BACKGROUND BLEND  |  P4 = BODY  |  P5 = POSE/STYLE
-=====================================================================
+[REFERENCE LOCKS — HIGHEST PRIORITY — OVERRIDES OTHER STYLE TEXT]
+- EXACT GARMENT: The outfit must be the SAME garment as the reference image(s): identical design, pattern, color, trims, construction, embellishments, fabric behavior, and EVERY wearing-detail (how it drapes, wraps, tucks, layers; neckline, sleeves, waist, hem, fit on body). Do not substitute a “similar” item or reinterpret the reference — match the reference garment and its wearing style exactly.
+- EXACT FACE: The face and visible hair must match IMG{face_img_num} exactly — same identity, proportions, features, skin tone, hairline and hair. Lock the face to the reference; no different person, no beautification, no feature drift. Pose/expression may change; identity does not.
 
-[P1 — GARMENT — ABSOLUTE LOCK — DO NOT CHANGE ANYTHING]{garment_type_section}
+[SCENE INTEGRATION — CRITICAL]
+**Clicked on Canon DSLR 24mm lens. 4k 9:16 size. luxury photoshoot style. lightly gradient backdrop. Very low angle.
+Render as a candid, high-resolution real camera photograph (35mm film / full-frame digital). Apply all rules below to emulate real-world light physics.
+Physical Component Realism: All text/logos physically integrated with correct material properties (reflective, stitched, embossed). Mechanical parts (latches, seams, joints) anatomically accurate, non-repetitive.
+Complex Lighting: Multi-source real-world lighting (ambient + directional). Full global illumination — light bounces and color-bleeds all surfaces. Sharp specular highlights defining geometry. No flat studio lighting.
+Ray-Traced Reflections/Refractions: Full unbiased ray tracing — reflections slightly distorted, reflecting full scene + light sources. Accurate refraction through transparent materials.
+Shadow Fidelity + AO: Multi-layered shadows with soft-contact ambient occlusion at all touch points. Shadow edges soften with distance. No floating objects.
+Candid Composition: Handheld/spontaneous framing — eye-level or first-person. Organic, asymmetric balance. Natural, undiscovered feel.
+Shallow Depth of Field: Pin-sharp focal point. All foreground/background in creamy, diffused bokeh.
+Atmospheric Realism: Subtle haze, illuminated dust motes, humidity. Air must have visible texture/depth.
+Lens Artifacts + Film Grain: Organic fine-grain (Kodak Portra-style) across full image. Subtle chromatic aberration on high-contrast edges. Lens flare toward light sources.
+Color & light: Match the background scene’s lighting — direction, softness, sun or studio character, bounce, and ambient wrap from IMG{bg_img_num}. Keep physically correct illumination and local contrast so the model is naturally blended into the same scene light.
+
+[GARMENT — DO NOT CHANGE]{garment_type_section}
 {garment_note}
 - Fitting: {fitting} — only as the reference garment allows; never override design, color, or how the garment is worn vs the reference.{paired_note}
-- MICRO-DETAIL LOCK: Reproduce every micro-level detail visible in the garment reference(s): exact pattern repeat and scale, exact fabric texture (weave, knit, satin, etc.), exact pocket shape/size/placement, exact button/zipper/closure placement, exact stitching lines and seam paths, exact embroidery/beading/print placement, exact hem length and finish, exact neckline shape and depth, exact sleeve length and cuff style, exact waist/belt/tie details. If the reference shows a crease, a pleat, a gather, a ruffle, a raw edge — reproduce it exactly.
-- WEARING STYLE LOCK: How the garment sits on the body must match the reference: tucked/untucked, rolled/unrolled sleeves, buttoned/unbuttoned, draped/wrapped, loose/fitted. Do NOT reinterpret the wearing style. If the garment hangs loosely in the reference, it hangs loosely on the model.
-- Do NOT simplify, genericize, or “clean up” the garment. Imperfections in the reference (wrinkles, asymmetry) are intentional design — preserve them.
 
-[P2 — FACE — EXACT IDENTITY LOCK — DO NOT CHANGE ANYTHING]
-The face MUST be an exact pixel-faithful copy of the person in IMG{face_img_num}. This is not “inspired by” or “similar to” — it is the SAME person.
-- Lock EVERYTHING: face shape, forehead, eye shape/size/color/spacing, eyebrow shape/thickness/arch, nose bridge/tip/width, lip shape/fullness/color, jaw angle, chin shape, cheekbone prominence, ear shape/size, hairline, hair color/texture/length/parting/style, facial hair (if any), skin tone/undertone, all moles/marks/freckles visible in IMG{face_img_num}.
-- Do NOT beautify, slim, smooth, enlarge eyes, narrow nose, plump lips, or alter ANY facial proportion.
-- Do NOT change the expression from IMG{face_img_num}. Keep the same expression — same mouth position, same eye openness, same brow position. Head angle may follow the pose; facial expression stays identical to IMG{face_img_num}.
-- Do NOT change ethnicity, age appearance, or skin color. Scene lighting may add natural highlights/shadows on the face, but the underlying identity and skin undertone remain locked to IMG{face_img_num}.
+[FACE — IDENTITY LOCK]
+The head/face must be the SAME person as IMG{face_img_num} — not a lookalike.
+Lock: face shape, eyes, brows, nose, lips, jaw, cheekbones, ears, hairline, hair color/texture, baseline skin tone. Scene light may add highlights/shadows; identity and undertone stay locked to IMG{face_img_num}.
+Do NOT change ethnicity, age, or facial proportions; do NOT beautify or swap identity. Expression and head angle follow the pose; features stay identical.
+Model (body sizing only): {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']} build, {req['height']}, {req['skin_tone']} skin — face copied only from IMG{face_img_num}.
 
-[P3 — BACKGROUND BLENDING — REALISTIC SCENE INTEGRATION]
-The model must look like they are PHYSICALLY PRESENT in the background from IMG{bg_img_num} — as if they walked in and a photographer clicked a candid shot. NOT composited, NOT edited in, NOT pasted over.
-Background type: {bg_type_label}.
-- LIGHTING MATCH: Analyze the background in IMG{bg_img_num} — determine if it is morning (soft warm golden light), afternoon (harsh overhead sun, strong shadows), evening (warm orange/pink tones, long shadows), night (artificial/ambient light), indoor (diffused/artificial), outdoor (natural sky light), or studio (controlled directional light). Apply the SAME lighting on the model’s body, face, and garment:
-  * Direction: light falls on the model from the same direction as the scene key light.
-  * Softness/hardness: match the shadow edge quality in the background.
-  * Color temperature: warm/cool cast matches the background.
-  * Intensity: model illumination matches background exposure level.
-- SHADOW INTEGRATION: Model casts natural shadows on the ground/surface consistent with the scene lighting — same direction, correct softness, correct length. Contact shadows where feet/shoes meet the ground. Ambient occlusion at all touch points. No floating objects.
-- SKIN & FACE LIGHTING: Apply scene-consistent highlights and shadows on exposed skin and face. If the scene has strong directional sun, the model’s skin should show the same sun-side brightness and shadow-side falloff. Subtle specular highlights on skin where the key light hits.
-- REFLECTION & BOUNCE: If the background has reflective surfaces (floors, glass, water), show subtle reflections of the model. Color bounce from nearby colored surfaces onto the model.
-- ATMOSPHERIC MATCH: If the background shows haze, fog, dust, or humidity — apply the same atmospheric effect to the model at the correct depth.
-- Do NOT change the background itself (geometry, colors, objects, sky). Only light/shadow/reflect the MODEL to match it.
+[BACKGROUND] EXACT scene from IMG{bg_img_num} — geometry, colors, and lighting of the environment unchanged.
 
-Canon DSLR / full-frame. 4K, 9:16. Candid composition. Shallow depth of field — subject sharp, background with natural bokeh. Subtle film grain (Kodak Portra style). Natural lens characteristics.
-
-[P4 — MODEL BODY — WEIGHT & HEIGHT]
-- Gender: {req['gender']}, Ethnicity: {req['ethnicity']}, Age: {req['age']} ({req['age_group']}), Skin tone: {req['skin_tone']}.
-- WEIGHT ({weight}): {weight_instruction} The model’s body must visibly reflect this build. This is critical for realism — do not default to a standard fashion-model physique.
-- HEIGHT ({height}): {height_instruction} Adjust the model’s proportions and how they fill the frame accordingly.
-- Face identity is ONLY from IMG{face_img_num} (P2 above); body build follows weight/height parameters here.
-
-[P5 — POSE] {clean_pose if clean_pose else "Natural, relaxed full-body fashion model pose."}
+[POSE] {clean_pose if clean_pose else "Natural, relaxed full-body fashion model pose."}
 
 [FOOTWEAR] Appropriate footwear matching outfit — visible on ground. No bare feet.{bag_note}
 
