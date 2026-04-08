@@ -44,7 +44,7 @@ DEBLUR_MAX_SIZE   = None   # disabled — process at full original resolution fo
 API_KEY      = os.getenv("SEEDDREAM_API_KEY", "")
 CREATE_URL   = "https://api.kie.ai/api/v1/jobs/createTask"
 STATUS_URL   = "https://api.kie.ai/api/v1/jobs/recordInfo"
-MODEL        = "seedream/4.5-edit"
+MODEL        = "seedream/5-lite-image-to-image"
 QUALITY      = "high"          # "low" / "medium" / "high"
 ASPECT_RATIO = "9:16"          # portrait — change to "1:1", "16:9" etc. if needed
 

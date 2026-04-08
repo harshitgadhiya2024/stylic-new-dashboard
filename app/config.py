@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # SeedDream / kie.ai
     SEEDDREAM_API_KEY: str = ""
     SEEDDREAM_MODEL: str = "seedream/4.5-edit"
-    # Stage-1 photoshoot generation (kie.ai); stage-2 uses SEEDDREAM_MODEL for face/garment edit pass.
+    # Legacy — kept for backward compatibility; photoshoot pipeline now uses SEEDDREAM_MODEL only.
     PHOTOSHOOT_GENERATE_MODEL: str = "nano-banana-pro"
     SEEDDREAM_QUALITY: str = "high"
     SEEDDREAM_ASPECT: str = "9:16"
