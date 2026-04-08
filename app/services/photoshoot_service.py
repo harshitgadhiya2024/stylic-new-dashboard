@@ -7,13 +7,17 @@ Responsibilities:
   2. Fetch background image URL from backgrounds collection.
   3. Fetch model face image URL from model_faces collection.
   4. For each pose — concurrently via asyncio.gather:
-       a. Build the full photoshoot prompt (same text previously used for nano-banana-pro).
-       b. Single kie.ai SEEDDREAM_MODEL call (seedream/4.5-edit): prompt + reference
-          image_urls (garment front, optional back, face, background), quality=high, 9:16.
-       c. Poll until complete; download final 4K bytes.
-       d. Resize to 2K and 1K; upload 4K / 2K / 1K to S3.
-       e. Send 4K bytes to Modal GPU pipeline for enhancement.
-       f. Upload enhanced 8K, 4K, 2K, 1K to S3 and save to upscaling_data.
+       a. Build a detailed generation prompt.
+       b. Stage A — kie.ai PHOTOSHOOT_GENERATE_MODEL (default nano-banana-pro): full scene
+          generation from garment(s) + face + background refs (image_input, 4K / 9:16).
+       c. Upload stage-A output to S3 (stable URL for stage B).
+       d. Stage B — kie.ai SEEDDREAM_MODEL (seedream/4.5-edit): strict local edit —
+          replace face to match reference; fix garment only if mismatched; lock background,
+          lighting, grade, and all body skin outside the face/neck blend.
+       e. Poll until each stage completes; download final 4K bytes from stage B.
+       f. Resize to 2K and 1K; upload 4K / 2K / 1K to S3.
+       g. Send stage-B 4K bytes to Modal GPU pipeline for enhancement.
+       h. Upload enhanced 8K, 4K, 2K, 1K to S3 and save to upscaling_data.
   5. Build output_images mapping — each entry stores the upscaled 1K URL as `image`.
   6. Deduct credits and record history only for poses that fully succeeded (full pipeline + S3 output).
   7. Update photoshoot document: output_images, status, is_completed, is_credit_deducted.
@@ -238,88 +242,269 @@ def _build_photoshoot_prompt(
     has_back_image: bool,
     req: dict,
 ) -> str:
+    if has_back_image:
+        image_ref = (
+            "You are provided with FOUR reference images:\n"
+            "  IMG1 — GARMENT FRONT: exact outfit front view.\n"
+            "  IMG2 — GARMENT BACK: exact outfit back view.\n"
+            "  IMG3 — MODEL FACE: the exact face to use.\n"
+            "  IMG4 — BACKGROUND: the exact background scene."
+        )
+        garment_note = (
+            "- Copy the garment EXACTLY from IMG1 (front) and IMG2 (back) — the same outfit as shown, for any category "
+            "(casual, formal, ethnic, dress, suit, outerwear, etc.), not a similar substitute.\n"
+            "- COLOR LOCK: Every fabric, print, border, and trim must match the garment references — same hues and values. "
+            "No re-tinting, no warming/cooling drift, no extra saturation or exposure shifts on the clothes.\n"
+            "- DESIGN & WEARING STYLE: Reproduce whatever the reference shows — cut, length, layering, neckline, sleeves, "
+            "waist, hem, drape, pleats, gathers, structure, weave, pattern scale, closures, and all surface detail "
+            "(embroidery, lace, beading, buttons, belts). Match how the garment sits on the body in the reference.\n"
+            "- Do NOT simplify into a generic piece or change garment type. Loose/tailored/structured in ref = same on the model."
+        )
+    else:
+        image_ref = (
+            "You are provided with THREE reference images:\n"
+            "  IMG1 — GARMENT: exact outfit to be worn.\n"
+            "  IMG2 — MODEL FACE: the exact face to use.\n"
+            "  IMG3 — BACKGROUND: the exact background scene."
+        )
+        garment_note = (
+            "- Copy the garment EXACTLY from IMG1 — the same outfit as shown, for any category "
+            "(casual, formal, ethnic, dress, suit, outerwear, etc.), not a substitute.\n"
+            "- COLOR LOCK: Every fabric, print, border, and trim must match IMG1 — same hues and values. "
+            "No re-tinting, no warming/cooling drift, no extra saturation or exposure shifts on the clothes.\n"
+            "- DESIGN & WEARING STYLE: Reproduce whatever IMG1 shows — cut, length, layering, neckline, sleeves, waist, hem, "
+            "drape, pleats, gathers, structure, weave, pattern scale, closures, and all surface detail "
+            "(embroidery, lace, beading, buttons, belts). Match how the garment sits on the body in the reference.\n"
+            "- Do NOT simplify into a generic piece or change garment type. Loose/tailored/structured in ref = same on the model."
+        )
+
     fitting = req.get("fitting", "regular fit")
     gender  = req.get("gender", "").strip().lower()
 
-    if has_back_image:
-        img_ref = "IMG1=garment front, IMG2=garment back, IMG3=face, IMG4=background."
-        garment_src = "IMG1 (front) + IMG2 (back)"
-        face_n, bg_n = 3, 4
-    else:
-        img_ref = "IMG1=garment, IMG2=face, IMG3=background."
-        garment_src = "IMG1"
-        face_n, bg_n = 2, 3
+    # ── Garment type lines (what is actually provided) ─────────────────────
+    ug_type = req.get("upper_garment_type", "").strip()
+    ug_spec = req.get("upper_garment_specification", "").strip()
+    lg_type = req.get("lower_garment_type", "").strip()
+    lg_spec = req.get("lower_garment_specification", "").strip()
+    op_type = req.get("one_piece_garment_type", "").strip()
+    op_spec = req.get("one_piece_garment_specification", "").strip()
 
-    ug = req.get("upper_garment_type", "").strip()
-    lg = req.get("lower_garment_type", "").strip()
-    op = req.get("one_piece_garment_type", "").strip()
-    g_parts = []
-    if ug:
-        spec = req.get("upper_garment_specification", "").strip()
-        g_parts.append(f"Upper: {ug}" + (f" ({spec})" if spec else ""))
-    if lg:
-        spec = req.get("lower_garment_specification", "").strip()
-        g_parts.append(f"Lower: {lg}" + (f" ({spec})" if spec else ""))
-    if op:
-        spec = req.get("one_piece_garment_specification", "").strip()
-        g_parts.append(f"One-piece: {op}" + (f" ({spec})" if spec else ""))
-    g_type_line = (" | ".join(g_parts) + "\n") if g_parts else ""
+    garment_type_lines = []
+    if ug_type:
+        garment_type_lines.append(f"  Upper garment: {ug_type}" + (f" ({ug_spec})" if ug_spec else ""))
+    if lg_type:
+        garment_type_lines.append(f"  Lower garment: {lg_type}" + (f" ({lg_spec})" if lg_spec else ""))
+    if op_type:
+        garment_type_lines.append(f"  One-piece: {op_type}" + (f" ({op_spec})" if op_spec else ""))
 
-    paired = _build_paired_garment_instruction(req)
-    paired_line = ""
-    if paired:
-        if "LOWER" in paired:
-            paired_line = " Add matching bottom -- no bare legs."
+    garment_type_block = (
+        "Garment type(s) in the reference image:\n" + "\n".join(garment_type_lines)
+        if garment_type_lines else ""
+    )
+
+    # ── Paired garment note ────────────────────────────────────────────────
+    paired_garment_block = _build_paired_garment_instruction(req)
+    clean_pose           = _sanitize_pose_prompt(pose)
+
+    paired_note = ""
+    if paired_garment_block:
+        if "LOWER" in paired_garment_block:
+            paired_note = "\n- IMPORTANT: Add a matching bottom garment — no bare legs."
         else:
-            paired_line = " Add matching top -- no bare torso."
+            paired_note = "\n- IMPORTANT: Add a matching top garment — no bare torso."
 
-    clean_pose = _sanitize_pose_prompt(pose)
-    ornaments  = req.get("ornaments", "none")
+    _ornaments_lower = req.get("ornaments", "").lower()
+    _bag_requested   = any(kw in _ornaments_lower for kw in ("bag", "purse", "handbag"))
+    bag_note = (
+        "\n- Add a matching bag/purse (clutch for ethnic/formal, handbag for casual) "
+        "held naturally, matching the outfit color palette."
+    ) if (gender == "female" and _bag_requested) else ""
 
-    _orn_lower     = ornaments.lower()
-    _bag_requested = any(kw in _orn_lower for kw in ("bag", "purse", "handbag"))
-    bag_line = " Add a matching bag/purse held naturally." if (gender == "female" and _bag_requested) else ""
+    face_img_num    = 3 if has_back_image else 2
+    bg_img_num      = 4 if has_back_image else 3
 
-    return f"""Real photoshoot -- model physically in the scene, not composited.
-Refs: {img_ref}
+    garment_type_section = f"\n{garment_type_block}" if garment_type_block else ""
 
-[GARMENT] Copy EXACTLY from {garment_src} -- same design, pattern, color, trims, fabric, drape, embellishments, fit. No substitutions. Lock all hues/values; no re-tinting or saturation drift.
-{g_type_line}Fitting: {fitting}.{paired_line}
+    weight = req.get("weight", "regular").strip().lower()
+    height = req.get("height", "regular").strip().lower()
 
-[FACE] Must be SAME person as IMG{face_n} -- identical identity, features, skin tone, hairline, hair. No beautification or drift.
-Model: {req['gender']}, {req['ethnicity']}, {req['age']} ({req['age_group']}), {req['weight']}, {req['height']}, {req['skin_tone']} skin.
+    weight_instruction = {
+        "fat":     "Visibly heavy / plus-size build — broader torso, thicker arms, fuller waist. NOT regular or slim.",
+        "slim":    "Slim / lean build — narrow shoulders, defined waist, slender limbs. NOT regular or heavy.",
+    }.get(weight, "Normal / average build — natural proportions, neither slim nor heavy.")
 
-[SCENE] Canon DSLR 24mm, 4K 9:16, luxury photoshoot. Candid high-res photograph. Multi-source realistic lighting matching IMG{bg_n} -- direction, softness, bounce, global illumination. Shallow DOF, subtle film grain, natural composition.
+    height_instruction = {
+        "short":   "Noticeably shorter than average stature — shorter limbs and torso relative to frame.",
+        "tall":    "Noticeably tall — longer limbs and torso, above-average stature.",
+    }.get(height, "Average / regular height — standard proportions.")
 
-[BACKGROUND] Exact scene from IMG{bg_n} -- unchanged.
+    bg_type = req.get("background_type", "").strip().lower()
+    bg_type_label = bg_type if bg_type in ("indoor", "outdoor", "studio") else "general"
 
-[POSE] {clean_pose if clean_pose else "Natural full-body fashion model pose."}
+    return f"""Real photoshoot photo — model physically present inside the scene, NOT composited or pasted over it.
 
-[FOOTWEAR] Matching footwear on ground. No bare feet.{bag_line}
-Ornaments: {ornaments}."""
+{image_ref}
+
+=====================================================================
+  PRIORITY ORDER (strictly follow — higher priority wins any conflict)
+  P1 = GARMENT  |  P2 = FACE  |  P3 = BACKGROUND BLEND  |  P4 = BODY  |  P5 = POSE/STYLE
+=====================================================================
+
+[P1 — GARMENT — ABSOLUTE LOCK — DO NOT CHANGE ANYTHING]{garment_type_section}
+{garment_note}
+- Fitting: {fitting} — only as the reference garment allows; never override design, color, or how the garment is worn vs the reference.{paired_note}
+- MICRO-DETAIL LOCK: Reproduce every micro-level detail visible in the garment reference(s): exact pattern repeat and scale, exact fabric texture (weave, knit, satin, etc.), exact pocket shape/size/placement, exact button/zipper/closure placement, exact stitching lines and seam paths, exact embroidery/beading/print placement, exact hem length and finish, exact neckline shape and depth, exact sleeve length and cuff style, exact waist/belt/tie details. If the reference shows a crease, a pleat, a gather, a ruffle, a raw edge — reproduce it exactly.
+- WEARING STYLE LOCK: How the garment sits on the body must match the reference: tucked/untucked, rolled/unrolled sleeves, buttoned/unbuttoned, draped/wrapped, loose/fitted. Do NOT reinterpret the wearing style. If the garment hangs loosely in the reference, it hangs loosely on the model.
+- Do NOT simplify, genericize, or “clean up” the garment. Imperfections in the reference (wrinkles, asymmetry) are intentional design — preserve them.
+
+[P2 — FACE — EXACT IDENTITY LOCK — DO NOT CHANGE ANYTHING]
+The face MUST be an exact pixel-faithful copy of the person in IMG{face_img_num}. This is not “inspired by” or “similar to” — it is the SAME person.
+- Lock EVERYTHING: face shape, forehead, eye shape/size/color/spacing, eyebrow shape/thickness/arch, nose bridge/tip/width, lip shape/fullness/color, jaw angle, chin shape, cheekbone prominence, ear shape/size, hairline, hair color/texture/length/parting/style, facial hair (if any), skin tone/undertone, all moles/marks/freckles visible in IMG{face_img_num}.
+- Do NOT beautify, slim, smooth, enlarge eyes, narrow nose, plump lips, or alter ANY facial proportion.
+- Do NOT change the expression from IMG{face_img_num}. Keep the same expression — same mouth position, same eye openness, same brow position. Head angle may follow the pose; facial expression stays identical to IMG{face_img_num}.
+- Do NOT change ethnicity, age appearance, or skin color. Scene lighting may add natural highlights/shadows on the face, but the underlying identity and skin undertone remain locked to IMG{face_img_num}.
+
+[P3 — BACKGROUND BLENDING — REALISTIC SCENE INTEGRATION]
+The model must look like they are PHYSICALLY PRESENT in the background from IMG{bg_img_num} — as if they walked in and a photographer clicked a candid shot. NOT composited, NOT edited in, NOT pasted over.
+Background type: {bg_type_label}.
+- LIGHTING MATCH: Analyze the background in IMG{bg_img_num} — determine if it is morning (soft warm golden light), afternoon (harsh overhead sun, strong shadows), evening (warm orange/pink tones, long shadows), night (artificial/ambient light), indoor (diffused/artificial), outdoor (natural sky light), or studio (controlled directional light). Apply the SAME lighting on the model’s body, face, and garment:
+  * Direction: light falls on the model from the same direction as the scene key light.
+  * Softness/hardness: match the shadow edge quality in the background.
+  * Color temperature: warm/cool cast matches the background.
+  * Intensity: model illumination matches background exposure level.
+- SHADOW INTEGRATION: Model casts natural shadows on the ground/surface consistent with the scene lighting — same direction, correct softness, correct length. Contact shadows where feet/shoes meet the ground. Ambient occlusion at all touch points. No floating objects.
+- SKIN & FACE LIGHTING: Apply scene-consistent highlights and shadows on exposed skin and face. If the scene has strong directional sun, the model’s skin should show the same sun-side brightness and shadow-side falloff. Subtle specular highlights on skin where the key light hits.
+- REFLECTION & BOUNCE: If the background has reflective surfaces (floors, glass, water), show subtle reflections of the model. Color bounce from nearby colored surfaces onto the model.
+- ATMOSPHERIC MATCH: If the background shows haze, fog, dust, or humidity — apply the same atmospheric effect to the model at the correct depth.
+- Do NOT change the background itself (geometry, colors, objects, sky). Only light/shadow/reflect the MODEL to match it.
+
+Canon DSLR / full-frame. 4K, 9:16. Candid composition. Shallow depth of field — subject sharp, background with natural bokeh. Subtle film grain (Kodak Portra style). Natural lens characteristics.
+
+[P4 — MODEL BODY — WEIGHT & HEIGHT]
+- Gender: {req['gender']}, Ethnicity: {req['ethnicity']}, Age: {req['age']} ({req['age_group']}), Skin tone: {req['skin_tone']}.
+- WEIGHT ({weight}): {weight_instruction} The model’s body must visibly reflect this build. This is critical for realism — do not default to a standard fashion-model physique.
+- HEIGHT ({height}): {height_instruction} Adjust the model’s proportions and how they fill the frame accordingly.
+- Face identity is ONLY from IMG{face_img_num} (P2 above); body build follows weight/height parameters here.
+
+[P5 — POSE] {clean_pose if clean_pose else "Natural, relaxed full-body fashion model pose."}
+
+[FOOTWEAR] Appropriate footwear matching outfit — visible on ground. No bare feet.{bag_note}
+
+[STYLE] Ornaments: {req.get('ornaments', 'none')}."""
 
 
-def _validate_reference_image_urls(image_urls: List[str], has_back_image: bool) -> None:
-    """Order: garment front, optional garment back, model face, background."""
-    need = 4 if has_back_image else 3
-    if len(image_urls) < need:
-        raise ValueError(
-            f"Expected at least {need} reference URLs (got {len(image_urls)}); "
-            "order: garment front[, back], face, background."
-        )
+def _split_garment_face_bg(image_urls: List[str], has_back_image: bool) -> tuple[str, str | None, str, str]:
+    """Return (garment_front, garment_back|None, face_url, background_url) from ordered refs."""
+    front = image_urls[0]
+    if has_back_image:
+        if len(image_urls) < 4:
+            raise ValueError("Expected 4 reference URLs when back garment is present.")
+        return front, image_urls[1], image_urls[2], image_urls[3]
+    if len(image_urls) < 3:
+        raise ValueError("Expected at least 3 reference URLs (garment, face, background).")
+    return front, None, image_urls[1], image_urls[2]
+
+
+def _build_seeddream_edit_prompt(has_back_image: bool) -> str:
+    """
+    Stage-B edit: replace face to match ref; fix garment only if needed. Everything
+    else (skin, background, lighting) stays locked to IMAGE 1.
+    """
+    if has_back_image:
+        return f"""You are a STRICT LOCAL-EDIT / INPAINTING model. Image order:
+
+IMAGE 1 — BASE COMPOSITE (anchor): full-body frame — background, skin, lighting, pose, grade.
+
+IMAGE 2 — FACE REFERENCE: sole allowed face identity (and hairline/hair visible in frame).
+
+IMAGE 3 — GARMENT FRONT REFERENCE.
+
+IMAGE 4 — GARMENT BACK REFERENCE.
+
+[ALLOWED CHANGES ONLY]
+1) FACE: Always replace the face in IMAGE 1 with the identity from IMAGE 2 (features, skin tone, hair at face). Blend only a minimal neck/jaw transition so the swap is seamless.
+2) GARMENT: If and ONLY IF the clothing on the person does not already match IMAGE 3 + IMAGE 4, replace garment pixels so the outfit matches those references. If it already matches, change ZERO garment pixels.
+
+[ABSOLUTE LOCK — DO NOT CHANGE ANY OF THE FOLLOWING]
+- Background, set, floor, horizon, props, bokeh, depth of field, and every non-subject region: must stay pixel-consistent with IMAGE 1 except tiny unavoidable seams near edits.
+- Global lighting, exposure, white balance, color grade, shadow pattern on the scene, and light direction on the environment: LOCKED to IMAGE 1. Do not relight the shot or the background.
+- All body SKIN outside the minimal face-to-neck blend zone (arms, hands, legs, torso, décolletage): LOCKED — no retouching, no smoothing, no recolor, no texture change, no “beauty” pass.
+- Pose, body shape, limb positions, camera angle, framing (9:16), scale: LOCKED to IMAGE 1.
+- Jewelry, bags, accessories: do NOT add or remove unless a garment correction strictly requires aligning a visible garment-attached piece with IMAGE 3/4.
+
+[QUALITY]
+- Invisible boundaries at face/neck and garment seams; no halos, cutouts, or pasted look.
+- High resolution, fashion e-commerce grade.
+
+Output: one image; same size and aspect as IMAGE 1."""
+
+    return f"""You are a STRICT LOCAL-EDIT / INPAINTING model. Image order:
+
+IMAGE 1 — BASE COMPOSITE (anchor): full-body frame — background, skin, lighting, pose, grade.
+
+IMAGE 2 — FACE REFERENCE: sole allowed face identity (and hairline/hair visible in frame).
+
+IMAGE 3 — GARMENT REFERENCE: exact outfit.
+
+[ALLOWED CHANGES ONLY]
+1) FACE: Always replace the face in IMAGE 1 with the identity from IMAGE 2. Blend only a minimal neck/jaw transition so the swap is seamless.
+2) GARMENT: If and ONLY IF the clothing on the person does not already match IMAGE 3, replace garment pixels so the outfit matches IMAGE 3. If it already matches, change ZERO garment pixels.
+
+[ABSOLUTE LOCK — DO NOT CHANGE ANY OF THE FOLLOWING]
+- Background, set, floor, horizon, props, bokeh, depth of field, and every non-subject region: must stay consistent with IMAGE 1 except tiny unavoidable seams near edits.
+- Global lighting, exposure, white balance, color grade, and shadow pattern on the scene: LOCKED to IMAGE 1. Do not relight the shot or the background.
+- All body SKIN outside the minimal face-to-neck blend zone: LOCKED — no retouch, smoothing, recolor, or texture change.
+- Pose, body shape, limbs, camera angle, framing (9:16), scale: LOCKED to IMAGE 1.
+- Jewelry, bags, accessories: do NOT add or remove unless a garment correction strictly requires it.
+
+[QUALITY]
+- Invisible boundaries at face/neck and garment seams; no halos or cutouts.
+- High resolution, fashion e-commerce grade.
+
+Output: one image; same size and aspect as IMAGE 1."""
 
 
 # ---------------------------------------------------------------------------
-# kie.ai — SeedDream (SEEDDREAM_MODEL) + poll
+# kie.ai — stage A (nano-banana-pro) + stage B (seedream/4.5-edit) + poll
 # ---------------------------------------------------------------------------
 
-_SEEDDREAM_PROMPT_LIMIT = 3000   # kie.ai official limit per API docs
+_SEEDDREAM_PROMPT_LIMIT = 10000   # kie.ai official limit per API docs
 
 
-async def _submit_seeddream_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
-    """Submit one SeedDream task (prompt + image_urls, same kie payload as former stage B)."""
+async def _submit_nano_generate_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
+    """Stage A: full-scene generation (nano-banana-pro). Uses image_input."""
+    model = settings.PHOTOSHOOT_GENERATE_MODEL
     logger.info(
-        "[%s] SeedDream — submitting %s (%d chars, %d images)...",
+        "[%s] Stage A — submitting %s (%d chars, %d images)...",
+        pose_label, model, len(prompt), len(image_urls),
+    )
+    payload = json.dumps({
+        "model": model,
+        "input": {
+            "prompt":        prompt,
+            "image_input":   image_urls,
+            "aspect_ratio":  "9:16",
+            "resolution":    "4K",
+        },
+    })
+    headers = {
+        "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
+        "Content-Type":  "application/json",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(_CREATE_URL, headers=headers, content=payload)
+        resp.raise_for_status()
+    task_id = resp.json().get("data", {}).get("taskId")
+    if not task_id:
+        raise RuntimeError(f"No taskId returned (stage A): {resp.text}")
+    logger.info("[%s] Stage A submitted — task_id=%s", pose_label, task_id)
+    return task_id
+
+
+async def _submit_seeddream_edit_task(prompt: str, image_urls: List[str], pose_label: str) -> str:
+    """Stage B: face + conditional garment edit (seedream/4.5-edit). Uses image_urls."""
+    logger.info(
+        "[%s] Stage B — submitting %s (%d chars, %d images)...",
         pose_label, settings.SEEDDREAM_MODEL, len(prompt), len(image_urls),
     )
     payload = json.dumps({
@@ -338,12 +523,10 @@ async def _submit_seeddream_task(prompt: str, image_urls: List[str], pose_label:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(_CREATE_URL, headers=headers, content=payload)
         resp.raise_for_status()
-    print(resp.json())
-    logger.info("[%s] SeedDream response: %s", pose_label, resp.json())
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
-        raise RuntimeError(f"No taskId returned (SeedDream): {resp.text}")
-    logger.info("[%s] SeedDream submitted — task_id=%s", pose_label, task_id)
+        raise RuntimeError(f"No taskId returned (stage B): {resp.text}")
+    logger.info("[%s] Stage B submitted — task_id=%s", pose_label, task_id)
     return task_id
 
 
@@ -429,21 +612,30 @@ async def _process_one_pose(
     logger.info("[%s] ── Starting pose pipeline ──────────────────────", pose_label)
     logger.info("[%s] Pose prompt:\n%s", pose_label, pose_prompt)
 
-    logger.info("[%s] Building SeedDream generation prompt...", pose_label)
+    logger.info("[%s] Building stage-A generation prompt...", pose_label)
     has_back = bool(req_snapshot.get("back_garment_image", ""))
-    _validate_reference_image_urls(image_urls, has_back)
-    prompt_sd = _build_photoshoot_prompt(pose_prompt, has_back, req_snapshot)
-    if len(prompt_sd) > _SEEDDREAM_PROMPT_LIMIT:
-        logger.warning(
-            "[%s] Truncating prompt from %d to %d chars (kie limit)",
-            pose_label, len(prompt_sd), _SEEDDREAM_PROMPT_LIMIT,
-        )
-        prompt_sd = prompt_sd[:_SEEDDREAM_PROMPT_LIMIT]
-    logger.info("[%s] Prompt ready (%d chars, back_image=%s)", pose_label, len(prompt_sd), has_back)
+    prompt_a = _build_photoshoot_prompt(pose_prompt, has_back, req_snapshot)
+    logger.info("[%s] Stage-A prompt built (%d chars, back_image=%s)", pose_label, len(prompt_a), has_back)
 
-    task_id = await _submit_seeddream_task(prompt_sd, image_urls, pose_label)
-    result_url_4k = await _poll_task(task_id, pose_label)
-    logger.info("[%s] SeedDream complete — final 4K URL received", pose_label)
+    g_front, g_back, face_url, _bg_url = _split_garment_face_bg(image_urls, has_back)
+
+    task_a = await _submit_nano_generate_task(prompt_a, image_urls, pose_label)
+    url_a  = await _poll_task(task_a, pose_label)
+    logger.info("[%s] Stage A complete — composite URL received", pose_label)
+
+    bytes_a = await _download_bytes(url_a, f"{pose_label}-stageA")
+    url_composite_s3 = await upload_bytes_to_s3(bytes_a, f"{prefix}_nano_composite.png", "image/png")
+    logger.info("[%s] Stage-A composite stored: %s", pose_label, url_composite_s3[:80])
+
+    edit_urls: List[str] = [url_composite_s3, face_url, g_front]
+    if g_back:
+        edit_urls.append(g_back)
+    prompt_b = _build_seeddream_edit_prompt(has_back)
+    logger.info("[%s] Stage B — %d edit reference image(s)", pose_label, len(edit_urls))
+
+    task_b = await _submit_seeddream_edit_task(prompt_b, edit_urls, pose_label)
+    result_url_4k = await _poll_task(task_b, pose_label)
+    logger.info("[%s] Stage B complete — final 4K URL received", pose_label)
 
     bytes_4k = await _download_bytes(result_url_4k, pose_label)
 

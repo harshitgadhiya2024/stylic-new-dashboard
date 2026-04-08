@@ -21,6 +21,12 @@ eggs/
 parts/
 var/
 sdist/
+generated_model_faces/
+model_faces_data_main.json
+face_catalog.json
+seeddream_standalone_output/
+scripts/
+photoshoot_output/
 develop-eggs/
 .installed.cfg
 lib/
