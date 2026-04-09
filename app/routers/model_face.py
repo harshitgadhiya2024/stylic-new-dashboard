@@ -311,6 +311,48 @@ async def get_model_faces(
     }
 
 
+def _merge_unique_ethnicity_strings(*value_lists: list[Any]) -> list[str]:
+    """Strip, drop empty, dedupe case-insensitively; sort by casefold; keep first-seen spelling."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for lst in value_lists:
+        for v in lst:
+            if v is None:
+                continue
+            s = str(v).strip()
+            if not s:
+                continue
+            key = s.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+    out.sort(key=lambda x: x.casefold())
+    return out
+
+
+@router.get(
+    "/get-all-ethnicity",
+    summary="List unique ethnicities",
+    description=(
+        "Returns all distinct ethnicity values across every model face in the collection, "
+        "from top-level `ethnicity` and `model_configuration.ethnicity`. "
+        "Deduplicated case-insensitively and sorted alphabetically."
+    ),
+    dependencies=[Depends(get_current_user)],
+)
+async def get_all_ethnicity():
+    col = get_model_faces_collection()
+    top_level = await col.distinct("ethnicity")
+    from_config = await col.distinct("model_configuration.ethnicity")
+    ethnicities = _merge_unique_ethnicity_strings(top_level, from_config)
+
+    return {
+        "ethnicities": ethnicities,
+        "count":       len(ethnicities),
+    }
+
+
 @router.post(
     "/",
     summary="Upload / Create a Model Face (Streaming)",
