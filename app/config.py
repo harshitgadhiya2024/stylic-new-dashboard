@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     MODEL_FACE_GENERATE_ASPECT: str = "4:5"
     MODEL_FACE_GENERATE_RESOLUTION: str = "1K"
 
+    # Reference-photo model face — SeedDream 5.0 Lite text-to-image (prompt = script-style JSON + instructions)
+    MODEL_FACE_REFERENCE_SEEDREAM_MODEL: str = "seedream/5-lite-text-to-image"
+    # kie 5-lite enum: 1:1, 4:3, 3:4, 16:9, 9:16, 2:3, 3:2, 21:9 (no 4:5 — 3:4 is portrait)
+    MODEL_FACE_REFERENCE_SEEDREAM_ASPECT: str = "3:4"
+    MODEL_FACE_REFERENCE_SEEDREAM_QUALITY: str = "basic"
+
     # App defaults
     APP_NAME: str = "Stylic AI"
     DEFAULT_CREDITS: int = 5

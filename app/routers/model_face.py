@@ -358,9 +358,11 @@ async def get_all_ethnicity():
     summary="Upload / Create a Model Face (Streaming)",
     description=(
         "Accepts a reference face photo URL. Streams real-time progress via SSE. "
-        "Validates the image for a real human face (Gemini), generates a professional "
-        "model portrait replicating the reference face (SeedDream), uploads to S3, "
-        "saves to DB, and deducts 2.5 credits in the background. "
+        "Validates the image with Gemini vision (required: age, ethnicity, gender) and full face attributes, "
+        "builds the same passport-style prompt as generate-with-AI / scripts/generate_model_faces.py, "
+        "generates the portrait with kie.ai SeedDream 5.0 Lite (text-to-image), uploads to S3, "
+        "saves to DB with vision-derived age/ethnicity/gender and merged model_configuration, "
+        "and deducts 2.5 credits in the background. "
         "Secured — user_id is taken from the auth token. "
         "Response is `text/event-stream`. Final event `done` contains the full model face record."
     ),
@@ -376,12 +378,14 @@ async def create_model_face(
         generated_face_url: str | None = None
 
         try:
-            async for step, message, face_url in generate_model_face_from_reference_stream(
+            async for step, message, face_url, persist_meta in generate_model_face_from_reference_stream(
                 body.reference_face_url,
                 body.model_category,
             ):
                 if step == "done":
                     generated_face_url = face_url
+                    meta = persist_meta or {}
+                    cfg = meta.get("model_configuration") or {}
                     yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
 
                     now = datetime.now(timezone.utc)
@@ -391,10 +395,10 @@ async def create_model_face(
                         "user_id":             current_user["user_id"],
                         "model_name":          body.model_name,
                         "model_category":      body.model_category,
-                        "model_configuration": {},
-                        "age":                 None,
-                        "ethnicity":           None,
-                        "gender":              None,
+                        "model_configuration": cfg,
+                        "age":                 meta.get("age"),
+                        "ethnicity":           meta.get("ethnicity"),
+                        "gender":              meta.get("gender"),
                         "tags":                body.tags or [],
                         "notes":               body.notes or "",
                         "model_used_count":    0,
