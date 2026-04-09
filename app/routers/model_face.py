@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, List, Literal, Optional
@@ -67,6 +68,59 @@ def _coerce_age_ethnicity_gender(doc: dict) -> tuple[Any, Any, Any]:
     if gender is None:
         gender = cfg.get("gender")
     return age, ethnicity, gender
+
+
+def _parse_age_for_filter(age_val: Any) -> Optional[int]:
+    """Normalize stored age (int, float, or e.g. \"25 years\") to integer years, or None."""
+    if age_val is None or isinstance(age_val, bool):
+        return None
+    if isinstance(age_val, int):
+        return age_val
+    if isinstance(age_val, float):
+        return int(age_val)
+    s = str(age_val).strip()
+    if not s:
+        return None
+    m = re.match(r"^(\d+)", s)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _doc_numeric_age(doc: dict) -> Optional[int]:
+    age, _, _ = _coerce_age_ethnicity_gender(doc)
+    return _parse_age_for_filter(age)
+
+
+def _doc_ethnicity_normalized(doc: dict) -> Optional[str]:
+    _, eth, _ = _coerce_age_ethnicity_gender(doc)
+    if eth is None:
+        return None
+    s = str(eth).strip()
+    return s.lower() if s else None
+
+
+def _passes_age_ethnicity_filters(
+    doc: dict,
+    min_age: Optional[int],
+    max_age: Optional[int],
+    ethnicity_normalized: Optional[str],
+) -> bool:
+    if min_age is not None or max_age is not None:
+        a = _doc_numeric_age(doc)
+        if a is None:
+            return False
+        if min_age is not None and a < min_age:
+            return False
+        if max_age is not None and a > max_age:
+            return False
+    if ethnicity_normalized is not None:
+        e = _doc_ethnicity_normalized(doc)
+        if e is None:
+            return False
+        if e != ethnicity_normalized:
+            return False
+    return True
 
 
 def serialize_model_face_response(doc: dict) -> dict:
@@ -157,7 +211,9 @@ def _sse(event: str, data: dict) -> str:
         "`type=custom` — returns faces created by the current user (user_id match, is_active=True), "
         "sorted with favorites first then newest first. "
         "Optional filters: `is_favorite` (true/false), `model_category` "
-        f"(e.g. {_MODEL_CATEGORY_FILTER_EXAMPLES} — matched to stored snake_case). "
+        f"(e.g. {_MODEL_CATEGORY_FILTER_EXAMPLES} — matched to stored snake_case), "
+        "`min_age` / `max_age` (inclusive, integer years; uses top-level or model_configuration.age), "
+        "and `ethnicity` (case-insensitive exact match on top-level or model_configuration). "
         "Use `page` and `limit` to control pagination."
     ),
 )
@@ -177,11 +233,39 @@ async def get_model_faces(
             "young_girl, adult_male, adult_female, senior_male, senior_female."
         ),
     ),
+    min_age: Optional[int] = Query(
+        default=None,
+        ge=0,
+        le=150,
+        description="Inclusive minimum age in years. Rows without a parseable numeric age are excluded when min_age or max_age is set.",
+    ),
+    max_age: Optional[int] = Query(
+        default=None,
+        ge=0,
+        le=150,
+        description="Inclusive maximum age in years.",
+    ),
+    ethnicity: Optional[str] = Query(
+        default=None,
+        description="Filter by ethnicity; case-insensitive exact match against stored value (top-level or inside model_configuration).",
+    ),
     current_user: dict = Depends(get_current_user),
 ):
+    if min_age is not None and max_age is not None and min_age > max_age:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="min_age cannot be greater than max_age.",
+        )
+
     col = get_model_faces_collection()
 
     cat = _normalize_model_category_filter(model_category)
+
+    eth_norm: Optional[str] = None
+    if ethnicity is not None:
+        e = ethnicity.strip()
+        if e:
+            eth_norm = e.lower()
 
     if type == "default":
         query: dict = {"is_default": True}
@@ -199,6 +283,12 @@ async def get_model_faces(
         cursor = col.find(query)
     docs = await cursor.to_list(length=None)
 
+    docs = [
+        d
+        for d in docs
+        if _passes_age_ethnicity_filters(d, min_age, max_age, eth_norm)
+    ]
+
     total       = len(docs)
     skip        = (page - 1) * limit
     paged       = docs[skip: skip + limit]
@@ -213,6 +303,9 @@ async def get_model_faces(
         "filters":     {
             "is_favorite":    is_favorite,
             "model_category": cat,
+            "min_age":        min_age,
+            "max_age":        max_age,
+            "ethnicity":      ethnicity.strip() if ethnicity and ethnicity.strip() else None,
         },
         "data":        [serialize_model_face_response(doc) for doc in paged],
     }
