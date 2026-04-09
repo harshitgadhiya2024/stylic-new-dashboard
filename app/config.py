@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     SEEDDREAM_MAX_RETRIES: int = 120
     SEEDDREAM_RETRY_DELAY: int = 5
 
+    # Realism pass — nano-banana-pro (runs after SeedDream, before Modal)
+    REALISM_MODEL: str = "nano-banana-pro"
+    REALISM_QUALITY: str = "4K"
+    REALISM_ASPECT: str = "9:16"
+
     # App defaults
     APP_NAME: str = "Stylic AI"
     DEFAULT_CREDITS: int = 5

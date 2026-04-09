@@ -7,13 +7,15 @@ Responsibilities:
   2. Fetch background image URL from backgrounds collection.
   3. Fetch model face image URL from model_faces collection.
   4. For each pose — concurrently via asyncio.gather:
-       a. Build a detailed generation prompt.
+       a. Build compact generation prompt (<=3000 chars).
        b. Submit to kie.ai SEEDDREAM_MODEL (seedream/4.5-edit): full photoshoot
           generation from garment(s) + face + background refs.
-       c. Poll until complete; download final 4K bytes.
-       d. Resize to 2K and 1K; upload 4K / 2K / 1K to S3.
-       e. Send 4K bytes to Modal GPU pipeline for enhancement.
-       f. Upload enhanced 8K, 4K, 2K, 1K to S3 and save to upscaling_data.
+       c. Poll until complete; get SeedDream result URL.
+       d. Submit SeedDream result to nano-banana-pro realism pass (skin, eyes,
+          hands, hair, shoes, background blending). Poll until complete.
+       e. Download realism 4K bytes; resize to 2K and 1K; upload 4K / 2K / 1K to S3.
+       f. Send realism 4K bytes to Modal GPU pipeline for enhancement.
+       g. Upload enhanced 8K, 4K, 2K, 1K to S3 and save to upscaling_data.
   5. Build output_images mapping — each entry stores the upscaled 1K URL as `image`.
   6. Deduct credits and record history only for poses that fully succeeded (full pipeline + S3 output).
   7. Update photoshoot document: output_images, status, is_completed, is_credit_deducted.
@@ -388,6 +390,315 @@ Canon DSLR / full-frame. 4K, 9:16. Candid composition. Shallow depth of field \u
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Compact prompt builder (<=3 000 chars for kie.ai SeedDream limit)
+# ---------------------------------------------------------------------------
+
+_COMPACT_PROMPT_LIMIT = 3000
+
+_COMPACT_SANITIZE_PATTERNS = [
+    _re.compile(
+        r'\b(wearing|dressed in|outfit|garment|clothing|cloth|clothes|fabric|'
+        r'top|bottom|skirt|pants|trousers|shirt|dress|blouse|jacket|coat|suit|'
+        r'saree|sari|kurta|lehenga|churidar|dupatta|salwar|kameez|gown|frock|'
+        r'shorts|jeans|denim|sweater|hoodie|cardigan|vest|crop|bralette|'
+        r'sleeve|collar|neckline|hem|waist|belt)\b', _re.IGNORECASE),
+    _re.compile(r'\b(street|garden|park|beach|office|store|shop)\b', _re.IGNORECASE),
+    _re.compile(r'\b(male|female|man|woman|boy|girl|he|she|his|her|they|them)\b', _re.IGNORECASE),
+]
+
+
+def _sanitize_pose_compact(pose: str) -> str:
+    result = pose
+    for pat in _COMPACT_SANITIZE_PATTERNS:
+        result = pat.sub('', result)
+    return _re.sub(r'\s{2,}', ' ', result).strip()
+
+
+def _build_compact_prompt(pose: str, has_back: bool, req: dict) -> str:
+    """Build a <=3000-char SeedDream prompt."""
+    fi = 3 if has_back else 2
+    bi = 4 if has_back else 3
+
+    if has_back:
+        img_ref = f"IMG1=garment front, IMG2=garment back, IMG{fi}=face, IMG{bi}=background"
+        g_imgs = "IMG1+IMG2"
+    else:
+        img_ref = f"IMG1=garment, IMG{fi}=face, IMG{bi}=background"
+        g_imgs = "IMG1"
+
+    ug  = req.get("upper_garment_type", "").strip()
+    us  = req.get("upper_garment_specification", "").strip()
+    lg  = req.get("lower_garment_type", "").strip()
+    ls  = req.get("lower_garment_specification", "").strip()
+    op  = req.get("one_piece_garment_type", "").strip()
+    os_ = req.get("one_piece_garment_specification", "").strip()
+    parts = []
+    if ug:
+        parts.append(f"Upper: {ug}" + (f" ({us})" if us else ""))
+    if lg:
+        parts.append(f"Lower: {lg}" + (f" ({ls})" if ls else ""))
+    if op:
+        parts.append(f"One-piece: {op}" + (f" ({os_})" if os_ else ""))
+    gt_line = f"\nTypes: {' | '.join(parts)}" if parts else ""
+
+    fitting = req.get("fitting", "regular fit")
+
+    paired = ""
+    if not op and not (ug and lg):
+        if ug and not lg:
+            paired = " Add matching lower garment\u2014no bare legs."
+        elif lg and not ug:
+            paired = " Add matching upper garment\u2014no bare torso."
+
+    weight = req.get("weight", "regular").strip().lower()
+    height = req.get("height", "regular").strip().lower()
+    w_desc = {
+        "fat":  "plus-size/heavy build: broad torso, thick limbs, full waist, wide hips\u2014genuinely heavy silhouette",
+        "slim": "slim/lean: narrow shoulders, defined waist, slender limbs",
+    }.get(weight, "average build, natural proportions")
+    h_desc = {
+        "short": "shorter than average",
+        "tall":  "taller than average",
+    }.get(height, "average height")
+
+    bg_type  = req.get("background_type", "").strip().lower()
+    bg_label = bg_type if bg_type in ("indoor", "outdoor", "studio") else "general"
+
+    clean_pose = _sanitize_pose_compact(pose) if pose else "Natural relaxed full-body fashion pose"
+
+    gender    = req.get("gender", "").strip().lower()
+    orn       = req.get("ornaments", "").strip()
+    orn_lower = orn.lower()
+    bag = ""
+    if gender == "female" and any(kw in orn_lower for kw in ("bag", "purse", "handbag")):
+        bag = " Add matching bag/purse held naturally."
+
+    prompt = (
+        f"Hyperrealistic editorial fashion photograph\u2014real person, NOT illustration, NOT AI-looking, NOT plastic skin.\n"
+        f"\n"
+        f"Refs: {img_ref}\n"
+        f"\n"
+        f"[GARMENT\u2014EXACT MATCH {g_imgs}]{gt_line}\n"
+        f"Copy exact fabric, pattern, color, print, embroidery, buttons, pockets, stitching, hem, neckline, "
+        f"sleeves, cuffs, weave, closures, trims, pleats, natural drape and wrinkles. "
+        f"No color shift, no simplification. Fitting: {fitting}.{paired}\n"
+        f"\n"
+        f"[FACE\u2014EXACT COPY IMG{fi}]\n"
+        f"Lock all features: face shape, eyes, brows, nose, lips, jaw, chin, cheekbones, ears, hairline, "
+        f"hair style/color/length, skin tone/undertone, moles/marks. No beautification. Expression identical to IMG{fi}.\n"
+        f"\n"
+        f"[SKIN REALISM\u2014NO BEAUTY FILTER]\n"
+        f"Natural skin texture with visible pores, fine peach-fuzz on cheeks and arms, subtle veins on "
+        f"hands/forearms/wrists, subsurface scattering, uneven skin tone, micro pigmentation variation, "
+        f"knuckle folds, skin crease lines, realistic elbow texture. No skin smoothing\u2014raw unretouched hyperrealistic skin.\n"
+        f"\n"
+        f"[BG + LIGHTING\u2014IMG{bi} ({bg_label})]\n"
+        f"Seamlessly blend model into IMG{bi} scene. Match lighting direction, color temperature, shadow hardness/softness. "
+        f"Ground contact shadow at feet on surface. Rim light on hair/shoulder edges from scene source. "
+        f"Subtle shadow cast on nearby surfaces. Skin subsurface scattering from scene light. "
+        f"No floating, no cutout, no halo. Do not alter background.\n"
+        f"\n"
+        f"[BODY] {req.get('gender','')}, {req.get('ethnicity','')}, age {req.get('age','')} ({req.get('age_group','')}), "
+        f"skin: {req.get('skin_tone','')}.\n"
+        f"Weight: {w_desc}. Height: {h_desc}. Body must visibly reflect this build.\n"
+        f"\n"
+        f"[POSE] {clean_pose}\n"
+        f"\n"
+        f"Matching footwear, no bare feet.{bag} Ornaments: {orn or 'none'}.\n"
+        f"85mm f/2.8, shallow DOF sharp on subject, 4K 9:16. Vogue editorial, photojournalistic color grading, "
+        f"lifelike hair strand detail, RAW quality, award-winning fashion photography."
+    )
+
+    if len(prompt) > _COMPACT_PROMPT_LIMIT:
+        prompt = prompt[:_COMPACT_PROMPT_LIMIT]
+
+    return prompt
+
+
+# ---------------------------------------------------------------------------
+# Realism pass \u2014 nano-banana-pro prompt + submit/poll
+# ---------------------------------------------------------------------------
+
+_REALISM_PROMPT = (
+    "You are an expert photo retoucher. You receive a single fashion photoshoot image (IMG1).\n"
+    "Your ONLY job is to make it look like a real, unretouched DSLR photograph \u2014 NOT an AI render.\n"
+    "Do NOT change anything about the composition, pose, garment, background scene, or face identity.\n"
+    "\n"
+    "=== ABSOLUTE PRESERVATION LOCKS (do NOT alter) ===\n"
+    "\n"
+    "[FACE IDENTITY LOCK]\n"
+    "- Preserve every facial feature exactly: face shape, eye shape/size/color/spacing, eyebrow shape/thickness/arch, "
+    "nose bridge/tip/width, lip shape/fullness/color, jaw angle, chin shape, cheekbone prominence, ear shape, "
+    "skin tone/undertone, all moles/marks/freckles, facial hair if present.\n"
+    "- Preserve exact expression, head angle, gaze direction.\n"
+    "- Do NOT beautify, reshape, slim, smooth, or alter any facial proportion.\n"
+    "\n"
+    "[BODY & POSE LOCK]\n"
+    "- Preserve exact body shape, weight, proportions, height, limb positions, posture, hand placement, "
+    "finger positions, foot placement.\n"
+    "- Do NOT alter body silhouette, muscle definition, or body mass in any way.\n"
+    "\n"
+    "[GARMENT LOCK]\n"
+    "- Preserve every detail of clothing: fabric type, pattern, color, print, embroidery, buttons, pockets, "
+    "stitching, hem, neckline, sleeves, cuffs, weave texture, closures, trims, pleats, wrinkles, drape, fit, "
+    "tucked/untucked state.\n"
+    "- Do NOT change any garment color, pattern, or styling.\n"
+    "\n"
+    "[BACKGROUND & COMPOSITION LOCK]\n"
+    "- Preserve the entire background scene: geometry, objects, colors, sky, furniture, walls, floor, props \u2014 everything.\n"
+    "- Preserve the exact framing, crop, aspect ratio, and camera angle.\n"
+    "\n"
+    "=== REALISM ENHANCEMENTS (apply these ONLY) ===\n"
+    "\n"
+    "[1. HANDS \u2014 CRITICAL PRIORITY]\n"
+    "Hands are the #1 AI giveaway. Fix them to look like real human hands:\n"
+    "- FINGER ANATOMY: Each finger must have natural slight curvature \u2014 never perfectly straight or rigid. "
+    "Fingers at rest have a gentle curl. Knuckle joints should show bony protrusion and skin bunching when bent. "
+    "Inter-finger webbing visible between spread fingers.\n"
+    "- SKIN TEXTURE ON HANDS: Deep knuckle wrinkles and creases, finger joint lines, visible tendons on back of hand, "
+    "dorsal veins (blue-green subcutaneous), bony knuckle ridges. "
+    "Palm side: visible palm lines (life line, heart line, head line), finger pad skin ridges.\n"
+    "- NAILS: Natural nail shape with visible cuticles, lunula (half-moon at base), slight translucency showing pink nail bed. "
+    "Not perfectly uniform \u2014 slight variation in shape, minor ridges, natural sheen not plastic gloss.\n"
+    "- NATURAL GRIP: When hand is in pocket, gripping arm, or resting on surface \u2014 fingers wrap naturally with "
+    "proper pressure dimpling on contacted surface. No hovering fingers. Skin compresses where it touches.\n"
+    "- RELAXED HAND: Slightly curled fingers with natural spacing \u2014 not stiff mannequin hands. "
+    "Thumb sits naturally opposed to fingers, not rigidly parallel.\n"
+    "- WRIST: Visible wrist bones (ulnar styloid), skin crease lines, subtle vein detail on inner wrist.\n"
+    "\n"
+    "[2. EYES \u2014 MICRO-DETAIL]\n"
+    "Eyes must look alive, not CG-rendered:\n"
+    "- IRIS: Complex iris texture \u2014 visible radial fibres (collarette pattern), crypts (dark irregular patches), "
+    "furrows, and pigment spots. Iris is NOT a uniform solid color; it has concentric rings and radial striations.\n"
+    "- SCLERA: NOT perfectly white. Faint pink/yellowish tint, very subtle micro blood vessels near inner and outer corners. "
+    "Slight natural discoloration near the limbus (iris border).\n"
+    "- LIMBAL RING: Darker ring at the outer edge of the iris where it meets the sclera.\n"
+    "- TEAR FILM / MOISTURE: Wet glossy reflection on the cornea \u2014 a single bright catchlight plus subtle secondary reflections. "
+    "Slight moisture at inner corner (lacrimal caruncle). Very faint wet line along lower lid margin.\n"
+    "- PUPIL: True black, perfectly round, with sharp edge. Subtle depth \u2014 it's a hole, not a painted circle.\n"
+    "- EYELIDS: Fine skin texture on eyelids, visible eyelid crease, tiny blood vessels if visible. "
+    "Lower lid has slight puffiness/texture, not a clean line.\n"
+    "\n"
+    "[3. FOOTWEAR \u2014 REAL WORN SHOES]\n"
+    "Shoes must NOT look like 3D renders or brand-new pristine objects:\n"
+    "- WEAR MARKS: Subtle scuff marks, minor sole edge dirt, slight creasing at the toe flex point. Lace/strap wear.\n"
+    "- MATERIAL TEXTURE: Canvas/leather grain visible. Stitching detail \u2014 individual stitch holes and thread. "
+    "Sole rubber texture, not smooth plastic.\n"
+    "- GROUND INTERACTION: Shoe sole FLAT on the ground surface \u2014 not floating. Contact shadow and slight dirt/dust "
+    "accumulation at the sole-ground junction. Laces have natural drape and slight twist, not rigid symmetrical bows.\n"
+    "- LIGHT RESPONSE: Proper shadow under shoe tongue, highlight on toe cap, matte vs glossy areas. Not uniformly lit.\n"
+    "\n"
+    "[4. SKIN TEXTURE \u2014 HYPERREALISTIC]\n"
+    "Add natural skin micro-detail across ALL visible skin (face, neck, arms, hands, legs, feet):\n"
+    "- PORES: Visible open pores on nose, cheeks, forehead, chin. Pore depth varies \u2014 not uniform.\n"
+    "- PEACH FUZZ: Fine translucent vellus hair on cheeks, jawline, upper lip, temples, forearms, upper arms.\n"
+    "- VEINS: Subtle blue-green veins on dorsal hands, inner wrists, forearms, temples, neck. Subcutaneous \u2014 not painted on.\n"
+    "- SKIN TONE VARIATION: Slightly redder on knuckles, elbows, knees, nose tip; darker in joint creases, under-eye.\n"
+    "- TEXTURE: Knuckle folds, finger joint wrinkles, nail detail with cuticles, wrist crease lines, realistic elbow texture.\n"
+    "- SUBSURFACE SCATTERING: Ear edges glow reddish when backlit, fingertip translucency, nostril light transmission.\n"
+    "- IMPERFECTIONS: Occasional tiny bumps, slight blemish, milia. No beauty filter, no airbrushing, no porcelain look.\n"
+    "\n"
+    "[5. HAIR REALISM + EDGE FIX]\n"
+    "- Individual strand detail \u2014 not a smooth blob. Each strand has its own path with natural irregularity.\n"
+    "- Flyaway hairs and baby hairs at hairline, temples, nape, part line.\n"
+    "- Specular highlights on individual strands from scene light, not uniform sheen.\n"
+    "- HAIR EDGE \u2014 CRITICAL: NO compositing halo or bright fringe around hair edges against the background. "
+    "Hair edges must have natural semi-transparent wisps that blend into the background \u2014 not a hard cutout. "
+    "Individual stray hairs extend beyond the main hair silhouette and are semi-transparent where they overlap the background.\n"
+    "- Eyebrows: individual hairs with natural direction. Eyelashes: natural variation in length/curl.\n"
+    "\n"
+    "[6. SPATIAL GROUNDING \u2014 ANTI-PASTED FIX]\n"
+    "The model must look like a REAL PERSON physically present at that location \u2014 NOT pasted or composited:\n"
+    "- ANALYZE the scene: ground plane, perspective lines, vanishing point, object scale. "
+    "Model's feet/seated contact must sit ON the ground plane at correct perspective depth.\n"
+    "- If spatially misplaced (wrong scale, feet not touching ground, perspective mismatch, cutout look), "
+    "ADJUST spatial position so they belong naturally. KEEP exact same pose, limb placement, gesture.\n"
+    "- If already grounded correctly \u2014 do NOT change anything.\n"
+    "- PERSPECTIVE: Model foreshortening must match camera angle of the scene.\n"
+    "\n"
+    "[7. BACKGROUND BLENDING & LIGHTING]\n"
+    "Make the person genuinely PRESENT in the scene:\n"
+    "- Match light direction, color temp, shadow hardness between model and scene.\n"
+    "- Ground contact shadow with soft penumbra at feet. Shoes cast realistic shadow onto floor.\n"
+    "- Rim light on hair/shoulder edges from scene backlight. Color bounce from nearby surfaces.\n"
+    "- Atmospheric depth matching. Reflections on glossy surfaces.\n"
+    "- Remove ANY visible halo, edge glow, bright fringe, or compositing artifacts \u2014 especially around hair and shoulder edges.\n"
+    "- EDGE BLENDING: Seamless boundary \u2014 no sharp cutout edges, no aliasing, no color fringe.\n"
+    "\n"
+    "[8. FABRIC & MATERIAL REALISM]\n"
+    "- Thread weave micro-texture visible. Material-appropriate sheen (cotton matte, silk specular, denim rough).\n"
+    "- Realistic wrinkle shadow/highlight from scene lighting. Natural skin-to-fabric transition.\n"
+    "\n"
+    "[9. CAMERA / LENS]\n"
+    "- Mild chromatic aberration at frame edges, natural vignette. Consistent bokeh.\n"
+    "- Film grain / sensor noise (ISO 200-400 DSLR). Kodak Portra / Fuji Pro color. Natural micro-contrast.\n"
+    "\n"
+    "[10. FINAL QUALITY]\n"
+    "- Indistinguishable from real DSLR photo at 100% zoom. No plastic/waxy surfaces, no AI uniformity.\n"
+    "- Real photos have micro-imperfections \u2014 embrace them. Same resolution and aspect ratio as input."
+)
+
+
+def _build_realism_prompt() -> str:
+    return _REALISM_PROMPT
+
+
+async def _submit_realism_task(prompt: str, image_url: str, pose_label: str) -> str:
+    """Submit a nano-banana-pro realism editing task."""
+    logger.info("[%s] Submitting realism pass (%s, %d chars)...", pose_label, settings.REALISM_MODEL, len(prompt))
+    payload = json.dumps({
+        "model": settings.REALISM_MODEL,
+        "input": {
+            "prompt":       prompt,
+            "image_input":  [image_url],
+            "aspect_ratio": settings.REALISM_ASPECT,
+            "resolution":   settings.REALISM_QUALITY,
+        },
+    })
+    headers = {
+        "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
+        "Content-Type":  "application/json",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(_CREATE_URL, headers=headers, content=payload)
+        resp.raise_for_status()
+    task_id = resp.json().get("data", {}).get("taskId")
+    if not task_id:
+        raise RuntimeError(f"No taskId returned (realism): {resp.text}")
+    logger.info("[%s] Realism task submitted \u2014 task_id=%s", pose_label, task_id)
+    return task_id
+
+
+async def _poll_realism_task(task_id: str, pose_label: str) -> str:
+    """Poll nano-banana-pro task until success/fail."""
+    logger.info("[%s] Polling realism task_id=%s ...", pose_label, task_id)
+    headers = {"Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}"}
+    for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(f"{_STATUS_URL}?taskId={task_id}", headers=headers)
+                resp.raise_for_status()
+            data  = resp.json().get("data", {})
+            state = data.get("state")
+            if state == "success":
+                urls = json.loads(data.get("resultJson", "{}")).get("resultUrls", [])
+                if urls:
+                    logger.info("[%s] Realism pass complete (attempt %d)", pose_label, attempt)
+                    return urls[0]
+                raise RuntimeError("Realism task succeeded but no resultUrls found.")
+            if state == "fail":
+                raise RuntimeError("Realism task failed.")
+            logger.debug("[%s] Realism poll #%d \u2014 state=%s", pose_label, attempt, state)
+            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.warning("[%s] Realism poll #%d error: %s", pose_label, attempt, exc)
+            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
+    raise RuntimeError(f"Realism task timed out after {settings.SEEDDREAM_MAX_RETRIES} attempts.")
+
+
 _SEEDDREAM_PROMPT_LIMIT = 10000   # kie.ai official limit per API docs
 
 
@@ -413,6 +724,7 @@ async def _submit_seeddream_task(prompt: str, image_urls: List[str], pose_label:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(_CREATE_URL, headers=headers, content=payload)
         resp.raise_for_status()
+    print(resp.json())
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise RuntimeError(f"No taskId returned (SeedDream): {resp.text}")
@@ -495,42 +807,49 @@ async def _process_one_pose(
 ) -> dict:
     """
     Full async pipeline for one pose. Returns output_image dict or raises on failure.
-    Flow: SeedDream generation -> Modal GPU enhancement.
+    Flow: SeedDream generation -> nano-banana-pro realism pass -> Modal GPU enhancement.
     """
     pose_label = f"pose-{pose_idx:02d}"
     image_id   = str(uuid.uuid4())
     prefix     = f"photoshoots/{photoshoot_id}/{image_id}"
-    logger.info("[%s] ── Starting pose pipeline ──────────────────────", pose_label)
+    logger.info("[%s] \u2500\u2500 Starting pose pipeline \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500", pose_label)
     logger.info("[%s] Pose prompt:\n%s", pose_label, pose_prompt)
 
+    # ── Step 1: build compact prompt and submit to SeedDream ─────────────
     has_back = bool(req_snapshot.get("back_garment_image", ""))
-    prompt = _build_seeddream_prompt(pose_prompt, has_back, req_snapshot)
+    prompt = _build_compact_prompt(pose_prompt, has_back, req_snapshot)
     logger.info("[%s] SeedDream prompt built (%d chars, back_image=%s)", pose_label, len(prompt), has_back)
 
     task_id = await _submit_seeddream_task(prompt, image_urls, pose_label)
-    result_url_4k = await _poll_task(task_id, pose_label)
-    logger.info("[%s] SeedDream complete — 4K URL received", pose_label)
+    seeddream_url = await _poll_task(task_id, pose_label)
+    logger.info("[%s] SeedDream complete \u2014 URL received", pose_label)
+
+    # ── Step 2: realism pass (nano-banana-pro) ───────────────────────────
+    realism_prompt = _build_realism_prompt()
+    realism_task_id = await _submit_realism_task(realism_prompt, seeddream_url, pose_label)
+    result_url_4k = await _poll_realism_task(realism_task_id, pose_label)
+    logger.info("[%s] Realism pass complete \u2014 4K URL received", pose_label)
 
     bytes_4k = await _download_bytes(result_url_4k, pose_label)
 
-    # ── SeedDream originals: resize 4K → 2K / 1K ─────────────────────────
-    logger.info("[%s] Resizing 4K → 2K...", pose_label)
+    # ── Step 3: resize realism output 4K \u2192 2K / 1K ──────────────────────
+    logger.info("[%s] Resizing 4K \u2192 2K...", pose_label)
     bytes_2k = await asyncio.get_running_loop().run_in_executor(None, _resize_image, bytes_4k, 2048)
-    logger.info("[%s] Resizing 4K → 1K...", pose_label)
+    logger.info("[%s] Resizing 4K \u2192 1K...", pose_label)
     bytes_1k = await asyncio.get_running_loop().run_in_executor(None, _resize_image, bytes_4k, 1024)
     logger.info("[%s] Resize complete", pose_label)
 
-    logger.info("[%s] Uploading final 4K / 2K / 1K to S3 (prefix=%s)...", pose_label, prefix)
+    logger.info("[%s] Uploading realism 4K / 2K / 1K to S3 (prefix=%s)...", pose_label, prefix)
 
     url_4k, url_2k, url_1k = await asyncio.gather(
         upload_bytes_to_s3(bytes_4k, f"{prefix}_4k.png", "image/png"),
         upload_bytes_to_s3(bytes_2k, f"{prefix}_2k.png", "image/png"),
         upload_bytes_to_s3(bytes_1k, f"{prefix}_1k.png", "image/png"),
     )
-    logger.info("[%s] Uploaded SeedDream 4K, 2K, 1K", pose_label)
+    logger.info("[%s] Uploaded realism 4K, 2K, 1K", pose_label)
 
-    # ── Modal GPU enhancement: 4K → enhanced 8K / 4K / 2K / 1K ──────────
-    logger.info("[%s] Sending 4K bytes to Modal GPU pipeline for enhancement...", pose_label)
+    # ── Step 4: Modal GPU enhancement: 4K \u2192 enhanced 8K / 4K / 2K / 1K ──
+    logger.info("[%s] Sending realism 4K bytes to Modal GPU pipeline...", pose_label)
     upscale_result = await enhance_and_upload(
         image_bytes=bytes_4k,
         photoshoot_id=photoshoot_id,
@@ -540,10 +859,10 @@ async def _process_one_pose(
         seeddream_1k_url=url_1k,
         upscaling_col=upscaling_col,
     )
-    logger.info("[%s] Modal enhancement complete — upscaled 1K: %s", pose_label,
+    logger.info("[%s] Modal enhancement complete \u2014 upscaled 1K: %s", pose_label,
                 upscale_result.get("1k_upscaled", "N/A")[:80])
 
-    # Use the upscaled 1K as the primary display image; fall back to SeedDream 1K
+    # Use the upscaled 1K as the primary display image; fall back to realism 1K
     display_image = upscale_result.get("1k_upscaled") or url_1k
 
     logger.info("[%s] ── Pose pipeline COMPLETE ─────────────────────", pose_label)
