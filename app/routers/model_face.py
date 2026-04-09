@@ -21,9 +21,24 @@ from app.services.credit_service import check_sufficient_credits, deduct_credits
 
 router = APIRouter(prefix="/api/v1/model-faces", tags=["Model Faces"])
 
-# Stored in Mongo as snake_case; API accepts these labels (any case / spaces ok).
+# Stored in Mongo as snake_case; API accepts spaced or snake_case labels (any case).
 _MODEL_CATEGORY_DB_VALUES = frozenset(
-    {"adult_male", "adult_female", "kid_boy", "kid_girl", "baby"}
+    {
+        "baby",
+        "kid_boy",
+        "kid_girl",
+        "young_boy",
+        "young_girl",
+        "adult_male",
+        "adult_female",
+        "senior_male",
+        "senior_female",
+    }
+)
+
+_MODEL_CATEGORY_FILTER_EXAMPLES = (
+    "Baby, Kid Boy, Kid Girl, Young Boy, Young Girl, "
+    "Adult Male, Adult Female, Senior Male, Senior Female"
 )
 
 _SSE_HEADERS = {
@@ -41,7 +56,7 @@ def _clean_face(doc: dict) -> dict:
 
 def _normalize_model_category_filter(raw: Optional[str]) -> Optional[str]:
     """
-    Map frontend labels (e.g. \"Adult Male\", \"Kid Girl\") or snake_case to DB value.
+    Map frontend labels (e.g. \"Adult Male\", \"Young Girl\") or snake_case to DB value.
     Returns None when ``raw`` is empty (no filter). Raises HTTPException 422 if unknown.
     """
     if raw is None:
@@ -59,8 +74,9 @@ def _normalize_model_category_filter(raw: Optional[str]) -> Optional[str]:
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         detail=(
             f"Invalid model_category {raw!r}. "
-            "Use one of: Adult Male, Adult Female, Kid Boy, Kid Girl, Baby "
-            "(or adult_male, adult_female, kid_boy, kid_girl, baby)."
+            f"Use one of: {_MODEL_CATEGORY_FILTER_EXAMPLES} "
+            "(or snake_case: baby, kid_boy, kid_girl, young_boy, young_girl, "
+            "adult_male, adult_female, senior_male, senior_female)."
         ),
     )
 
@@ -79,7 +95,7 @@ def _sse(event: str, data: dict) -> str:
         "`type=custom` — returns faces created by the current user (user_id match, is_active=True), "
         "sorted with favorites first then newest first. "
         "Optional filters: `is_favorite` (true/false), `model_category` "
-        "(e.g. Adult Male, Adult Female, Kid Boy, Kid Girl, Baby — matched to stored snake_case). "
+        f"(e.g. {_MODEL_CATEGORY_FILTER_EXAMPLES} — matched to stored snake_case). "
         "Use `page` and `limit` to control pagination."
     ),
 )
@@ -94,8 +110,9 @@ async def get_model_faces(
     model_category: Optional[str] = Query(
         default=None,
         description=(
-            "Optional. One of: Adult Male, Adult Female, Kid Boy, Kid Girl, Baby "
-            "(any case / spaces), or adult_male, adult_female, kid_boy, kid_girl, baby."
+            f"Optional. One of: {_MODEL_CATEGORY_FILTER_EXAMPLES} "
+            "(any case / spaces), or snake_case: baby, kid_boy, kid_girl, young_boy, "
+            "young_girl, adult_male, adult_female, senior_male, senior_female."
         ),
     ),
     current_user: dict = Depends(get_current_user),
