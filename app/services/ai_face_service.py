@@ -1,17 +1,25 @@
 """
-AI face generation service using Google Gemini.
-Generates a portrait image from face configuration and uploads it to S3.
+Model face image generation via kie.ai nano-banana-pro.
+
+Uses the same prompt template and configuration JSON style as
+scripts/generate_model_faces.py (passport-style headshot instructions).
 """
 
 import asyncio
 import io
+import json
 import uuid
-from typing import AsyncGenerator, Tuple, Optional as Opt
+from typing import Any, AsyncGenerator, Optional as Opt, Tuple
 
+import httpx
 from fastapi import HTTPException, status
+from PIL import Image
 
 from app.config import settings
 from app.services.s3_service import upload_bytes_to_s3
+
+_CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
+_STATUS_URL = "https://api.kie.ai/api/v1/jobs/recordInfo"
 
 # ── Default configuration values ──────────────────────────────────────────
 _DEFAULTS_COMMON = {
@@ -74,117 +82,140 @@ def build_configuration(category: str, overrides: dict) -> dict:
     return config
 
 
-def build_face_prompt(config: dict) -> str:
-    gender  = config["gender"]
-    age     = config["age"]
-    is_kid  = gender in ("girl", "boy")
-    is_male = gender in ("male", "boy")
+def build_face_prompt(model_cfg: dict[str, Any]) -> str:
+    """
+    Exact same prompt structure as scripts/generate_model_faces.build_face_prompt:
+    JSON block of configuration + passport-style headshot instructions.
+    """
+    cfg_without_image = {k: v for k, v in model_cfg.items() if k != "image"}
+    config_json = json.dumps(cfg_without_image, indent=2)
+    return f"""Generate a highly realistic passport-size photograph of a person based on the face configuration below.
 
-    beard_section = ""
-    if is_male and config.get("beard_length") not in ("none", "clean_shave", "", None):
-        beard_section = f"""
-Beard:
-- Beard length: {config['beard_length'].replace('_', ' ')}
-- Beard color: {config['beard_color'].replace('_', ' ')}
-"""
+MODEL FACE CONFIGURATION:
+{config_json}
 
-    kid_note = (
-        "This is a child model. Generate an age-appropriate, innocent, natural portrait. "
-        "No adult styling or makeup.\n\n"
-        if is_kid else ""
-    )
+Use every attribute from the configuration above (age, gender, ethnicity, bodyType, and all nested attributes like eyeColor, hairType, hairColor, hairStyle, hairLength, skinColor, faceShape, faceExpression, beardType, eyebrow, jawline, originalAttributes, etc.) to accurately construct the person's appearance.
 
-    return f"""{kid_note}Generate a highly realistic, professional portrait photograph of a {age} old {config['ethnicity']} {gender}.
+PHOTO STYLE: Professional headshot / passport photo. Head and upper shoulders visible. Shot from chest-up, centered framing. Clean plain white background. Soft, even studio lighting from front with subtle fill light. No harsh shadows. Sharp focus on face.
 
-Face & Facial Structure:
-- Face shape: {config['face_shape']}
-- Jawline: {config['jawline_type']}
-- Cheekbone height: {config['cheekbone_height']}
+CLOTHING: Wearing a plain black crew-neck t-shirt. The t-shirt should be clean, unwrinkled, and clearly visible at the shoulders and upper chest area.
 
-Skin:
-- Skin tone: {config['face_skin_tone']}
-- Skin undertone: {config['skin_undertone']}
-
-Hair:
-- Hair color: {config['hair_color'].replace('_', ' ')}
-- Hair length: {config['hair_length'].replace('_', ' ')}
-- Hair style: {config['hair_style'].replace('_', ' ')}
-
-Eyes:
-- Eye shape: {config['eye_shape']}
-- Eye color: {config['eye_color'].replace('_', ' ')}
-
-Facial Features:
-- Nose shape: {config['nose_shape']}
-- Lip shape: {config['lip_shape']}
-- Eyebrow shape: {config['eyebrow_shape'].replace('_', ' ')}
-{beard_section}
-Photography Style:
-- Clean, plain white background
-- Studio portrait lighting (soft, even, professional)
-- Upper body portrait: face, neck, and both bare shoulders clearly visible, framed from roughly mid-chest upward
-- Arms cut off at the sides of the frame, shoulders naturally sloping into the edges
-- Front-facing pose, looking directly at the camera
-- Natural, warm smile
-- High resolution, photorealistic quality
-- Professional fashion model headshot composition
-
-Do not add any text, watermarks, or overlays on the image."""
+REALISM: This must look like a real photograph taken with a professional camera. Natural skin texture with pores and subtle imperfections, realistic hair strands, proper light interaction with skin and fabric. No artificial smoothing, no CGI look, no illustration style. Photorealistic quality similar to a real ID photo or modeling headshot."""
 
 
-async def generate_face_image(config: dict) -> bytes:
-    """Call Gemini to generate a portrait image and return raw PNG bytes."""
-    try:
-        from google import genai
-        from google.genai import types as gtypes
-        from PIL import Image
-    except ImportError as exc:
+async def _submit_model_face_kie_task(prompt: str) -> str:
+    if not settings.SEEDDREAM_API_KEY.strip():
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Missing dependency for AI generation: {exc}. Run: pip install google-genai Pillow",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="kie.ai API key not configured (SEEDDREAM_API_KEY).",
         )
-
-    prompt = build_face_prompt(config)
-
-    contents = [
-        gtypes.Content(
-            role="user",
-            parts=[gtypes.Part.from_text(text=prompt)],
-        )
-    ]
-    cfg = gtypes.GenerateContentConfig(
-        response_modalities=["IMAGE", "TEXT"],
-        image_config=gtypes.ImageConfig(aspect_ratio="9:16"),
-    )
-
-    loop = asyncio.get_event_loop()
-
-    def _call_gemini():
-        g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        return g_client.models.generate_content(
-            model=settings.GEMINI_MODEL,
-            contents=contents,
-            config=cfg,
-        )
-
+    payload = json.dumps({
+        "model": settings.MODEL_FACE_GENERATE_MODEL,
+        "input": {
+            "prompt":         prompt,
+            "image_input":    [],
+            "aspect_ratio":   settings.MODEL_FACE_GENERATE_ASPECT,
+            "resolution":     settings.MODEL_FACE_GENERATE_RESOLUTION,
+            "output_format":  "png",
+        },
+    })
+    headers = {
+        "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
+        "Content-Type":  "application/json",
+    }
     try:
-        response = await loop.run_in_executor(None, _call_gemini)
-        for part in response.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.data:
-                img = Image.open(io.BytesIO(part.inline_data.data))
-                buf = io.BytesIO()
-                img.convert("RGB").save(buf, format="PNG")
-                return buf.getvalue()
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(_CREATE_URL, headers=headers, content=payload)
+            resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"kie.ai task submission failed: {exc.response.text[:500]}",
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gemini image generation failed: {exc}",
+            detail=f"kie.ai task submission failed: {exc}",
+        ) from exc
+
+    task_id = resp.json().get("data", {}).get("taskId")
+    if not task_id:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"kie.ai returned no taskId: {resp.text[:800]}",
+        )
+    return task_id
+
+
+async def _poll_model_face_kie_task(task_id: str) -> str:
+    headers = {"Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}"}
+    for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(f"{_STATUS_URL}?taskId={task_id}", headers=headers)
+                resp.raise_for_status()
+            data  = resp.json().get("data", {})
+            state = data.get("state")
+            if state == "success":
+                urls = json.loads(data.get("resultJson", "{}")).get("resultUrls", [])
+                if urls:
+                    return urls[0]
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="kie.ai task succeeded but no resultUrls in response.",
+                )
+            if state == "fail":
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="kie.ai model face generation task failed.",
+                )
+            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
+        except HTTPException:
+            raise
+        except Exception:
+            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
+    raise HTTPException(
+        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+        detail=f"kie.ai task did not complete after {settings.SEEDDREAM_MAX_RETRIES} attempts.",
+    )
+
+
+async def _download_result_image(url: str) -> bytes:
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.content
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to download generated image: {exc}",
+        ) from exc
+
+
+def _normalize_to_png_bytes(raw: bytes) -> bytes:
+    try:
+        img = Image.open(io.BytesIO(raw))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return raw
+
+
+async def generate_face_image(config: dict) -> bytes:
+    """Submit prompt to kie.ai nano-banana-pro, poll, download, return PNG bytes."""
+    prompt = build_face_prompt(config)
+    if len(prompt) > 10000:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Face configuration produces a prompt over kie.ai 10000 character limit.",
         )
 
-    raise HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        detail="Gemini returned no image data.",
-    )
+    task_id = await _submit_model_face_kie_task(prompt)
+    image_url = await _poll_model_face_kie_task(task_id)
+    raw = await _download_result_image(image_url)
+    return _normalize_to_png_bytes(raw)
 
 
 async def generate_and_upload_face(category: str, overrides: dict) -> tuple[str, dict]:
@@ -226,7 +257,7 @@ async def generate_and_upload_face_stream(
     yield ("validating_config_done", "Face configurations validated", None, None)
     await asyncio.sleep(1)
 
-    yield ("starting_generation", "Starting face generation", None, None)
+    yield ("starting_generation", "Starting face generation (kie.ai nano-banana-pro)", None, None)
     await asyncio.sleep(1)
     yield ("training", "Training face specifications, facial expression, skin overlaying, skin tone management", None, None)
 

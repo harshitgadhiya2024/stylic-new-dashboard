@@ -35,6 +35,8 @@ lib64/
 
 # Virtual environments
 venv/
+seeddream_local_output/
+adding_data_db.py
 .venv/
 env/
 ENV/

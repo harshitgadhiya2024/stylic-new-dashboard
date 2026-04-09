@@ -2,7 +2,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import AsyncGenerator, List, Literal, Optional
+from typing import Any, AsyncGenerator, List, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -13,7 +13,7 @@ from app.models.model_face import (
     CreateModelFaceRequest,
     CreateModelFaceWithAIRequest,
     DeleteModelFacesRequest,
-    ModelFaceSchema,
+    ModelFaceApiItem,
 )
 from app.services.ai_face_service import generate_and_upload_face_stream
 from app.services.face_to_model_service import generate_model_face_from_reference_stream
@@ -52,6 +52,68 @@ def _clean_face(doc: dict) -> dict:
     doc = dict(doc)
     doc.pop("_id", None)
     return doc
+
+
+def _coerce_age_ethnicity_gender(doc: dict) -> tuple[Any, Any, Any]:
+    """Prefer top-level fields; fall back to model_configuration."""
+    cfg = doc.get("model_configuration") or {}
+    age = doc.get("age")
+    if age is None:
+        age = cfg.get("age")
+    ethnicity = doc.get("ethnicity")
+    if ethnicity is None:
+        ethnicity = cfg.get("ethnicity")
+    gender = doc.get("gender")
+    if gender is None:
+        gender = cfg.get("gender")
+    return age, ethnicity, gender
+
+
+def serialize_model_face_response(doc: dict) -> dict:
+    """
+    Canonical API shape (testing.txt). Default faces: no user_id / is_favorite.
+    Custom faces: includes user_id and is_favorite.
+    """
+    d = _clean_face(doc)
+    cfg = d.get("model_configuration")
+    if cfg is None:
+        cfg = {}
+    age, ethnicity, gender = _coerce_age_ethnicity_gender(d)
+    fallback_ts = datetime.now(timezone.utc)
+    created_at = d.get("created_at") or fallback_ts
+    updated_at = d.get("updated_at") or fallback_ts
+    out: dict = {
+        "model_id":            d["model_id"],
+        "model_name":          d.get("model_name") or "",
+        "model_category":      d.get("model_category") or "",
+        "model_configuration": cfg,
+        "age":                 age,
+        "ethnicity":           ethnicity,
+        "gender":              gender,
+        "tags":                d.get("tags") or [],
+        "notes":               d.get("notes") or "",
+        "model_used_count":    int(d.get("model_used_count", 0) or 0),
+        "face_url":            d.get("face_url") or "",
+        "favorite_list":       d.get("favorite_list") or [],
+        "plan":                d.get("plan") or "silver",
+        "is_default":          bool(d.get("is_default", False)),
+        "is_active":           bool(d.get("is_active", True)),
+        "created_at":          created_at,
+        "updated_at":          updated_at,
+    }
+    if not out["is_default"]:
+        out["is_favorite"] = bool(d.get("is_favorite", False))
+        out["user_id"] = d.get("user_id")
+    return out
+
+
+def _jsonable_model_face_for_sse(doc: dict) -> dict:
+    """Same as serialize_model_face_response but datetimes -> ISO strings for json.dumps."""
+    data = serialize_model_face_response(doc)
+    for key, val in list(data.items()):
+        if isinstance(val, datetime):
+            data[key] = val.isoformat()
+    return data
 
 
 def _normalize_model_category_filter(raw: Optional[str]) -> Optional[str]:
@@ -152,7 +214,7 @@ async def get_model_faces(
             "is_favorite":    is_favorite,
             "model_category": cat,
         },
-        "data":        [_clean_face(doc) for doc in paged],
+        "data":        [serialize_model_face_response(doc) for doc in paged],
     }
 
 
@@ -188,26 +250,44 @@ async def create_model_face(
                     yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
 
                     now = datetime.now(timezone.utc)
-                    doc = {
-                        "model_id":            str(uuid.uuid4()),
+                    mid = str(uuid.uuid4())
+                    doc_db = {
+                        "model_id":            mid,
                         "user_id":             current_user["user_id"],
                         "model_name":          body.model_name,
                         "model_category":      body.model_category,
                         "model_configuration": {},
-                        "tags":                body.tags,
-                        "notes":               body.notes,
+                        "age":                 None,
+                        "ethnicity":           None,
+                        "gender":              None,
+                        "tags":                body.tags or [],
+                        "notes":               body.notes or "",
                         "model_used_count":    0,
                         "face_url":            generated_face_url,
+                        "favorite_list":       [],
+                        "plan":                "silver",
                         "reference_face_url":  body.reference_face_url,
                         "is_default":          False,
                         "is_active":           True,
                         "is_favorite":         False,
-                        "created_at":          now.isoformat(),
-                        "updated_at":          now.isoformat(),
+                        "created_at":          now,
+                        "updated_at":          now,
                     }
                     col = get_model_faces_collection()
-                    await col.insert_one({**doc, "created_at": now, "updated_at": now})
-                    yield _sse("done", {"step": "done", "message": "Face generation complete", "data": doc})
+                    await col.insert_one(doc_db)
+                    saved = await col.find_one({"model_id": mid})
+                    if saved:
+                        payload = _jsonable_model_face_for_sse(saved)
+                    else:
+                        payload = _jsonable_model_face_for_sse(doc_db)
+                    yield _sse(
+                        "done",
+                        {
+                            "step":    "done",
+                            "message": "Face generation complete",
+                            "data":    payload,
+                        },
+                    )
                 else:
                     yield _sse(step, {"step": step, "message": message})
         except HTTPException as exc:
@@ -233,9 +313,10 @@ async def create_model_face(
     "/generate-with-ai",
     summary="Create Model Face Using AI (Streaming)",
     description=(
-        "Streams real-time progress via SSE. Generates a realistic portrait via Gemini AI "
-        "using the provided face configurations (all optional — unset fields use "
-        "category-appropriate defaults), uploads to S3, saves to DB, and deducts 2.5 credits "
+        "Streams real-time progress via SSE. Generates a passport-style portrait via kie.ai "
+        "nano-banana-pro using the same prompt pattern as scripts/generate_model_faces.py "
+        "(face configuration as JSON + headshot instructions). Optional fields use "
+        "category-appropriate defaults; uploads to S3, saves to DB, and deducts 2.5 credits "
         "in the background. beard_length and beard_color only apply when model_category is "
         "'adult_male'. Response is `text/event-stream`. Final event `done` contains the full "
         "model face record."
@@ -267,30 +348,51 @@ async def create_model_face_with_ai(
             ):
                 if step == "done":
                     generated_face_url = face_url
-                    final_config       = config
+                    final_config       = config or {}
                     yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
 
                     now = datetime.now(timezone.utc)
-                    doc = {
-                        "model_id":            str(uuid.uuid4()),
+                    mid = str(uuid.uuid4())
+                    age = final_config.get("age")
+                    ethnicity = final_config.get("ethnicity")
+                    gender = final_config.get("gender")
+                    doc_db = {
+                        "model_id":            mid,
                         "user_id":             current_user["user_id"],
                         "model_name":          body.model_name,
                         "model_category":      body.model_category,
                         "model_configuration": final_config,
+                        "age":                 age,
+                        "ethnicity":           ethnicity,
+                        "gender":              gender,
                         "tags":                body.tags or [],
                         "notes":               body.notes or "",
                         "model_used_count":    0,
                         "face_url":            generated_face_url,
+                        "favorite_list":       [],
+                        "plan":                "silver",
                         "reference_face_url":  None,
                         "is_default":          False,
                         "is_active":           True,
                         "is_favorite":         False,
-                        "created_at":          now.isoformat(),
-                        "updated_at":          now.isoformat(),
+                        "created_at":          now,
+                        "updated_at":          now,
                     }
                     col = get_model_faces_collection()
-                    await col.insert_one({**doc, "created_at": now, "updated_at": now})
-                    yield _sse("done", {"step": "done", "message": "Face generation complete", "data": doc})
+                    await col.insert_one(doc_db)
+                    saved = await col.find_one({"model_id": mid})
+                    if saved:
+                        payload = _jsonable_model_face_for_sse(saved)
+                    else:
+                        payload = _jsonable_model_face_for_sse(doc_db)
+                    yield _sse(
+                        "done",
+                        {
+                            "step":    "done",
+                            "message": "Face generation complete",
+                            "data":    payload,
+                        },
+                    )
                 else:
                     yield _sse(step, {"step": step, "message": message})
         except HTTPException as exc:
@@ -314,7 +416,7 @@ async def create_model_face_with_ai(
 
 @router.patch(
     "/{model_id}/toggle-favorite",
-    response_model=ModelFaceSchema,
+    response_model=ModelFaceApiItem,
     summary="Toggle Favorite",
     description="Switch is_favorite between true and false for a model face. Secured — only the owner can toggle.",
 )
@@ -353,7 +455,7 @@ async def toggle_favorite(
 
     doc["is_favorite"] = new_value
     doc["updated_at"]  = now
-    return _clean_face(doc)
+    return ModelFaceApiItem(**serialize_model_face_response(doc))
 
 
 @router.delete(

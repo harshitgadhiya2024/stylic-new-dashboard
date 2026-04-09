@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     REALISM_QUALITY: str = "4K"
     REALISM_ASPECT: str = "9:16"
 
+    # Model face generation (kie.ai) — same model family as scripts/generate_model_faces.py (Gemini 3 Pro Image via Kie)
+    MODEL_FACE_GENERATE_MODEL: str = "nano-banana-pro"
+    MODEL_FACE_GENERATE_ASPECT: str = "4:5"
+    MODEL_FACE_GENERATE_RESOLUTION: str = "1K"
+
     # App defaults
     APP_NAME: str = "Stylic AI"
     DEFAULT_CREDITS: int = 5
