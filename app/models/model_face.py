@@ -69,7 +69,8 @@ class ModelFaceSchema(BaseModel):
 class ModelFaceApiItem(BaseModel):
     """
     Canonical model-face shape for API responses (matches platform import format).
-    Default faces omit user_id and is_favorite; custom faces include them.
+    Custom faces include user_id and document is_favorite.
+    Default faces omit user_id; is_favorite is set when the viewer has bookmarked via favorite_list.
     """
 
     model_config = ConfigDict(extra="ignore")

@@ -110,10 +110,14 @@ def _passes_age_ethnicity_filters(
     return True
 
 
-def serialize_model_face_response(doc: dict) -> dict:
+def serialize_model_face_response(
+    doc: dict,
+    viewer_user_id: Optional[str] = None,
+) -> dict:
     """
-    Canonical API shape (testing.txt). Default faces: no user_id / is_favorite.
-    Custom faces: includes user_id and is_favorite.
+    Canonical API shape (testing.txt).
+    Custom faces: user_id + is_favorite from document.
+    Default faces: no user_id; if ``viewer_user_id`` is set, is_favorite = viewer in favorite_list.
     """
     d = _clean_face(doc)
     cfg = d.get("model_configuration")
@@ -147,15 +151,22 @@ def serialize_model_face_response(doc: dict) -> dict:
         "created_at":          created_at,
         "updated_at":          updated_at,
     }
-    if not out["is_default"]:
+    if out["is_default"]:
+        if viewer_user_id is not None:
+            fl = d.get("favorite_list") or []
+            out["is_favorite"] = viewer_user_id in fl
+    else:
         out["is_favorite"] = bool(d.get("is_favorite", False))
         out["user_id"] = d.get("user_id")
     return out
 
 
-def _jsonable_model_face_for_sse(doc: dict) -> dict:
+def _jsonable_model_face_for_sse(
+    doc: dict,
+    viewer_user_id: Optional[str] = None,
+) -> dict:
     """Same as serialize_model_face_response but datetimes -> ISO strings for json.dumps."""
-    data = serialize_model_face_response(doc)
+    data = serialize_model_face_response(doc, viewer_user_id=viewer_user_id)
     for key, val in list(data.items()):
         if isinstance(val, datetime):
             data[key] = val.isoformat()
@@ -198,24 +209,37 @@ def _sse(event: str, data: dict) -> str:
     "/",
     summary="Get Model Faces",
     description=(
-        "Returns a paginated list of model faces based on `type`. "
-        "`type=default` — returns all platform default faces (is_default=True). "
-        "`type=custom` — returns faces created by the current user (user_id match, is_active=True), "
-        "sorted with favorites first then newest first. "
-        "Optional filters: `is_favorite` (true/false), `model_category` "
+        "Returns a paginated list of model faces. `type` is required except when `is_favorite=true`. "
+        "`type=default` — platform default faces (is_default=True). "
+        "`type=custom` — faces created by the current user (user_id match, is_active=True), "
+        "sorted with favorites first then newest first when no favorite filter is applied. "
+        "Optional filters: `is_favorite`, `model_category` "
         f"(e.g. {_MODEL_CATEGORY_FILTER_EXAMPLES} — matched to stored snake_case), "
         "`min_age` / `max_age` (inclusive, integer years; uses top-level or model_configuration.age), "
         "and `ethnicity` (case-insensitive exact match on top-level or model_configuration). "
+        "When `is_favorite=true`, `type` is ignored: returns union of your custom faces with "
+        "`is_favorite=true` and default faces whose `favorite_list` contains your user_id. "
+        "When `is_favorite=false`, filtering is scoped by `type` (custom: your non-favorites; "
+        "default: defaults you have not added to `favorite_list`). "
         "Use `page` and `limit` to control pagination."
     ),
 )
 async def get_model_faces(
-    type:  Literal["default", "custom"] = Query(..., description="'default' for platform faces, 'custom' for user-created faces"),
+    type: Optional[Literal["default", "custom"]] = Query(
+        default=None,
+        description=(
+            "'default' for platform faces, 'custom' for user-created faces. "
+            "Required unless `is_favorite=true` (favorites union ignores `type`)."
+        ),
+    ),
     page:  int = Query(default=1,  ge=1,        description="Page number (1-based)"),
     limit: int = Query(default=10, ge=1, le=100, description="Number of items per page"),
     is_favorite: Optional[bool] = Query(
         default=None,
-        description="When set, return only favorites (true) or only non-favorites (false). Omit for no filter.",
+        description=(
+            "true: favorites only — ignores `type`; see endpoint description. "
+            "false: non-favorites within `type`. Omit: no favorite filter (uses `type` normally)."
+        ),
     ),
     model_category: Optional[str] = Query(
         default=None,
@@ -249,7 +273,14 @@ async def get_model_faces(
             detail="min_age cannot be greater than max_age.",
         )
 
+    if type is None and is_favorite is not True:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Query parameter `type` is required unless `is_favorite` is true.",
+        )
+
     col = get_model_faces_collection()
+    uid = current_user["user_id"]
 
     cat = _normalize_model_category_filter(model_category)
 
@@ -259,21 +290,72 @@ async def get_model_faces(
         if e:
             eth_norm = e.lower()
 
-    if type == "default":
-        query: dict = {"is_default": True}
-    else:
-        query = {"user_id": current_user["user_id"], "is_active": True}
+    def _sort_key_updated(doc: dict) -> datetime:
+        u = doc.get("updated_at")
+        if u is None:
+            return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        if isinstance(u, datetime) and u.tzinfo is None:
+            return u.replace(tzinfo=timezone.utc)
+        return u
 
-    if cat is not None:
-        query["model_category"] = cat
-    if is_favorite is not None:
-        query["is_favorite"] = is_favorite
+    docs: list[dict]
 
-    if type == "custom":
-        cursor = col.find(query).sort([("is_favorite", -1), ("created_at", -1)])
+    if is_favorite is True:
+        q_custom: dict = {
+            "user_id":     uid,
+            "is_active":   True,
+            "is_favorite": True,
+            "is_default":  False,
+        }
+        q_default: dict = {"is_default": True, "favorite_list": uid}
+        if cat is not None:
+            q_custom["model_category"] = cat
+            q_default["model_category"] = cat
+        d_custom = await col.find(q_custom).sort([("created_at", -1)]).to_list(length=None)
+        d_default = await col.find(q_default).sort([("updated_at", -1)]).to_list(length=None)
+        by_mid: dict[str, dict] = {}
+        for d in d_custom + d_default:
+            by_mid[d["model_id"]] = d
+        docs = list(by_mid.values())
+        docs.sort(key=_sort_key_updated, reverse=True)
+    elif is_favorite is False:
+        if type == "custom":
+            query: dict = {
+                "user_id":     uid,
+                "is_active":   True,
+                "is_favorite": False,
+                "is_default":  False,
+            }
+        else:
+            query = {
+                "is_default": True,
+                "$or":        [
+                    {"favorite_list": {"$exists": False}},
+                    {"favorite_list": []},
+                    {"favorite_list": {"$nin": [uid]}},
+                ],
+            }
+        if cat is not None:
+            query["model_category"] = cat
+        if type == "custom":
+            cursor = col.find(query).sort([("created_at", -1)])
+        else:
+            cursor = col.find(query)
+        docs = await cursor.to_list(length=None)
     else:
-        cursor = col.find(query)
-    docs = await cursor.to_list(length=None)
+        if type == "default":
+            query = {"is_default": True}
+        else:
+            query = {"user_id": uid, "is_active": True}
+
+        if cat is not None:
+            query["model_category"] = cat
+
+        if type == "custom":
+            cursor = col.find(query).sort([("is_favorite", -1), ("created_at", -1)])
+        else:
+            cursor = col.find(query)
+        docs = await cursor.to_list(length=None)
 
     docs = [
         d
@@ -287,7 +369,7 @@ async def get_model_faces(
     total_pages = (total + limit - 1) // limit if total else 1
 
     return {
-        "type":        type,
+        "type":        type if is_favorite is not True else None,
         "page":        page,
         "limit":       limit,
         "total":       total,
@@ -299,7 +381,7 @@ async def get_model_faces(
             "max_age":        max_age,
             "ethnicity":      ethnicity.strip() if ethnicity and ethnicity.strip() else None,
         },
-        "data":        [serialize_model_face_response(doc) for doc in paged],
+        "data":        [serialize_model_face_response(doc, viewer_user_id=uid) for doc in paged],
     }
 
 
@@ -414,9 +496,15 @@ async def create_model_face(
                     await col.insert_one(doc_db)
                     saved = await col.find_one({"model_id": mid})
                     if saved:
-                        payload = _jsonable_model_face_for_sse(saved)
+                        payload = _jsonable_model_face_for_sse(
+                            saved,
+                            viewer_user_id=current_user["user_id"],
+                        )
                     else:
-                        payload = _jsonable_model_face_for_sse(doc_db)
+                        payload = _jsonable_model_face_for_sse(
+                            doc_db,
+                            viewer_user_id=current_user["user_id"],
+                        )
                     yield _sse(
                         "done",
                         {
@@ -523,9 +611,15 @@ async def create_model_face_with_ai(
                     await col.insert_one(doc_db)
                     saved = await col.find_one({"model_id": mid})
                     if saved:
-                        payload = _jsonable_model_face_for_sse(saved)
+                        payload = _jsonable_model_face_for_sse(
+                            saved,
+                            viewer_user_id=current_user["user_id"],
+                        )
                     else:
-                        payload = _jsonable_model_face_for_sse(doc_db)
+                        payload = _jsonable_model_face_for_sse(
+                            doc_db,
+                            viewer_user_id=current_user["user_id"],
+                        )
                     yield _sse(
                         "done",
                         {
@@ -559,13 +653,23 @@ async def create_model_face_with_ai(
     "/{model_id}/toggle-favorite",
     response_model=ModelFaceApiItem,
     summary="Toggle Favorite",
-    description="Switch is_favorite between true and false for a model face. Secured — only the owner can toggle.",
+    description=(
+        "Query `type=custom`: flip `is_favorite` on a face you own (not a platform default). "
+        "Query `type=default`: add or remove your `user_id` in the default face's `favorite_list`. "
+        "Response includes viewer-specific `is_favorite` for defaults (derived from `favorite_list`)."
+    ),
 )
 async def toggle_favorite(
     model_id: str,
+    favorite_type: Literal["default", "custom"] = Query(
+        ...,
+        alias="type",
+        description="'custom' toggles is_favorite on your face; 'default' toggles your id in favorite_list.",
+    ),
     current_user: dict = Depends(get_current_user),
 ):
     col = get_model_faces_collection()
+    uid = current_user["user_id"]
 
     doc = await col.find_one({"model_id": model_id})
     if not doc:
@@ -574,29 +678,49 @@ async def toggle_favorite(
             detail="Model face not found.",
         )
 
-    if doc.get("is_default", False):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Default model faces cannot be marked as favorite.",
-        )
-
-    if doc.get("user_id") != current_user["user_id"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to update this model face.",
-        )
-
-    new_value = not doc.get("is_favorite", False)
     now = datetime.now(timezone.utc)
 
-    await col.update_one(
-        {"model_id": model_id},
-        {"$set": {"is_favorite": new_value, "updated_at": now}},
-    )
+    if favorite_type == "custom":
+        if doc.get("is_default", False):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This face is a platform default — use type=default to favorite it.",
+            )
+        if doc.get("user_id") != uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to update this model face.",
+            )
+        new_value = not doc.get("is_favorite", False)
+        await col.update_one(
+            {"model_id": model_id},
+            {"$set": {"is_favorite": new_value, "updated_at": now}},
+        )
+    else:
+        if not doc.get("is_default", False):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This face is user-created — use type=custom to toggle favorite.",
+            )
+        fl = list(doc.get("favorite_list") or [])
+        if uid in fl:
+            await col.update_one(
+                {"model_id": model_id},
+                {"$pull": {"favorite_list": uid}, "$set": {"updated_at": now}},
+            )
+        else:
+            await col.update_one(
+                {"model_id": model_id},
+                {"$addToSet": {"favorite_list": uid}, "$set": {"updated_at": now}},
+            )
 
-    doc["is_favorite"] = new_value
-    doc["updated_at"]  = now
-    return ModelFaceApiItem(**serialize_model_face_response(doc))
+    saved = await col.find_one({"model_id": model_id})
+    if not saved:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model face not found after update.",
+        )
+    return ModelFaceApiItem(**serialize_model_face_response(saved, viewer_user_id=uid))
 
 
 @router.delete(
