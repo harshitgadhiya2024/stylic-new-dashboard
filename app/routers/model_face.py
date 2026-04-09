@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, List, Literal, Optional
@@ -16,7 +15,7 @@ from app.models.model_face import (
     DeleteModelFacesRequest,
     ModelFaceApiItem,
 )
-from app.services.ai_face_service import generate_and_upload_face_stream
+from app.services.ai_face_service import coerce_age_to_int, generate_and_upload_face_stream
 from app.services.face_to_model_service import generate_model_face_from_reference_stream
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
 
@@ -72,19 +71,7 @@ def _coerce_age_ethnicity_gender(doc: dict) -> tuple[Any, Any, Any]:
 
 def _parse_age_for_filter(age_val: Any) -> Optional[int]:
     """Normalize stored age (int, float, or e.g. \"25 years\") to integer years, or None."""
-    if age_val is None or isinstance(age_val, bool):
-        return None
-    if isinstance(age_val, int):
-        return age_val
-    if isinstance(age_val, float):
-        return int(age_val)
-    s = str(age_val).strip()
-    if not s:
-        return None
-    m = re.match(r"^(\d+)", s)
-    if m:
-        return int(m.group(1))
-    return None
+    return coerce_age_to_int(age_val)
 
 
 def _doc_numeric_age(doc: dict) -> Optional[int]:
@@ -132,7 +119,12 @@ def serialize_model_face_response(doc: dict) -> dict:
     cfg = d.get("model_configuration")
     if cfg is None:
         cfg = {}
+    cfg = dict(cfg)
     age, ethnicity, gender = _coerce_age_ethnicity_gender(d)
+    age = coerce_age_to_int(age)
+    cfg_age = coerce_age_to_int(cfg.get("age"))
+    if cfg_age is not None:
+        cfg["age"] = cfg_age
     fallback_ts = datetime.now(timezone.utc)
     created_at = d.get("created_at") or fallback_ts
     updated_at = d.get("updated_at") or fallback_ts
@@ -358,9 +350,9 @@ async def get_all_ethnicity():
     summary="Upload / Create a Model Face (Streaming)",
     description=(
         "Accepts a reference face photo URL. Streams real-time progress via SSE. "
-        "Validates the image with Gemini vision (required: age, ethnicity, gender) and full face attributes, "
+        "Analyzes the image (required: age, ethnicity, gender) and full face attributes, "
         "builds the same passport-style prompt as generate-with-AI / scripts/generate_model_faces.py, "
-        "generates the portrait with kie.ai SeedDream 5.0 Lite (text-to-image), uploads to S3, "
+        "generates the portrait from that prompt, uploads to S3, "
         "saves to DB with vision-derived age/ethnicity/gender and merged model_configuration, "
         "and deducts 2.5 credits in the background. "
         "Secured — user_id is taken from the auth token. "
@@ -385,7 +377,13 @@ async def create_model_face(
                 if step == "done":
                     generated_face_url = face_url
                     meta = persist_meta or {}
-                    cfg = meta.get("model_configuration") or {}
+                    cfg = dict(meta.get("model_configuration") or {})
+                    stored_age = coerce_age_to_int(meta.get("age"))
+                    if stored_age is None:
+                        stored_age = coerce_age_to_int(cfg.get("age"))
+                    if stored_age is None:
+                        stored_age = 25
+                    cfg["age"] = stored_age
                     yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
 
                     now = datetime.now(timezone.utc)
@@ -396,7 +394,7 @@ async def create_model_face(
                         "model_name":          body.model_name,
                         "model_category":      body.model_category,
                         "model_configuration": cfg,
-                        "age":                 meta.get("age"),
+                        "age":                 stored_age,
                         "ethnicity":           meta.get("ethnicity"),
                         "gender":              meta.get("gender"),
                         "tags":                body.tags or [],
@@ -452,8 +450,8 @@ async def create_model_face(
     "/generate-with-ai",
     summary="Create Model Face Using AI (Streaming)",
     description=(
-        "Streams real-time progress via SSE. Generates a passport-style portrait via kie.ai "
-        "nano-banana-pro using the same prompt pattern as scripts/generate_model_faces.py "
+        "Streams real-time progress via SSE. Generates a passport-style portrait using the same "
+        "prompt pattern as scripts/generate_model_faces.py "
         "(face configuration as JSON + headshot instructions). Optional fields use "
         "category-appropriate defaults; uploads to S3, saves to DB, and deducts 2.5 credits "
         "in the background. beard_length and beard_color only apply when model_category is "
@@ -492,16 +490,20 @@ async def create_model_face_with_ai(
 
                     now = datetime.now(timezone.utc)
                     mid = str(uuid.uuid4())
-                    age = final_config.get("age")
-                    ethnicity = final_config.get("ethnicity")
-                    gender = final_config.get("gender")
+                    fc = dict(final_config or {})
+                    stored_age = coerce_age_to_int(fc.get("age"))
+                    if stored_age is None:
+                        stored_age = 25
+                    fc["age"] = stored_age
+                    ethnicity = fc.get("ethnicity")
+                    gender = fc.get("gender")
                     doc_db = {
                         "model_id":            mid,
                         "user_id":             current_user["user_id"],
                         "model_name":          body.model_name,
                         "model_category":      body.model_category,
-                        "model_configuration": final_config,
-                        "age":                 age,
+                        "model_configuration": fc,
+                        "age":                 stored_age,
                         "ethnicity":           ethnicity,
                         "gender":              gender,
                         "tags":                body.tags or [],

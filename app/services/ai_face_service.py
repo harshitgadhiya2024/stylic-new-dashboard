@@ -1,5 +1,5 @@
 """
-Model face image generation via kie.ai nano-banana-pro.
+AI model-face portrait generation (text prompt → image → S3).
 
 Uses the same prompt template and configuration JSON style as
 scripts/generate_model_faces.py (passport-style headshot instructions).
@@ -8,6 +8,7 @@ scripts/generate_model_faces.py (passport-style headshot instructions).
 import asyncio
 import io
 import json
+import re
 import uuid
 from typing import Any, AsyncGenerator, Optional as Opt, Tuple
 
@@ -36,7 +37,7 @@ _DEFAULTS_COMMON = {
     "nose_shape":       "straight",
     "lip_shape":        "medium",
     "eyebrow_shape":    "natural",
-    "age":              "25 years",
+    "age":              25,
     "ethnicity":        "Indian",
 }
 
@@ -47,6 +48,23 @@ _BEARD_DEFAULTS = {
 }
 
 _MALE_CATEGORIES = {"adult_male"}
+
+
+def coerce_age_to_int(age_val: Any) -> Opt[int]:
+    """Parse age to integer years from int, float, or strings like '25 years'. Returns None if unknown."""
+    if age_val is None or isinstance(age_val, bool):
+        return None
+    if isinstance(age_val, int):
+        return age_val
+    if isinstance(age_val, float):
+        return int(age_val)
+    s = str(age_val).strip()
+    if not s:
+        return None
+    m = re.match(r"^(\d+)", s)
+    if m:
+        return int(m.group(1))
+    return None
 
 
 def build_configuration(category: str, overrides: dict) -> dict:
@@ -79,6 +97,9 @@ def build_configuration(category: str, overrides: dict) -> dict:
         if value is not None:
             config[key] = value
 
+    age_i = coerce_age_to_int(config.get("age"))
+    config["age"] = age_i if age_i is not None else 25
+
     return config
 
 
@@ -107,7 +128,7 @@ async def _submit_model_face_kie_task(prompt: str) -> str:
     if not settings.SEEDDREAM_API_KEY.strip():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="kie.ai API key not configured (SEEDDREAM_API_KEY).",
+            detail="Portrait generation is not configured.",
         )
     payload = json.dumps({
         "model": settings.MODEL_FACE_GENERATE_MODEL,
@@ -130,19 +151,19 @@ async def _submit_model_face_kie_task(prompt: str) -> str:
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"kie.ai task submission failed: {exc.response.text[:500]}",
+            detail="Portrait generation request failed. Please try again later.",
         ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"kie.ai task submission failed: {exc}",
+            detail="Portrait generation request failed. Please try again later.",
         ) from exc
 
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"kie.ai returned no taskId: {resp.text[:800]}",
+            detail="Portrait generation could not be started. Please try again later.",
         )
     return task_id
 
@@ -162,12 +183,12 @@ async def _poll_model_face_kie_task(task_id: str) -> str:
                     return urls[0]
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="kie.ai task succeeded but no resultUrls in response.",
+                    detail="Portrait generation finished but no image URL was returned.",
                 )
             if state == "fail":
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="kie.ai model face generation task failed.",
+                    detail="Portrait generation failed.",
                 )
             await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
         except HTTPException:
@@ -176,7 +197,7 @@ async def _poll_model_face_kie_task(task_id: str) -> str:
             await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
     raise HTTPException(
         status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-        detail=f"kie.ai task did not complete after {settings.SEEDDREAM_MAX_RETRIES} attempts.",
+        detail="Portrait generation timed out. Please try again later.",
     )
 
 
@@ -204,12 +225,12 @@ def _normalize_to_png_bytes(raw: bytes) -> bytes:
 
 
 async def generate_face_image(config: dict) -> bytes:
-    """Submit prompt to kie.ai nano-banana-pro, poll, download, return PNG bytes."""
+    """Submit portrait prompt, poll, download, return PNG bytes."""
     prompt = build_face_prompt(config)
     if len(prompt) > 10000:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Face configuration produces a prompt over kie.ai 10000 character limit.",
+            detail="Face configuration exceeds the maximum prompt length (10000 characters).",
         )
 
     task_id = await _submit_model_face_kie_task(prompt)
@@ -257,7 +278,7 @@ async def generate_and_upload_face_stream(
     yield ("validating_config_done", "Face configurations validated", None, None)
     await asyncio.sleep(1)
 
-    yield ("starting_generation", "Starting face generation (kie.ai nano-banana-pro)", None, None)
+    yield ("starting_generation", "Starting face generation", None, None)
     await asyncio.sleep(1)
     yield ("training", "Training face specifications, facial expression, skin overlaying, skin tone management", None, None)
 

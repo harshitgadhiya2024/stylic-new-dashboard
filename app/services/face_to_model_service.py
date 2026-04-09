@@ -2,11 +2,11 @@
 Face-to-Model service (reference photo upload).
 
 Pipeline:
-  1. Gemini vision — validate a clear human face and extract structured attributes
+  1. Vision analysis — validate a clear human face and extract structured attributes
      (same keys as AI face configuration / scripts/generate_model_faces JSON style).
   2. Merge with category defaults via build_configuration (shared with generate-with-AI).
   3. build_face_prompt — identical passport-style prompt as generate-with-AI / script.
-  4. kie.ai SeedDream 5.0 Lite text-to-image (no reference image in the generation call).
+  4. Text-to-image portrait generation (reference URL is not sent to the image job).
   5. Download result, upload to S3.
 """
 
@@ -88,12 +88,12 @@ def _assert_required_vision_demographics(overrides: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 1 — Gemini vision: validate face + structured configuration
+# Step 1 — Vision: validate face + structured configuration
 # ---------------------------------------------------------------------------
 
 async def validate_face(image_url: str) -> dict[str, Any]:
     """
-    Download the image and use Gemini vision to verify a usable human face.
+    Download the image and use vision analysis to verify a usable human face.
 
     Returns:
         {
@@ -141,7 +141,7 @@ async def validate_face(image_url: str) -> dict[str, Any]:
         "  }\n"
         "}\n\n"
         "When has_face is true, overrides MUST include:\n"
-        "- age: string like \"28 years\" or a number (estimated from the photo)\n"
+        "- age: integer years (e.g. 28) preferred, or a string like \"28 years\" (estimated from the photo)\n"
         "- ethnicity: short label (e.g. South Asian, European, African)\n"
         "- gender: one of male, female, boy, girl matching the subject\n"
         "Also fill other visible attributes when possible (face_shape, hair_color, eye_color, etc.).\n\n"
@@ -179,7 +179,7 @@ async def validate_face(image_url: str) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gemini face validation failed: {exc}",
+            detail="Reference image analysis failed. Please try again later.",
         )
 
     raw = response.candidates[0].content.parts[0].text.strip()
@@ -191,7 +191,7 @@ async def validate_face(image_url: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gemini returned unexpected response: {raw}",
+            detail="Reference image analysis returned an unexpected response. Please try again.",
         )
 
     if not result.get("has_face"):
@@ -210,7 +210,7 @@ async def validate_face(image_url: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Step 2 — SeedDream 5.0 Lite text-to-image (kie.ai)
+# Step 2 — Text-to-image portrait job (upstream API)
 # ---------------------------------------------------------------------------
 
 _CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
@@ -239,19 +239,19 @@ async def _submit_seedream_lite_text_task(prompt: str) -> str:
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"SeedDream 5 Lite task submission failed: {exc.response.text[:800]}",
+            detail="Portrait generation request failed. Please try again later.",
         ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"SeedDream 5 Lite task submission failed: {exc}",
+            detail="Portrait generation request failed. Please try again later.",
         )
 
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"SeedDream returned no taskId: {resp.text[:800]}",
+            detail="Portrait generation could not be started. Please try again later.",
         )
     return task_id
 
@@ -276,13 +276,13 @@ async def _poll_task(task_id: str) -> str:
                     return result_urls[0]
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="SeedDream task succeeded but returned no result URLs.",
+                    detail="Portrait generation finished but no image URL was returned.",
                 )
 
             if state == "fail":
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="SeedDream image generation task failed.",
+                    detail="Portrait generation failed.",
                 )
 
             await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
@@ -294,7 +294,7 @@ async def _poll_task(task_id: str) -> str:
 
     raise HTTPException(
         status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-        detail=f"SeedDream task did not complete after {settings.SEEDDREAM_MAX_RETRIES} attempts.",
+        detail="Portrait generation timed out. Please try again later.",
     )
 
 
@@ -324,8 +324,8 @@ async def _download_image(result_url: str) -> bytes:
 
 async def generate_model_face_from_reference(image_url: str, model_category: str) -> str:
     """
-    Validate with Gemini vision, build script-style prompt from merged config,
-    generate via SeedDream 5.0 Lite text-to-image, upload to S3.
+    Validate reference photo, build script-style prompt from merged config,
+    run text-to-image portrait generation, upload to S3.
     """
     parsed    = await validate_face(image_url)
     config    = build_configuration(model_category, parsed["overrides"])
@@ -333,7 +333,7 @@ async def generate_model_face_from_reference(image_url: str, model_category: str
     if len(prompt) > 10000:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Face configuration prompt exceeds 10000 characters (kie.ai limit).",
+            detail="Face configuration exceeds the maximum prompt length (10000 characters).",
         )
 
     task_id    = await _submit_seedream_lite_text_task(prompt)
@@ -359,7 +359,7 @@ async def generate_model_face_from_reference_stream(
     yield ("initialize", "Initializing face generation process", None, None)
     await asyncio.sleep(1)
 
-    yield ("validating_image", "Validating reference image (Gemini vision)", None, None)
+    yield ("validating_image", "Validating reference image", None, None)
     parsed = await validate_face(image_url)
     await asyncio.sleep(0.5)
     yield ("validating_image_done", "Reference image validated — face detected", None, None)
@@ -371,13 +371,13 @@ async def generate_model_face_from_reference_stream(
     if len(prompt) > 10000:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Face configuration prompt exceeds 10000 characters (kie.ai limit).",
+            detail="Face configuration exceeds the maximum prompt length (10000 characters).",
         )
     await asyncio.sleep(0.3)
     yield ("building_prompt_done", "Prompt ready", None, None)
     await asyncio.sleep(0.5)
 
-    yield ("starting_generation", "Starting SeedDream 5.0 Lite text-to-image", None, None)
+    yield ("starting_generation", "Starting portrait generation", None, None)
     await asyncio.sleep(1)
     yield ("training", "Generating portrait from face configuration", None, None)
 
