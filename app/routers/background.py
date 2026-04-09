@@ -1,7 +1,7 @@
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import AsyncGenerator, Literal, Optional
+from typing import Any, AsyncGenerator, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -33,11 +33,55 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-def _clean_bg(doc: dict) -> dict:
-    doc = dict(doc)
-    doc.pop("_id", None)
-    doc.setdefault("is_favorite", False)
-    return doc
+def _strip_mongo_id(doc: dict) -> dict:
+    d = dict(doc)
+    d.pop("_id", None)
+    return d
+
+
+def serialize_background_response(
+    doc: dict,
+    viewer_user_id: Optional[str] = None,
+) -> dict:
+    """Canonical API shape with favorite_list. Default rows: is_favorite from favorite_list + viewer."""
+    d = _strip_mongo_id(doc)
+    is_def = bool(d.get("is_default", False))
+    fallback_ts = datetime.now(timezone.utc)
+    created_at = d.get("created_at") or fallback_ts
+    updated_at = d.get("updated_at") or fallback_ts
+    out: dict[str, Any] = {
+        "background_id":   d["background_id"],
+        "user_id":          None,
+        "background_type":  d.get("background_type") or "",
+        "background_name":  d.get("background_name") or "",
+        "background_url":   d.get("background_url") or "",
+        "count":            int(d.get("count", 0) or 0),
+        "tags":             d.get("tags") or [],
+        "notes":            d.get("notes") or "",
+        "favorite_list":    d.get("favorite_list") or [],
+        "is_default":       is_def,
+        "is_active":        bool(d.get("is_active", True)),
+        "created_at":       created_at,
+        "updated_at":       updated_at,
+    }
+    if not is_def:
+        out["user_id"] = d.get("user_id")
+        out["is_favorite"] = bool(d.get("is_favorite", False))
+    else:
+        if viewer_user_id is not None:
+            fl = d.get("favorite_list") or []
+            out["is_favorite"] = viewer_user_id in fl
+        else:
+            out["is_favorite"] = False
+    return out
+
+
+def _jsonable_background_for_sse(doc: dict, viewer_user_id: Optional[str] = None) -> dict:
+    data = serialize_background_response(doc, viewer_user_id=viewer_user_id)
+    for key, val in list(data.items()):
+        if isinstance(val, datetime):
+            data[key] = val.isoformat()
+    return data
 
 
 def _normalize_background_type_filter(raw: Optional[str]) -> Optional[str]:
@@ -99,8 +143,9 @@ async def create_background(
                     yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
 
                     now = datetime.now(timezone.utc)
-                    doc = {
-                        "background_id":   str(uuid.uuid4()),
+                    bid = str(uuid.uuid4())
+                    doc_db = {
+                        "background_id":   bid,
                         "user_id":         current_user["user_id"],
                         "background_type": body.background_type,
                         "background_name": body.background_name,
@@ -108,17 +153,22 @@ async def create_background(
                         "count":           0,
                         "tags":            body.tags or [],
                         "notes":           body.notes or "",
+                        "favorite_list":   [],
                         "is_default":      False,
                         "is_active":       True,
                         "is_favorite":     False,
-                        "created_at":      now.isoformat(),
-                        "updated_at":      now.isoformat(),
+                        "created_at":      now,
+                        "updated_at":      now,
                     }
 
                     col = get_backgrounds_collection()
-                    await col.insert_one({**doc, "created_at": now, "updated_at": now})
-
-                    yield _sse("done", {"step": "done", "message": "Background generation complete", "data": doc})
+                    await col.insert_one(doc_db)
+                    saved = await col.find_one({"background_id": bid})
+                    payload = _jsonable_background_for_sse(
+                        saved or doc_db,
+                        viewer_user_id=current_user["user_id"],
+                    )
+                    yield _sse("done", {"step": "done", "message": "Background generation complete", "data": payload})
                 else:
                     yield _sse(step, {"step": step, "message": message})
         except HTTPException as exc:
@@ -174,8 +224,9 @@ async def create_background_with_ai(
                     yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
 
                     now = datetime.now(timezone.utc)
-                    doc = {
-                        "background_id":   str(uuid.uuid4()),
+                    bid = str(uuid.uuid4())
+                    doc_db = {
+                        "background_id":   bid,
                         "user_id":         current_user["user_id"],
                         "background_type": body.background_type,
                         "background_name": body.background_name,
@@ -183,17 +234,22 @@ async def create_background_with_ai(
                         "count":           0,
                         "tags":            body.tags or [],
                         "notes":           body.notes or "",
+                        "favorite_list":   [],
                         "is_default":      False,
                         "is_active":       True,
                         "is_favorite":     False,
-                        "created_at":      now.isoformat(),
-                        "updated_at":      now.isoformat(),
+                        "created_at":      now,
+                        "updated_at":      now,
                     }
 
                     col = get_backgrounds_collection()
-                    await col.insert_one({**doc, "created_at": now, "updated_at": now})
-
-                    yield _sse("done", {"step": "done", "message": "Background generation complete", "data": doc})
+                    await col.insert_one(doc_db)
+                    saved = await col.find_one({"background_id": bid})
+                    payload = _jsonable_background_for_sse(
+                        saved or doc_db,
+                        viewer_user_id=current_user["user_id"],
+                    )
+                    yield _sse("done", {"step": "done", "message": "Background generation complete", "data": payload})
                 else:
                     yield _sse(step, {"step": step, "message": message})
         except HTTPException as exc:
@@ -219,22 +275,33 @@ async def create_background_with_ai(
     "/",
     summary="Get Backgrounds",
     description=(
-        "Returns a paginated list of backgrounds based on `type`. "
-        "`type=default` — returns all platform default backgrounds (is_default=True). "
-        "`type=custom` — returns backgrounds created by the current user (user_id match, is_active=True), "
-        "sorted with favorites first, then newest first. "
-        "Optional filters: `is_favorite` (true/false), `background_type` "
-        "(Indoor, Outdoor, Studio — matched to stored lowercase). Omit either for no filter. "
-        "Use `page` and `limit` to control pagination."
+        "Returns a paginated list of backgrounds. `type` is required unless `is_favorite=true`. "
+        "`type=default` — platform defaults (is_default=True). "
+        "`type=custom` — your backgrounds (user_id, is_active=True), favorites first. "
+        "When `is_favorite=true`, `type` is ignored: union of your custom `is_favorite=true` rows "
+        "and defaults whose `favorite_list` contains your user_id. "
+        "When `is_favorite=false`, filtering is scoped by `type` (custom: your non-favorites; "
+        "default: defaults you have not added to `favorite_list`). "
+        "Optional `background_type` filter applies whenever used. "
+        "Responses include `favorite_list`; for defaults, `is_favorite` reflects the current user."
     ),
 )
 async def get_backgrounds(
-    type:  Literal["default", "custom"] = Query(..., description="'default' for platform backgrounds, 'custom' for user-created backgrounds"),
+    type: Optional[Literal["default", "custom"]] = Query(
+        default=None,
+        description=(
+            "'default' for platform backgrounds, 'custom' for user-created. "
+            "Required unless `is_favorite=true`."
+        ),
+    ),
     page:  int = Query(default=1,  ge=1,        description="Page number (1-based)"),
     limit: int = Query(default=10, ge=1, le=100, description="Number of items per page"),
     is_favorite: Optional[bool] = Query(
         default=None,
-        description="When set, return only favorites (true) or only non-favorites (false). Omit for no filter.",
+        description=(
+            "true: favorites only — ignores `type`. false: non-favorites within `type`. "
+            "Omit: no favorite filter."
+        ),
     ),
     background_type: Optional[str] = Query(
         default=None,
@@ -245,25 +312,80 @@ async def get_backgrounds(
     ),
     current_user: dict = Depends(get_current_user),
 ):
-    col = get_backgrounds_collection()
+    if type is None and is_favorite is not True:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Query parameter `type` is required unless `is_favorite` is true.",
+        )
 
+    col = get_backgrounds_collection()
+    uid = current_user["user_id"]
     bg_type = _normalize_background_type_filter(background_type)
 
-    if type == "default":
-        query: dict = {"is_default": True}
-    else:
-        query = {"user_id": current_user["user_id"], "is_active": True}
+    def _sort_key_updated(doc: dict) -> datetime:
+        u = doc.get("updated_at")
+        if u is None:
+            return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        if isinstance(u, datetime) and u.tzinfo is None:
+            return u.replace(tzinfo=timezone.utc)
+        return u
 
-    if bg_type is not None:
-        query["background_type"] = bg_type
-    if is_favorite is not None:
-        query["is_favorite"] = is_favorite
+    docs: list[dict]
 
-    if type == "custom":
-        cursor = col.find(query).sort([("is_favorite", -1), ("created_at", -1)])
+    if is_favorite is True:
+        q_custom: dict = {
+            "user_id":     uid,
+            "is_active":   True,
+            "is_favorite": True,
+            "is_default":  False,
+        }
+        q_default: dict = {"is_default": True, "favorite_list": uid}
+        if bg_type is not None:
+            q_custom["background_type"] = bg_type
+            q_default["background_type"] = bg_type
+        d_custom = await col.find(q_custom).sort([("created_at", -1)]).to_list(length=None)
+        d_default = await col.find(q_default).sort([("updated_at", -1)]).to_list(length=None)
+        by_bid: dict[str, dict] = {}
+        for d in d_custom + d_default:
+            by_bid[d["background_id"]] = d
+        docs = list(by_bid.values())
+        docs.sort(key=_sort_key_updated, reverse=True)
+    elif is_favorite is False:
+        if type == "custom":
+            query: dict = {
+                "user_id":     uid,
+                "is_active":   True,
+                "is_favorite": False,
+                "is_default":  False,
+            }
+        else:
+            query = {
+                "is_default": True,
+                "$or":        [
+                    {"favorite_list": {"$exists": False}},
+                    {"favorite_list": []},
+                    {"favorite_list": {"$nin": [uid]}},
+                ],
+            }
+        if bg_type is not None:
+            query["background_type"] = bg_type
+        if type == "custom":
+            cursor = col.find(query).sort([("created_at", -1)])
+        else:
+            cursor = col.find(query)
+        docs = await cursor.to_list(length=None)
     else:
-        cursor = col.find(query)
-    docs = await cursor.to_list(length=None)
+        if type == "default":
+            query = {"is_default": True}
+        else:
+            query = {"user_id": uid, "is_active": True}
+        if bg_type is not None:
+            query["background_type"] = bg_type
+        if type == "custom":
+            cursor = col.find(query).sort([("is_favorite", -1), ("created_at", -1)])
+        else:
+            cursor = col.find(query)
+        docs = await cursor.to_list(length=None)
 
     total       = len(docs)
     skip        = (page - 1) * limit
@@ -271,7 +393,7 @@ async def get_backgrounds(
     total_pages = (total + limit - 1) // limit if total else 1
 
     return {
-        "type":        type,
+        "type":        type if is_favorite is not True else None,
         "page":        page,
         "limit":       limit,
         "total":       total,
@@ -280,7 +402,7 @@ async def get_backgrounds(
             "is_favorite":     is_favorite,
             "background_type": bg_type,
         },
-        "data":        [_clean_bg(doc) for doc in paged],
+        "data":        [serialize_background_response(d, viewer_user_id=uid) for d in paged],
     }
 
 
@@ -289,15 +411,22 @@ async def get_backgrounds(
     response_model=BackgroundSchema,
     summary="Toggle Favorite",
     description=(
-        "Switch is_favorite between true and false for a background. "
-        "Secured — only the owner can toggle. Default platform backgrounds cannot be favorited."
+        "Query `type=custom`: flip `is_favorite` on a background you own. "
+        "Query `type=default`: add or remove your `user_id` in the default background's `favorite_list`. "
+        "Response includes viewer-specific `is_favorite` for defaults."
     ),
 )
 async def toggle_background_favorite(
     background_id: str,
+    favorite_type: Literal["default", "custom"] = Query(
+        ...,
+        alias="type",
+        description="'custom' toggles is_favorite on your background; 'default' toggles your id in favorite_list.",
+    ),
     current_user: dict = Depends(get_current_user),
 ):
     col = get_backgrounds_collection()
+    uid = current_user["user_id"]
 
     doc = await col.find_one({"background_id": background_id})
     if not doc:
@@ -306,29 +435,49 @@ async def toggle_background_favorite(
             detail="Background not found.",
         )
 
-    if doc.get("is_default", False):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Default backgrounds cannot be marked as favorite.",
-        )
-
-    if doc.get("user_id") != current_user["user_id"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to update this background.",
-        )
-
-    new_value = not doc.get("is_favorite", False)
     now = datetime.now(timezone.utc)
 
-    await col.update_one(
-        {"background_id": background_id},
-        {"$set": {"is_favorite": new_value, "updated_at": now}},
-    )
+    if favorite_type == "custom":
+        if doc.get("is_default", False):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This is a platform default — use type=default to favorite it.",
+            )
+        if doc.get("user_id") != uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to update this background.",
+            )
+        new_value = not doc.get("is_favorite", False)
+        await col.update_one(
+            {"background_id": background_id},
+            {"$set": {"is_favorite": new_value, "updated_at": now}},
+        )
+    else:
+        if not doc.get("is_default", False):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This background is user-created — use type=custom to toggle favorite.",
+            )
+        fl = list(doc.get("favorite_list") or [])
+        if uid in fl:
+            await col.update_one(
+                {"background_id": background_id},
+                {"$pull": {"favorite_list": uid}, "$set": {"updated_at": now}},
+            )
+        else:
+            await col.update_one(
+                {"background_id": background_id},
+                {"$addToSet": {"favorite_list": uid}, "$set": {"updated_at": now}},
+            )
 
-    doc["is_favorite"] = new_value
-    doc["updated_at"]  = now
-    return _clean_bg(doc)
+    saved = await col.find_one({"background_id": background_id})
+    if not saved:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Background not found after update.",
+        )
+    return BackgroundSchema(**serialize_background_response(saved, viewer_user_id=uid))
 
 
 @router.delete(

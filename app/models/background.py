@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List
+from typing import Any, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from datetime import datetime
 
 _ALLOWED_BACKGROUND_TYPES = frozenset({"indoor", "outdoor", "studio"})
@@ -57,6 +58,10 @@ class CreateBackgroundWithAIRequest(BaseModel):
 
 
 class BackgroundSchema(BaseModel):
+    """API background record. Defaults: viewer `is_favorite` from `favorite_list`; no `user_id`."""
+
+    model_config = ConfigDict(extra="ignore")
+
     background_id:   str
     user_id:         Optional[str] = None
     background_type: str
@@ -65,6 +70,7 @@ class BackgroundSchema(BaseModel):
     count:           int           = 0
     tags:            List[str]     = []
     notes:           str           = ""
+    favorite_list:   List[Any]     = Field(default_factory=list)
     is_default:      bool          = False
     is_active:       bool          = True
     is_favorite:     bool          = False
