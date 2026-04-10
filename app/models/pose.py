@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -56,6 +56,12 @@ class DeletePosesRequest(BaseModel):
 
 
 class PoseSchema(BaseModel):
+    """
+    Custom poses: ``user_id`` + document ``is_favorite``.
+    Platform/default poses: no ``user_id`` in responses; ``is_favorite`` is true when the
+    viewer's id is in ``favorite_list``.
+    """
+
     pose_id: str
     user_id: Optional[str] = None
     pose_name: str
@@ -65,6 +71,7 @@ class PoseSchema(BaseModel):
     count: int = 0
     notes: str = ""
     tags: List[str] = []
+    favorite_list: List[Any] = Field(default_factory=list)
     is_default: bool = False
     is_active: bool = True
     is_favorite: bool = False

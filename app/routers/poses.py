@@ -32,20 +32,60 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-def _clean_pose(doc: dict) -> dict:
+def _is_platform_pose(doc: dict) -> bool:
+    if doc.get("is_default", False):
+        return True
+    uid = doc.get("user_id")
+    return uid is None or uid == ""
+
+
+def serialize_pose_response(
+    doc: dict,
+    viewer_user_id: Optional[str] = None,
+) -> dict:
+    """
+    Custom poses: ``user_id`` + document ``is_favorite``.
+    Platform poses: omit ``user_id``; ``is_favorite`` = viewer in ``favorite_list``.
+    """
     d = dict(doc)
     d.pop("_id", None)
-    d.setdefault("is_favorite", False)
-    d.setdefault("is_active", True)
-    d.setdefault("is_default", False)
-    d.setdefault("count", 0)
-    d.setdefault("tags", [])
-    d.setdefault("notes", "")
-    d.setdefault("pose_type", "front")
-    d.setdefault("pose_name", "")
-    d.setdefault("pose_prompt", "")
-    d.setdefault("image_url", "")
-    return d
+    fl = list(d.get("favorite_list") or [])
+    platform = _is_platform_pose(d)
+    fallback_ts = datetime.now(timezone.utc)
+    created_at = d.get("created_at") or fallback_ts
+    updated_at = d.get("updated_at") or fallback_ts
+    out: dict = {
+        "pose_id":       d["pose_id"],
+        "pose_name":     d.get("pose_name") or "",
+        "pose_type":     d.get("pose_type") or "front",
+        "pose_prompt":   d.get("pose_prompt") or "",
+        "image_url":     d.get("image_url") or "",
+        "count":         int(d.get("count", 0) or 0),
+        "notes":         d.get("notes") or "",
+        "tags":          d.get("tags") or [],
+        "favorite_list": fl,
+        "is_default":    bool(d.get("is_default", False)),
+        "is_active":     bool(d.get("is_active", True)),
+        "created_at":    created_at,
+        "updated_at":    updated_at,
+    }
+    if platform:
+        if viewer_user_id is not None:
+            out["is_favorite"] = viewer_user_id in fl
+        else:
+            out["is_favorite"] = False
+    else:
+        out["is_favorite"] = bool(d.get("is_favorite", False))
+        out["user_id"] = d.get("user_id")
+    return out
+
+
+def _jsonable_pose_for_sse(doc: dict, viewer_user_id: Optional[str] = None) -> dict:
+    data = serialize_pose_response(doc, viewer_user_id=viewer_user_id)
+    for key, val in list(data.items()):
+        if isinstance(val, datetime):
+            data[key] = val.isoformat()
+    return data
 
 
 def _normalize_pose_type_filter(raw: Optional[str]) -> Optional[str]:
@@ -91,20 +131,32 @@ def _default_poses_query() -> dict:
     description=(
         "`type=default` — platform poses (`is_default` or no `user_id`). "
         "`type=custom` — current user's poses (`is_active` true). "
-        "Sorted: custom lists favorites first, then newest. "
-        "Optional filters: `is_favorite`, `pose_type` (front|back|side)."
+        "When `is_favorite=true`, `type` is ignored: returns your custom poses with "
+        "`is_favorite=true` plus platform poses whose `favorite_list` contains your `user_id`. "
+        "When `is_favorite=false`, filtering is scoped by `type` (custom: non-favorites; "
+        "default: platform poses you have not added to `favorite_list`). "
+        "Responses include `favorite_list`; for platform defaults, `is_favorite` reflects the current user. "
+        "Sorted: custom (no favorite filter) — favorites first, then newest; default — `pose_id`. "
+        "Optional filter: `pose_type` (front|back|side). "
+        "`type` is required unless `is_favorite=true`."
     ),
 )
 async def get_poses(
-    type: Literal["default", "custom"] = Query(
-        ...,
-        description="'default' for platform poses, 'custom' for user-created poses",
+    type: Optional[Literal["default", "custom"]] = Query(
+        default=None,
+        description=(
+            "'default' for platform poses, 'custom' for user-created poses. "
+            "Required unless `is_favorite=true` (favorites union ignores `type`)."
+        ),
     ),
     page: int = Query(default=1, ge=1, description="Page number (1-based)"),
     limit: int = Query(default=10, ge=1, le=100, description="Items per page"),
     is_favorite: Optional[bool] = Query(
         default=None,
-        description="Filter by favorite; omit for no filter.",
+        description=(
+            "true: favorites only — ignores `type`. false: non-favorites within `type`. "
+            "Omit: no favorite filter."
+        ),
     ),
     pose_type: Optional[str] = Query(
         default=None,
@@ -112,35 +164,95 @@ async def get_poses(
     ),
     current_user: dict = Depends(get_current_user),
 ):
+    if type is None and is_favorite is not True:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Query parameter `type` is required unless `is_favorite` is true.",
+        )
+
     col = get_poses_collection()
+    uid = current_user["user_id"]
     pt = _normalize_pose_type_filter(pose_type)
 
-    if type == "default":
-        query: dict = _default_poses_query()
-    else:
-        query = {
-            "user_id":   current_user["user_id"],
-            "is_active": {"$ne": False},
+    def _sort_key_updated(doc: dict) -> datetime:
+        u = doc.get("updated_at")
+        if u is None:
+            return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        if isinstance(u, datetime) and u.tzinfo is None:
+            return u.replace(tzinfo=timezone.utc)
+        return u
+
+    default_and = _default_poses_query().get("$and") or []
+
+    docs: list[dict]
+
+    if is_favorite is True:
+        q_custom: dict = {
+            "user_id":     uid,
+            "is_active":   {"$ne": False},
+            "is_favorite": True,
         }
-
-    if pt is not None:
-        query["pose_type"] = pt
-    if is_favorite is not None:
-        query["is_favorite"] = is_favorite
-
-    if type == "custom":
-        cursor = col.find(query).sort([("is_favorite", -1), ("created_at", -1)])
+        q_default: dict = {"$and": [*default_and, {"favorite_list": uid}]}
+        if pt is not None:
+            q_custom["pose_type"] = pt
+            q_default["pose_type"] = pt
+        d_custom = await col.find(q_custom).sort([("created_at", -1)]).to_list(length=None)
+        d_default = await col.find(q_default).sort([("updated_at", -1)]).to_list(length=None)
+        by_pid: dict[str, dict] = {}
+        for d in d_custom + d_default:
+            by_pid[d["pose_id"]] = d
+        docs = list(by_pid.values())
+        docs.sort(key=_sort_key_updated, reverse=True)
+    elif is_favorite is False:
+        if type == "custom":
+            query: dict = {
+                "user_id":     uid,
+                "is_active":   {"$ne": False},
+                "is_favorite": False,
+            }
+        else:
+            query = {
+                "$and": [
+                    *default_and,
+                    {
+                        "$or": [
+                            {"favorite_list": {"$exists": False}},
+                            {"favorite_list": []},
+                            {"favorite_list": {"$nin": [uid]}},
+                        ]
+                    },
+                ]
+            }
+        if pt is not None:
+            query["pose_type"] = pt
+        if type == "custom":
+            cursor = col.find(query).sort([("created_at", -1)])
+        else:
+            cursor = col.find(query).sort([("pose_id", 1)])
+        docs = await cursor.to_list(length=None)
     else:
-        cursor = col.find(query).sort([("pose_id", 1)])
+        if type == "default":
+            query = dict(_default_poses_query())
+        else:
+            query = {
+                "user_id":   uid,
+                "is_active": {"$ne": False},
+            }
+        if pt is not None:
+            query["pose_type"] = pt
+        if type == "custom":
+            cursor = col.find(query).sort([("is_favorite", -1), ("created_at", -1)])
+        else:
+            cursor = col.find(query).sort([("pose_id", 1)])
+        docs = await cursor.to_list(length=None)
 
-    docs = await cursor.to_list(length=None)
     total = len(docs)
     skip = (page - 1) * limit
     paged = docs[skip : skip + limit]
     total_pages = (total + limit - 1) // limit if total else 1
 
     return {
-        "type":        type,
+        "type":        type if is_favorite is not True else None,
         "page":        page,
         "limit":       limit,
         "total":       total,
@@ -149,7 +261,7 @@ async def get_poses(
             "is_favorite": is_favorite,
             "pose_type":   pt,
         },
-        "data":        [_clean_pose(d) for d in paged],
+        "data":        [serialize_pose_response(d, viewer_user_id=uid) for d in paged],
     }
 
 
@@ -158,9 +270,9 @@ async def get_poses(
     status_code=status.HTTP_201_CREATED,
     summary="Create Pose from Image (Streaming)",
     description=(
-        "Downloads `image_url`, converts to mannequin (Gemini image), derives pose prompt "
-        "(Gemini flash), uploads PNG to S3, saves document. SSE stream; final `done` has record. "
-        "Costs the same credits as face generation (2.5)."
+        "Uses `image_url` with SeedDream 5.0 Lite (image-to-image) to produce a mannequin PNG, "
+        "derives pose prompt with Gemini vision, uploads PNG to S3, saves document. "
+        "SSE stream; final `done` has record. Costs the same credits as face generation (2.5)."
     ),
 )
 async def create_pose_from_image(
@@ -190,25 +302,31 @@ async def create_pose_from_image(
             yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
             now = datetime.now(timezone.utc)
             pose_id = str(uuid.uuid4())
-            doc = {
-                "pose_id":     pose_id,
-                "user_id":     current_user["user_id"],
-                "pose_name":   body.pose_name,
-                "pose_type":   body.pose_type,
-                "pose_prompt": pose_prompt_final,
-                "image_url":   mannequin_url,
-                "count":       0,
-                "notes":       body.notes or "",
-                "tags":        tags,
-                "is_default":  False,
-                "is_favorite": False,
-                "is_active":   True,
-                "created_at":  now.isoformat(),
-                "updated_at":  now.isoformat(),
+            doc_db = {
+                "pose_id":       pose_id,
+                "user_id":       current_user["user_id"],
+                "pose_name":     body.pose_name,
+                "pose_type":     body.pose_type,
+                "pose_prompt":   pose_prompt_final,
+                "image_url":     mannequin_url,
+                "count":         0,
+                "notes":         body.notes or "",
+                "tags":          tags,
+                "favorite_list": [],
+                "is_default":    False,
+                "is_favorite":   False,
+                "is_active":     True,
+                "created_at":    now,
+                "updated_at":    now,
             }
             col = get_poses_collection()
-            await col.insert_one({**doc, "created_at": now, "updated_at": now})
-            yield _sse("done", {"step": "done", "message": "Pose saved", "data": doc})
+            await col.insert_one(doc_db)
+            saved = await col.find_one({"pose_id": pose_id})
+            payload = _jsonable_pose_for_sse(
+                saved or doc_db,
+                viewer_user_id=current_user["user_id"],
+            )
+            yield _sse("done", {"step": "done", "message": "Pose saved", "data": payload})
 
             background_tasks.add_task(
                 deduct_credits_and_record,
@@ -230,8 +348,8 @@ async def create_pose_from_image(
     status_code=status.HTTP_201_CREATED,
     summary="Create Pose from Prompt (Streaming)",
     description=(
-        "Generates mannequin image from `pose_prompt` + `pose_type` (Gemini image), uploads S3, "
-        "stores document using the same `pose_prompt` text. SSE stream."
+        "Generates mannequin image from `pose_prompt` + `pose_type` via SeedDream 5.0 Lite "
+        "(text-to-image), uploads S3, stores document using the same `pose_prompt` text. SSE stream."
     ),
 )
 async def create_pose_from_prompt(
@@ -259,25 +377,31 @@ async def create_pose_from_prompt(
             yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
             now = datetime.now(timezone.utc)
             pose_id = str(uuid.uuid4())
-            doc = {
-                "pose_id":     pose_id,
-                "user_id":     current_user["user_id"],
-                "pose_name":   body.pose_name,
-                "pose_type":   body.pose_type,
-                "pose_prompt": body.pose_prompt.strip(),
-                "image_url":   mannequin_url,
-                "count":       0,
-                "notes":       body.notes or "",
-                "tags":        tags,
-                "is_default":  False,
-                "is_favorite": False,
-                "is_active":   True,
-                "created_at":  now.isoformat(),
-                "updated_at":  now.isoformat(),
+            doc_db = {
+                "pose_id":       pose_id,
+                "user_id":       current_user["user_id"],
+                "pose_name":     body.pose_name,
+                "pose_type":     body.pose_type,
+                "pose_prompt":   body.pose_prompt.strip(),
+                "image_url":     mannequin_url,
+                "count":         0,
+                "notes":         body.notes or "",
+                "tags":          tags,
+                "favorite_list": [],
+                "is_default":    False,
+                "is_favorite":   False,
+                "is_active":     True,
+                "created_at":    now,
+                "updated_at":    now,
             }
             col = get_poses_collection()
-            await col.insert_one({**doc, "created_at": now, "updated_at": now})
-            yield _sse("done", {"step": "done", "message": "Pose saved", "data": doc})
+            await col.insert_one(doc_db)
+            saved = await col.find_one({"pose_id": pose_id})
+            payload = _jsonable_pose_for_sse(
+                saved or doc_db,
+                viewer_user_id=current_user["user_id"],
+            )
+            yield _sse("done", {"step": "done", "message": "Pose saved", "data": payload})
 
             background_tasks.add_task(
                 deduct_credits_and_record,
@@ -298,36 +422,67 @@ async def create_pose_from_prompt(
     "/{pose_id}/toggle-favorite",
     response_model=PoseSchema,
     summary="Toggle Favorite",
-    description="Toggle is_favorite for a user pose. Default/platform poses cannot be favorited.",
+    description=(
+        "Query `type=custom`: flip `is_favorite` on a pose you own (not a platform default). "
+        "Query `type=default`: add or remove your `user_id` in the platform pose's `favorite_list`. "
+        "Response includes viewer-specific `is_favorite` for platform poses (derived from `favorite_list`)."
+    ),
 )
 async def toggle_pose_favorite(
     pose_id: str,
+    favorite_type: Literal["default", "custom"] = Query(
+        ...,
+        alias="type",
+        description="'custom' toggles is_favorite on your pose; 'default' toggles your id in favorite_list.",
+    ),
     current_user: dict = Depends(get_current_user),
 ):
     col = get_poses_collection()
+    uid = current_user["user_id"]
     doc = await col.find_one({"pose_id": pose_id})
     if not doc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Pose not found.")
-    if doc.get("is_default", False) or not doc.get("user_id"):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail="Default/platform poses cannot be marked as favorite.",
-        )
-    if doc.get("user_id") != current_user["user_id"]:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to update this pose.",
-        )
 
-    new_val = not doc.get("is_favorite", False)
     now = datetime.now(timezone.utc)
-    await col.update_one(
-        {"pose_id": pose_id},
-        {"$set": {"is_favorite": new_val, "updated_at": now}},
-    )
-    doc["is_favorite"] = new_val
-    doc["updated_at"] = now
-    return _clean_pose(doc)
+
+    if favorite_type == "custom":
+        if _is_platform_pose(doc):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="This pose is a platform default — use type=default to favorite it.",
+            )
+        if doc.get("user_id") != uid:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to update this pose.",
+            )
+        new_val = not doc.get("is_favorite", False)
+        await col.update_one(
+            {"pose_id": pose_id},
+            {"$set": {"is_favorite": new_val, "updated_at": now}},
+        )
+    else:
+        if not _is_platform_pose(doc):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="This pose is user-created — use type=custom to toggle favorite.",
+            )
+        fl = list(doc.get("favorite_list") or [])
+        if uid in fl:
+            await col.update_one(
+                {"pose_id": pose_id},
+                {"$pull": {"favorite_list": uid}, "$set": {"updated_at": now}},
+            )
+        else:
+            await col.update_one(
+                {"pose_id": pose_id},
+                {"$addToSet": {"favorite_list": uid}, "$set": {"updated_at": now}},
+            )
+
+    saved = await col.find_one({"pose_id": pose_id})
+    if not saved:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Pose not found after update.")
+    return PoseSchema(**serialize_pose_response(saved, viewer_user_id=uid))
 
 
 @router.delete(

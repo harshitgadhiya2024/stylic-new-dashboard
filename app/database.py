@@ -123,6 +123,7 @@ async def create_indexes() -> None:
     await poses_data.create_index("pose_type")
     await poses_data.create_index("is_favorite")
     await poses_data.create_index("is_default")
+    await poses_data.create_index("favorite_list")
 
     templates = db["templates"]
     await templates.create_index("template_id", unique=True)

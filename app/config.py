@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     MODEL_FACE_REFERENCE_SEEDREAM_ASPECT: str = "3:4"
     MODEL_FACE_REFERENCE_SEEDREAM_QUALITY: str = "basic"
 
+    # Pose mannequin (create pose from image / from prompt) — SeedDream 5.0 Lite
+    POSE_MANNEQUIN_SEEDREAM_TEXT_MODEL: str = "seedream/5-lite-text-to-image"
+    POSE_MANNEQUIN_SEEDREAM_IMG2IMG_MODEL: str = "seedream/5-lite-image-to-image"
+    POSE_MANNEQUIN_SEEDREAM_ASPECT: str = "9:16"
+    POSE_MANNEQUIN_SEEDREAM_QUALITY: str = "basic"
+
     # App defaults
     APP_NAME: str = "Stylic AI"
     DEFAULT_CREDITS: int = 5
