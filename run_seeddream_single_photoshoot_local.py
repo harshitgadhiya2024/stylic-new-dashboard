@@ -76,16 +76,20 @@ SKU_ID = "HSJSN"
 # Optional; included in the SeedDream prompt when set (indoor / outdoor / studio / general).
 BACKGROUND_TYPE = "studio"
 
-WHICH_POSE_OPTION = "prompt"  # "default" | "custom" | "prompt"
+# Production API uses ``poses_ids`` only (min 1), resolved from Mongo ``poses_data``.
+# For local runs without DB pose rows, set USE_LEGACY_INLINE_PROMPTS = True and fill LEGACY_POSES_PROMPTS.
+USE_LEGACY_INLINE_PROMPTS = True
 
-POSES_IDS: list[str] = []
-POSES_IMAGES: list[str] = []
-POSES_PROMPTS: list[str] = [
+POSES_IDS: list[str] = [
+    # Example: paste pose_id values from your DB when USE_LEGACY_INLINE_PROMPTS is False.
+]
+
+LEGACY_POSES_PROMPTS: list[str] = [
     "Seated posture on a stool, torso upright with a slight forward lean, shoulders relaxed, right shoulder subtly lower than left. Head facing directly forward, neck straight. Right arm bent, elbow resting on thigh, forearm angled, right hand partially inserted into front pocket. Left arm bent, elbow resting on thigh, forearm angled, left hand resting flat on thigh, fingers gently curled. Right leg bent at knee, foot flat on ground, toes pointing forward. Left leg bent at knee, crossed over the right, left foot resting on a stool rung, angled slightly right. Weight balanced, centered over the seat.",
     "Standing full body profile, torso upright, upper body leaning slightly back, right shoulder elevated and pulled back, left shoulder relaxed and slightly forward, hips level and stable, head turned subtly to the right, neck erect, right arm raised, elbow sharply bent, forearm extended upwards, right hand placed gently behind the head, fingers softly curved, left arm hanging naturally by the side, elbow slightly flexed, left wrist straight, left hand relaxed, fingers lightly curled, palm facing the thigh, both legs straight, knees unbent, feet flat on the ground, parallel and pointing directly forward, weight evenly distributed, stable center of gravity.",
     "Standing body, slightly angled to the right, torso subtly turned right, shoulders relatively level, left shoulder slightly forward. Head turned slightly right, gaze forward, neck upright. Right arm bent at the elbow, forearm crossing the body, hand resting gently on the left upper arm. Left arm bent at the elbow, forearm resting across the front, hand holding the right forearm. Both elbows bent approximately 90-100 degrees. Wrists slightly bent, fingers relaxed and gently curled. Legs mostly straight, close together, knees unbent. Weight evenly distributed, stable centre of gravity, feet flat.",
     "Seated pose, torso upright, slightly leaning forward, shoulders level and relaxed, head facing directly forward, neck straight, both arms bent at the elbows, forearms resting on upper thighs, elbows at approximately 90 degrees, wrists slightly bent, hands relaxed, fingers gently curled, left hand resting on left thigh, right hand resting on right thigh, both legs bent at the knees, thighs parallel to the ground, knees at approximately 90 degrees, both feet flat on the ground, pointing forward, feet slightly wider than hip-width apart, weight evenly distributed, center of gravity low and stable.",
-    "Standing, relaxed posture, body turned away, torso rotated approximately 45 degrees left, presenting back and left side, shoulders level, left shoulder slightly advanced, right shoulder slightly retracted, hips level, aligned with torso rotation, head turned sharply left, gaze directed horizontally, no discernible tilt, neck held upright, natural curve, arms extended downwards, close to body, elbows with very slight natural bend, wrists neutral, unbent, hands resting gently against outer upper thighs, fingers relaxed, slightly curved inwards, thumb alongside, legs straight, standing parallel, knees fully extended, weight balanced evenly, center of gravity stable."
+    "Standing, relaxed posture, body turned away, torso rotated approximately 45 degrees left, presenting back and left side, shoulders level, left shoulder slightly advanced, right shoulder slightly retracted, hips level, aligned with torso rotation, head turned sharply left, gaze directed horizontally, no discernible tilt, neck held upright, natural curve, arms extended downwards, close to body, elbows with very slight natural bend, wrists neutral, unbent, hands resting gently against outer upper thighs, fingers relaxed, slightly curved inwards, thumb alongside, legs straight, standing parallel, knees fully extended, weight balanced evenly, center of gravity stable.",
 ]
 
 OUTPUT_DIR = _ROOT / "seeddream_local_output"
@@ -411,12 +415,11 @@ async def _resolve_refs_from_db() -> tuple[str, str]:
 async def main() -> None:
     back_garment = BACK_GARMENT_IMAGE.strip()
 
-    if WHICH_POSE_OPTION == "default" and not POSES_IDS:
-        raise SystemExit("which_pose_option='default' requires POSES_IDS.")
-    if WHICH_POSE_OPTION == "custom" and not POSES_IMAGES:
-        raise SystemExit("which_pose_option='custom' requires POSES_IMAGES.")
-    if WHICH_POSE_OPTION == "prompt" and not POSES_PROMPTS:
-        raise SystemExit("which_pose_option='prompt' requires POSES_PROMPTS.")
+    if USE_LEGACY_INLINE_PROMPTS:
+        if not LEGACY_POSES_PROMPTS:
+            raise SystemExit("USE_LEGACY_INLINE_PROMPTS requires non-empty LEGACY_POSES_PROMPTS.")
+    elif not POSES_IDS:
+        raise SystemExit("Set POSES_IDS (at least one pose_id) or enable USE_LEGACY_INLINE_PROMPTS.")
 
     if RESOLVE_REF_URLS_FROM_DB:
         if not BACKGROUND_ID or not MODEL_ID:
@@ -434,7 +437,7 @@ async def main() -> None:
     image_urls.append(model_face_url)
     image_urls.append(background_url)
 
-    req_snapshot = {
+    req_snapshot: dict = {
         "front_garment_image": FRONT_GARMENT_IMAGE,
         "back_garment_image": back_garment,
         "ethnicity": ETHNICITY,
@@ -452,16 +455,20 @@ async def main() -> None:
         "one_piece_garment_specification": ONE_PIECE_GARMENT_SPECIFICATION,
         "fitting": FITTING,
         "background_id": BACKGROUND_ID,
-        "which_pose_option": WHICH_POSE_OPTION,
-        "poses_ids": POSES_IDS,
-        "poses_images": POSES_IMAGES,
-        "poses_prompts": POSES_PROMPTS,
+        "poses_ids": list(POSES_IDS),
         "model_id": MODEL_ID,
         "lighting_style": LIGHTING_STYLE,
         "ornaments": ORNAMENTS,
         "sku_id": SKU_ID,
         "background_type": BACKGROUND_TYPE,
     }
+    if USE_LEGACY_INLINE_PROMPTS:
+        req_snapshot["which_pose_option"] = "prompt"
+        req_snapshot["poses_prompts"] = list(LEGACY_POSES_PROMPTS)
+        req_snapshot["poses_images"] = []
+    else:
+        req_snapshot["poses_images"] = []
+        req_snapshot["poses_prompts"] = []
 
     from app.services.photoshoot_service import (
         _download_bytes,
@@ -470,13 +477,7 @@ async def main() -> None:
         resolve_pose_prompts,
     )
 
-    pose_prompts = await resolve_pose_prompts(
-        which_pose_option=WHICH_POSE_OPTION,
-        poses_ids=list(POSES_IDS),
-        poses_images=list(POSES_IMAGES),
-        poses_prompts=list(POSES_PROMPTS),
-        poses_col=None,
-    )
+    pose_prompts = await resolve_pose_prompts(req_snapshot, poses_col=None)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_dir = OUTPUT_DIR.resolve() / f"{RUN_LABEL}_{stamp}"

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Optional, List, Literal
 from datetime import datetime
 
@@ -99,16 +99,29 @@ class CreatePhotoshootRequest(BaseModel):
     one_piece_garment_specification: Optional[str] = ""
     fitting:                      Optional[str]  = "regular fit"
     background_id:                str
-    which_pose_option:            Literal["default", "custom", "prompt"]
-    poses_ids:                    Optional[List[str]] = []
-    poses_images:                 Optional[List[str]] = []
-    poses_prompts:                Optional[List[str]] = []
+    poses_ids:                    List[str] = Field(
+        ...,
+        min_length=1,
+        description="At least one pose_id from the poses collection (stored pose_prompt is used).",
+    )
     model_id:                     str
     lighting_style:               str
     ornaments:                    Optional[str]  = ""
     sku_id:                       Optional[str]  = ""
     regeneration_type:            Optional[str]  = ""
     regenerate_photoshoot_id:     Optional[str]  = ""
+
+    @field_validator("poses_ids", mode="before")
+    @classmethod
+    def _normalize_pose_ids(cls, v):
+        if v is None:
+            raise ValueError("poses_ids is required")
+        if not isinstance(v, list):
+            raise ValueError("poses_ids must be a list of strings")
+        out = [str(x).strip() for x in v if x is not None and str(x).strip()]
+        if not out:
+            raise ValueError("poses_ids must contain at least one non-empty pose_id")
+        return out
 
 
 class PhotoshootBatchFieldMixin(BaseModel):
@@ -131,10 +144,7 @@ class PhotoshootBatchFieldMixin(BaseModel):
     one_piece_garment_specification: Optional[str] = None
     fitting: Optional[str] = None
     background_id: Optional[str] = None
-    which_pose_option: Optional[Literal["default", "custom", "prompt"]] = None
     poses_ids: Optional[List[str]] = None
-    poses_images: Optional[List[str]] = None
-    poses_prompts: Optional[List[str]] = None
     model_id: Optional[str] = None
     lighting_style: Optional[str] = None
     ornaments: Optional[str] = None
@@ -169,10 +179,7 @@ class PhotoshootBatchListItem(BaseModel):
     one_piece_garment_specification: Optional[str] = None
     fitting: Optional[str] = None
     background_id: Optional[str] = None
-    which_pose_option: Optional[Literal["default", "custom", "prompt"]] = None
     poses_ids: Optional[List[str]] = None
-    poses_images: Optional[List[str]] = None
-    poses_prompts: Optional[List[str]] = None
     model_id: Optional[str] = None
     lighting_style: Optional[str] = None
     ornaments: Optional[str] = None

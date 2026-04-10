@@ -143,23 +143,28 @@ async def _generate_pose_prompt_from_image(image_url: str) -> str:
         return f"Natural standing fashion model pose — vision error: {exc}"
 
 
-async def resolve_pose_prompts(
-    which_pose_option: str,
-    poses_ids: List[str],
-    poses_images: List[str],
-    poses_prompts: List[str],
-    poses_col=None,
-) -> List[str]:
-    logger.info("[poses] Resolving poses — option=%s", which_pose_option)
-    if which_pose_option == "default":
-        result = await _fetch_default_pose_prompts(poses_ids, poses_col=poses_col)
-    elif which_pose_option == "custom":
-        result = await asyncio.gather(*[_generate_pose_prompt_from_image(url) for url in poses_images])
+async def resolve_pose_prompts(req: dict, poses_col=None) -> List[str]:
+    """
+    Resolve pose text prompts for the job payload.
+
+    - New API / normal create: ``poses_ids`` only — load ``pose_prompt`` from Mongo per id.
+    - Legacy / internal regeneration: ``which_pose_option`` ``prompt`` + ``poses_prompts``, or
+      ``custom`` + ``poses_images`` (Gemini pose-from-image).
+    """
+    opt = req.get("which_pose_option")
+    if opt == "prompt" and req.get("poses_prompts"):
+        result = list(req["poses_prompts"])
+        logger.info("[poses] Using %d precomputed pose prompts (regeneration / legacy)", len(result))
+    elif opt == "custom" and req.get("poses_images"):
+        result = await asyncio.gather(
+            *[_generate_pose_prompt_from_image(url) for url in req["poses_images"]]
+        )
         result = list(result)
-        logger.info("[poses] %d custom pose prompts generated via Gemini", len(result))
+        logger.info("[poses] %d custom pose prompts generated via Gemini (legacy)", len(result))
     else:
-        logger.info("[poses] Using %d user-provided pose prompts directly", len(poses_prompts))
-        result = list(poses_prompts)
+        ids = req.get("poses_ids") or []
+        logger.info("[poses] Resolving %d pose id(s) from database", len(ids))
+        result = await _fetch_default_pose_prompts(ids, poses_col=poses_col)
 
     for i, prompt in enumerate(result, 1):
         logger.info("[poses] Pose #%d prompt:\n%s", i, prompt)
@@ -952,7 +957,12 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
     """
     logger.info("=" * 70)
     logger.info("[job] Photoshoot job STARTED — photoshoot_id=%s", photoshoot_id)
-    logger.info("[job] user_id=%s | pose_option=%s", req.get("user_id"), req.get("which_pose_option"))
+    logger.info(
+        "[job] user_id=%s | poses_ids=%d | legacy_pose_option=%s",
+        req.get("user_id"),
+        len(req.get("poses_ids") or []),
+        req.get("which_pose_option"),
+    )
     logger.info("=" * 70)
 
     if motor_client is not None:
@@ -979,13 +989,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
     try:
         # ── Step 1: resolve pose prompts ──────────────────────────────────
         logger.info("[job] STEP 1 — Resolving pose prompts...")
-        pose_prompts = await resolve_pose_prompts(
-            which_pose_option=req["which_pose_option"],
-            poses_ids=req.get("poses_ids") or [],
-            poses_images=req.get("poses_images") or [],
-            poses_prompts=req.get("poses_prompts") or [],
-            poses_col=poses_col,
-        )
+        pose_prompts = await resolve_pose_prompts(req, poses_col=poses_col)
 
         if not pose_prompts:
             raise ValueError("No pose prompts could be resolved.")
@@ -1112,10 +1116,8 @@ def merge_photoshoot_batch_configs(default_config: dict, list_item: dict) -> dic
 def count_poses_in_merged_config(merged: dict) -> int:
     """Return pose count for credit calculation (same rules as single create)."""
     opt = merged.get("which_pose_option")
-    if opt == "default":
-        return len(merged.get("poses_ids") or [])
-    if opt == "custom":
-        return len(merged.get("poses_images") or [])
-    if opt == "prompt":
-        return len(merged.get("poses_prompts") or [])
-    return 0
+    if opt == "prompt" and merged.get("poses_prompts"):
+        return len(merged["poses_prompts"])
+    if opt == "custom" and merged.get("poses_images"):
+        return len(merged["poses_images"])
+    return len(merged.get("poses_ids") or [])

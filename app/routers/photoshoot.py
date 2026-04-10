@@ -43,11 +43,12 @@ _CREDIT_UPSCALE_4X = 4.0
     status_code=status.HTTP_202_ACCEPTED,
     summary="Create Photoshoot",
     description=(
-        "Validates credits (total_poses × 2), stores the photoshoot document with "
-        "status='processing', then fires a background job that: resolves pose prompts, "
-        "runs all poses concurrently via SeedDream (quality=high, 9:16), generates 4K/2K/1K "
-        "images for each pose, uploads all to S3, deducts credits, "
+        "Validates credits (len(poses_ids) × 2), stores the photoshoot document with "
+        "status='processing', then fires a background job that: loads pose_prompt from each "
+        "pose_id in Mongo, runs all poses concurrently via SeedDream (quality=high, 9:16), "
+        "generates 4K/2K/1K images for each pose, uploads all to S3, deducts credits, "
         "and updates the document to status='completed' (or 'failed'). "
+        "Requires at least one poses_ids entry. "
         "Secured — user_id is taken from the auth token."
     ),
 )
@@ -57,19 +58,8 @@ async def create_photoshoot(
 ):
     user_id = current_user["user_id"]
 
-    # ── Step 1: resolve total poses count ────────────────────────────────────
-    if body.which_pose_option == "default":
-        total_poses = len(body.poses_ids or [])
-    elif body.which_pose_option == "custom":
-        total_poses = len(body.poses_images or [])
-    else:
-        total_poses = len(body.poses_prompts or [])
-
-    if total_poses == 0:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"No poses provided for which_pose_option='{body.which_pose_option}'.",
-        )
+    # ── Step 1: pose count (validated by model: poses_ids min_length=1) ───────
+    total_poses = len(body.poses_ids)
 
     # ── Step 2: credit check ──────────────────────────────────────────────────
     total_credit    = total_poses * _CREDIT_PER_POSE
@@ -110,10 +100,7 @@ async def create_photoshoot(
             "one_piece_garment_specification": body.one_piece_garment_specification,
             "fitting":                         body.fitting,
             "background_id":                   body.background_id,
-            "which_pose_option":               body.which_pose_option,
-            "poses_ids":                       body.poses_ids or [],
-            "poses_images":                    body.poses_images or [],
-            "poses_prompts":                   body.poses_prompts or [],
+            "poses_ids":                       list(body.poses_ids),
             "model_id":                        body.model_id,
             "lighting_style":                  body.lighting_style,
             "ornaments":                       body.ornaments or "",
@@ -163,7 +150,8 @@ async def create_photoshoot(
     summary="Create multiple photoshoots (batch)",
     description=(
         "Merges each entry in ``photoshoot_list_config`` with ``default_config`` (per-field overrides), "
-        "validates the result as a full photoshoot payload, checks credits for the entire batch, "
+        "validates the result as a full photoshoot payload (each row must resolve to at least one "
+        "``poses_ids`` entry after merge), checks credits for the entire batch, "
         "then creates one photoshoot document and one Celery job per row — same pipeline as POST /."
     ),
 )
@@ -199,8 +187,8 @@ async def create_multiple_photoshoots(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
-                    f"No poses resolved at photoshoot_list_config index {idx} "
-                    f"(which_pose_option='{row_req.which_pose_option}')."
+                    f"No poses resolved at photoshoot_list_config index {idx}: "
+                    "merged config must include poses_ids with at least one pose_id."
                 ),
             )
         validated.append((idx, row_req, n_poses))
@@ -249,10 +237,7 @@ async def create_multiple_photoshoots(
                 "one_piece_garment_specification": row_req.one_piece_garment_specification,
                 "fitting":                         row_req.fitting,
                 "background_id":                   row_req.background_id,
-                "which_pose_option":               row_req.which_pose_option,
-                "poses_ids":                       row_req.poses_ids or [],
-                "poses_images":                    row_req.poses_images or [],
-                "poses_prompts":                   row_req.poses_prompts or [],
+                "poses_ids":                       list(row_req.poses_ids),
                 "model_id":                        row_req.model_id,
                 "lighting_style":                  row_req.lighting_style,
                 "ornaments":                       row_req.ornaments or "",
