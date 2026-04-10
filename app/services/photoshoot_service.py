@@ -392,6 +392,8 @@ def _build_compact_prompt(
     ls  = req.get("lower_garment_specification", "").strip()
     op  = req.get("one_piece_garment_type", "").strip()
     os_ = req.get("one_piece_garment_specification", "").strip()
+    op_lower = op.lower()
+
     parts = []
     if ug:
         parts.append(f"Upper: {ug}" + (f" ({us})" if us else ""))
@@ -409,6 +411,57 @@ def _build_compact_prompt(
             paired = " Add matching lower garment\u2014no bare legs."
         elif lg and not ug:
             paired = " Add matching upper garment\u2014no bare torso."
+
+    # ── garment-specific wearing rules ────────────────────────────────────
+    garment_rules = ""
+    hands_must_show = False
+    if op:
+        if "saree" in op_lower or "sari" in op_lower:
+            garment_rules = (
+                "\n[GARMENT WEARING RULE]\n"
+                "This is a SAREE. Drape it in authentic Gujarati style: "
+                "pallu draped over the LEFT shoulder falling to the back, neatly pleated at the waist, "
+                "worn with a matching fitted blouse and petticoat (chaniya) underneath. "
+                "Show proper saree pleats at the front. Pallu must NOT cover both hands. "
+                "BOTH HANDS must be clearly visible and unobstructed.\n"
+            )
+            hands_must_show = True
+        elif "dress" in op_lower:
+            spec_lower = os_.lower()
+            is_3piece = any(kw in spec_lower for kw in (
+                "3 piece", "3-piece", "three piece", "dupatta", "duppata",
+                "chunni", "stole",
+            ))
+            if is_3piece:
+                garment_rules = (
+                    "\n[GARMENT WEARING RULE]\n"
+                    "This is a 3-PIECE DRESS. Wear all three pieces: top (kameez/kurta), "
+                    "bottom (salwar/churidar/palazzo), AND dupatta. "
+                    "Drape the dupatta in Gujarati style over one shoulder or across the chest. "
+                    "Do NOT skip the dupatta. "
+                    "BOTH HANDS must be clearly visible and unobstructed\u2014dupatta must NOT hide the hands.\n"
+                )
+                hands_must_show = True
+            else:
+                garment_rules = (
+                    "\n[GARMENT WEARING RULE]\n"
+                    "This is a 2-PIECE DRESS. Wear only the top and bottom\u2014"
+                    "do NOT add any dupatta, stole, or scarf.\n"
+                )
+        elif "lehenga" in op_lower:
+            garment_rules = (
+                "\n[GARMENT WEARING RULE]\n"
+                "This is a LEHENGA. Wear it in Gujarati style with the matching choli (blouse) "
+                "and dupatta draped over one shoulder. "
+                "BOTH HANDS must be clearly visible and unobstructed.\n"
+            )
+            hands_must_show = True
+        else:
+            garment_rules = (
+                "\n[GARMENT WEARING RULE]\n"
+                f"This is a ONE-PIECE garment ({op}). Wear it exactly as a single piece\u2014"
+                "do NOT add extra layers, scarves, or separate top/bottom.\n"
+            )
 
     weight = req.get("weight", "regular").strip().lower()
     height = req.get("height", "regular").strip().lower()
@@ -433,6 +486,13 @@ def _build_compact_prompt(
     if gender == "female" and any(kw in orn_lower for kw in ("bag", "purse", "handbag")):
         bag = " Add matching bag/purse held naturally."
 
+    hands_note = ""
+    if hands_must_show:
+        hands_note = (
+            " CRITICAL: Both hands and all fingers must be fully visible and clearly rendered"
+            "\u2014do NOT let fabric, dupatta, or pallu obscure any part of either hand."
+        )
+
     prompt = (
         f"Hyperrealistic editorial fashion photograph\u2014real person, NOT illustration, NOT AI-looking, NOT plastic skin.\n"
         f"\n"
@@ -442,7 +502,8 @@ def _build_compact_prompt(
         f"Copy exact fabric, pattern, color, print, embroidery, buttons, pockets, stitching, hem, neckline, "
         f"sleeves, cuffs, weave, closures, trims, pleats, natural drape and wrinkles. "
         f"No color shift, no simplification. Fitting: {fitting}.{paired}\n"
-        f"\n"
+        + garment_rules
+        + f"\n"
         f"[FACE\u2014EXACT COPY IMG{fi}]\n"
         f"Lock all features: face shape, eyes, brows, nose, lips, jaw, chin, cheekbones, ears, hairline, "
         f"hair style/color/length, skin tone/undertone, moles/marks. No beautification. Expression identical to IMG{fi}.\n"
@@ -463,12 +524,19 @@ def _build_compact_prompt(
         f"Weight: {w_desc}. Height: {h_desc}. Body must visibly reflect this build.\n"
         f"\n"
         + (
-            f"[POSE — COPY FROM IMG{mi} MANNEQUIN]\n"
-            f"IMG{mi} is a grey featureless mannequin image used ONLY as a body-posture reference.\n"
-            f"Copy the EXACT body pose from IMG{mi}: every joint angle, limb position, torso lean, "
-            f"head tilt, hand placement, leg stance, weight distribution.\n"
-            f"IGNORE everything else about IMG{mi} — ignore its grey skin, featureless face, bald head, "
-            f"white background, and clothing. Only replicate the body posture on the real human model.\n"
+            f"[POSE \u2014 EXACT COPY FROM IMG{mi} MANNEQUIN]\n"
+            f"IMG{mi} is a grey featureless mannequin. It is ONLY a body-posture reference.\n"
+            f"You MUST replicate the EXACT pose from IMG{mi} with ZERO deviation:\n"
+            f"- HANDS: Copy exact hand position\u2014if hand is in pocket, keep it in pocket; if hand is on hip, "
+            f"keep it on hip; if hands are clasped, keep them clasped. Reproduce exact finger curl, wrist angle, "
+            f"and palm orientation. Do NOT invent a different hand placement.\n"
+            f"- BODY/TORSO: Copy exact torso lean angle, shoulder tilt, chest orientation, spine curvature, "
+            f"hip rotation, and weight shift. Do NOT straighten or alter the torso.\n"
+            f"- LEGS/FEET: Copy exact leg stance\u2014crossed, apart, bent, straight\u2014exactly as shown. "
+            f"Replicate knee bend angle, foot placement, foot direction, and weight distribution between legs.\n"
+            f"- HEAD: Copy exact head tilt, turn direction, chin angle, and gaze direction.\n"
+            f"IGNORE everything else about IMG{mi}\u2014ignore its grey skin, featureless face, bald head, "
+            f"white background, and clothing. Only replicate the body posture on the real human model.{hands_note}\n"
             if has_mannequin_image else
             f"[POSE] {clean_pose}\n"
         )
