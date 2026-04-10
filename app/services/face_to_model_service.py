@@ -2,12 +2,11 @@
 Face-to-Model service (reference photo upload).
 
 Pipeline:
-  1. Vision analysis — validate a clear human face and extract structured attributes
-     (same keys as AI face configuration / scripts/generate_model_faces JSON style).
-  2. Merge with category defaults via build_configuration (shared with generate-with-AI).
-  3. build_face_prompt — identical passport-style prompt as generate-with-AI / script.
-  4. Text-to-image portrait generation (reference URL is not sent to the image job).
-  5. Download result, upload to S3.
+  1. Vision — validate a clear human face and extract structured attributes for DB storage only.
+  2. build_configuration — merge vision overrides with category defaults (persisted; not sent to image).
+  3. SeedDream 5.0 Lite image-to-image — user's reference photo URL + passport / black t-shirt prompt
+     to preserve identity while standardizing framing and clothing.
+  4. Download result, upload to S3.
 """
 
 import asyncio
@@ -19,7 +18,7 @@ import httpx
 from fastapi import HTTPException, status
 
 from app.config import settings
-from app.services.ai_face_service import build_configuration, build_face_prompt
+from app.services.ai_face_service import build_configuration
 from app.services.s3_service import upload_bytes_to_s3
 
 _ALLOWED_VISION_OVERRIDE_KEYS: FrozenSet[str] = frozenset(
@@ -210,21 +209,52 @@ async def validate_face(image_url: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Step 2 — Text-to-image portrait job (upstream API)
+# Reference portrait — image-to-image (identity from user photo, standardized output)
+# ---------------------------------------------------------------------------
+
+_REFERENCE_PASSPORT_IMG2IMG_PROMPT = """\
+Transform this reference photo into a professional passport-style headshot while preserving the exact same person.
+
+IDENTITY (critical): Keep the same face, bone structure, skin tone, eyes, nose, mouth, facial hair pattern, \
+hair style, hair color, age appearance, and ethnicity as the person in the reference image. \
+The result must be clearly the same individual — do not invent a different face.
+
+FRAMING: Head and upper shoulders visible, chest-up framing, centered, facing the camera with a neutral \
+passport-appropriate expression (mouth closed, eyes open, looking at camera).
+
+BACKGROUND: Clean plain white background only. Soft, even studio lighting from the front with subtle fill; \
+sharp focus on the face. No harsh shadows.
+
+CLOTHING: Plain black crew-neck t-shirt only — clean, unwrinkled, clearly visible at the shoulders and upper \
+chest. Replace any original clothing with this garment.
+
+OUTPUT: Photorealistic, like a real government ID or modeling headshot. Natural skin texture. \
+No watermark, no text, no illustration, no CGI or plastic skin.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — Image-to-image portrait job (kie.ai)
 # ---------------------------------------------------------------------------
 
 _CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
 _STATUS_URL = "https://api.kie.ai/api/v1/jobs/recordInfo"
 
 
-async def _submit_seedream_lite_text_task(prompt: str) -> str:
+async def _submit_seedream_lite_reference_img2img_task(image_url: str) -> str:
+    if not (settings.SEEDDREAM_API_KEY or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Portrait generation is not configured.",
+        )
     payload = json.dumps({
-        "model": settings.MODEL_FACE_REFERENCE_SEEDREAM_MODEL,
+        "model": settings.MODEL_FACE_REFERENCE_SEEDREAM_IMG2IMG_MODEL,
         "input": {
-            "prompt":         prompt,
-            "aspect_ratio":   settings.MODEL_FACE_REFERENCE_SEEDREAM_ASPECT,
-            "quality":        settings.MODEL_FACE_REFERENCE_SEEDREAM_QUALITY,
-            "nsfw_checker":   False,
+            "prompt":       _REFERENCE_PASSPORT_IMG2IMG_PROMPT,
+            "image_urls":   [image_url],
+            "aspect_ratio": settings.MODEL_FACE_REFERENCE_SEEDREAM_ASPECT,
+            "quality":      settings.MODEL_FACE_REFERENCE_SEEDREAM_QUALITY,
+            "nsfw_checker": False,
         },
     })
     headers = {
@@ -324,19 +354,13 @@ async def _download_image(result_url: str) -> bytes:
 
 async def generate_model_face_from_reference(image_url: str, model_category: str) -> str:
     """
-    Validate reference photo, build script-style prompt from merged config,
-    run text-to-image portrait generation, upload to S3.
+    Validate reference photo, merge vision attributes into config for storage semantics,
+    run SeedDream image-to-image (reference URL + passport prompt), upload to S3.
     """
-    parsed    = await validate_face(image_url)
-    config    = build_configuration(model_category, parsed["overrides"])
-    prompt    = build_face_prompt(config)
-    if len(prompt) > 10000:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Face configuration exceeds the maximum prompt length (10000 characters).",
-        )
+    parsed = await validate_face(image_url)
+    config = build_configuration(model_category, parsed["overrides"])
 
-    task_id    = await _submit_seedream_lite_text_task(prompt)
+    task_id = await _submit_seedream_lite_reference_img2img_task(image_url)
     result_url = await _poll_task(task_id)
     img_bytes  = await _download_image(result_url)
     face_id    = str(uuid.uuid4())
@@ -365,23 +389,27 @@ async def generate_model_face_from_reference_stream(
     yield ("validating_image_done", "Reference image validated — face detected", None, None)
     await asyncio.sleep(1)
 
-    yield ("building_prompt", "Building face configuration and passport-style prompt", None, None)
+    yield (
+        "building_prompt",
+        "Merging vision attributes for your profile (used for storage, not for image generation)",
+        None,
+        None,
+    )
     config = build_configuration(model_category, parsed["overrides"])
-    prompt = build_face_prompt(config)
-    if len(prompt) > 10000:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Face configuration exceeds the maximum prompt length (10000 characters).",
-        )
     await asyncio.sleep(0.3)
-    yield ("building_prompt_done", "Prompt ready", None, None)
+    yield ("building_prompt_done", "Ready to generate passport portrait from your photo", None, None)
     await asyncio.sleep(0.5)
 
-    yield ("starting_generation", "Starting portrait generation", None, None)
+    yield ("starting_generation", "Starting portrait generation from your photo", None, None)
     await asyncio.sleep(1)
-    yield ("training", "Generating portrait from face configuration", None, None)
+    yield (
+        "training",
+        "Generating passport-style portrait (same face, black t-shirt, white background)",
+        None,
+        None,
+    )
 
-    task_id    = await _submit_seedream_lite_text_task(prompt)
+    task_id = await _submit_seedream_lite_reference_img2img_task(image_url)
     result_url = await _poll_task(task_id)
     await asyncio.sleep(0.5)
 

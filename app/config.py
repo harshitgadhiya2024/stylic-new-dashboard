@@ -52,7 +52,9 @@ class Settings(BaseSettings):
     MODEL_FACE_GENERATE_ASPECT: str = "4:5"
     MODEL_FACE_GENERATE_RESOLUTION: str = "1K"
 
-    # Reference-photo model face — SeedDream 5.0 Lite text-to-image (prompt = script-style JSON + instructions)
+    # Reference-photo model face — SeedDream 5.0 Lite (upload flow uses image-to-image + user photo URL)
+    MODEL_FACE_REFERENCE_SEEDREAM_IMG2IMG_MODEL: str = "seedream/5-lite-image-to-image"
+    # Legacy text-to-image id (unused by reference upload; kept for env / tooling compatibility)
     MODEL_FACE_REFERENCE_SEEDREAM_MODEL: str = "seedream/5-lite-text-to-image"
     # kie 5-lite enum: 1:1, 4:3, 3:4, 16:9, 9:16, 2:3, 3:2, 21:9 (no 4:5 — 3:4 is portrait)
     MODEL_FACE_REFERENCE_SEEDREAM_ASPECT: str = "3:4"

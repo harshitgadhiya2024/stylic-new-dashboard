@@ -432,10 +432,10 @@ async def get_all_ethnicity():
     summary="Upload / Create a Model Face (Streaming)",
     description=(
         "Accepts a reference face photo URL. Streams real-time progress via SSE. "
-        "Analyzes the image (required: age, ethnicity, gender) and full face attributes, "
-        "builds the same passport-style prompt as generate-with-AI / scripts/generate_model_faces.py, "
-        "generates the portrait from that prompt, uploads to S3, "
-        "saves to DB with vision-derived age/ethnicity/gender and merged model_configuration, "
+        "Vision analyzes the image (required: age, ethnicity, gender) and attributes for DB storage only. "
+        "Portrait generation uses SeedDream 5.0 Lite image-to-image with your photo URL plus a fixed "
+        "passport-style prompt (white background, black crew-neck t-shirt) to preserve the same face. "
+        "Uploads to S3, saves vision-derived age/ethnicity/gender and merged model_configuration, "
         "and deducts 2.5 credits in the background. "
         "Secured — user_id is taken from the auth token. "
         "Response is `text/event-stream`. Final event `done` contains the full model face record."
