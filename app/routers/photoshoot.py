@@ -356,9 +356,12 @@ async def upscale_photoshoot(
     ).to_list(length=None)
     upscaling_map = {doc["image_id"]: doc for doc in upscaling_docs}
 
-    # build pose_prompt map from original output_images
-    pose_prompt_map = {
-        img["image_id"]: img.get("pose_prompt", "")
+    # build pose data map from original output_images
+    pose_data_map = {
+        img["image_id"]: {
+            "pose_prompt": img.get("pose_prompt", ""),
+            "pose_image_url": img.get("pose_image_url", ""),
+        }
         for img in original_ps.get("output_images", [])
     }
 
@@ -379,10 +382,12 @@ async def upscale_photoshoot(
                 "",
             )
 
+        pd = pose_data_map.get(image_id, {})
         output_images.append({
-            "image_id":    image_id,
-            "pose_prompt": pose_prompt_map.get(image_id, ""),
-            "image":       image_url,
+            "image_id":        image_id,
+            "pose_prompt":     pd.get("pose_prompt", ""),
+            "pose_image_url":  pd.get("pose_image_url", ""),
+            "image":           image_url,
         })
 
     # ── Step 6: build new photoshoot document (copy + override) ──────────────
@@ -483,7 +488,7 @@ async def regenerate_photoshoot(
             detail="You do not have access to this photoshoot.",
         )
 
-    # ── Step 2: resolve pose_prompts from original output_images ──────────────
+    # ── Step 2: resolve pose_data from original output_images ──────────────
     all_output_images = original_ps.get("output_images", [])
     if not all_output_images:
         raise HTTPException(
@@ -493,7 +498,6 @@ async def regenerate_photoshoot(
 
     requested_ids = body.image_ids or []
     if requested_ids:
-        # only regenerate poses matching the given image_ids, preserving order
         id_set = set(requested_ids)
         selected = [img for img in all_output_images if img["image_id"] in id_set]
         if not selected:
@@ -502,11 +506,13 @@ async def regenerate_photoshoot(
                 detail="None of the provided image_ids were found in this photoshoot.",
             )
     else:
-        # regenerate all poses
         selected = all_output_images
 
-    pose_prompts = [img["pose_prompt"] for img in selected]
-    total_poses  = len(pose_prompts)
+    pose_data = [
+        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        for img in selected
+    ]
+    total_poses = len(pose_data)
 
     # ── Step 3: credit check ──────────────────────────────────────────────────
     total_credit    = total_poses * _CREDIT_PER_POSE
@@ -525,14 +531,11 @@ async def regenerate_photoshoot(
     original_params = original_ps.get("input_parameter", {})
     new_photoshoot_id = str(uuid.uuid4())
 
-    # Override poses to use the resolved pose_prompts directly (prompt mode)
     job_payload = {
         **original_params,
         "user_id":                   user_id,
-        "which_pose_option":         "prompt",
-        "poses_prompts":             pose_prompts,
+        "pose_data":                 pose_data,
         "poses_ids":                 [],
-        "poses_images":              [],
         "regeneration_type":         "regenerate",
         "regenerate_photoshoot_id":  body.photoshoot_id,
     }
@@ -544,10 +547,8 @@ async def regenerate_photoshoot(
         "sku_id":                   original_ps.get("sku_id", ""),
         "input_parameter":          {
             **original_params,
-            "which_pose_option":        "prompt",
-            "poses_prompts":            pose_prompts,
+            "pose_data":                pose_data,
             "poses_ids":                [],
-            "poses_images":             [],
             "regeneration_type":        "regenerate",
             "regenerate_photoshoot_id": body.photoshoot_id,
         },
@@ -1084,7 +1085,7 @@ async def adjust_image_photoshoot(
     summary="Background Change Photoshoot",
     description=(
         "Re-runs the full SeedDream + Modal pipeline for selected poses using a new background. "
-        "Fetches pose_prompts from the original photoshoot's output_images for given image_ids, "
+        "Fetches pose_data (mannequin image + prompt) from the original photoshoot's output_images, "
         "swaps the background_id, and keeps all other input_parameter values unchanged. "
         "Credits: 2 per image. Secured — user_id from auth token."
     ),
@@ -1110,7 +1111,7 @@ async def background_change_photoshoot(
             detail=f"Background '{body.background_id}' not found.",
         )
 
-    # ── Step 2: fetch original photoshoot and resolve pose_prompts ────────────
+    # ── Step 2: fetch original photoshoot and resolve pose_data ─────────────
     ps_col      = get_photoshoots_collection()
     original_ps = await ps_col.find_one({"photoshoot_id": body.photoshoot_id, "user_id": user_id})
     if not original_ps:
@@ -1127,8 +1128,11 @@ async def background_change_photoshoot(
             detail="None of the provided image_ids were found in this photoshoot.",
         )
 
-    pose_prompts = [img["pose_prompt"] for img in selected]
-    total_poses  = len(pose_prompts)
+    pose_data = [
+        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        for img in selected
+    ]
+    total_poses = len(pose_data)
 
     # ── Step 3: credit check ──────────────────────────────────────────────────
     total_credit    = total_poses * _CREDIT_PER_POSE
@@ -1151,10 +1155,8 @@ async def background_change_photoshoot(
     job_payload = {
         **original_params,
         "user_id":                   user_id,
-        "which_pose_option":         "prompt",
-        "poses_prompts":             pose_prompts,
+        "pose_data":                 pose_data,
         "poses_ids":                 [],
-        "poses_images":              [],
         "background_id":             body.background_id,
         "regeneration_type":         "background_change",
         "regenerate_photoshoot_id":  body.photoshoot_id,
@@ -1167,10 +1169,8 @@ async def background_change_photoshoot(
         "sku_id":                   original_ps.get("sku_id", ""),
         "input_parameter": {
             **original_params,
-            "which_pose_option":        "prompt",
-            "poses_prompts":            pose_prompts,
+            "pose_data":                pose_data,
             "poses_ids":                [],
-            "poses_images":             [],
             "background_id":            body.background_id,
             "regeneration_type":        "background_change",
             "regenerate_photoshoot_id": body.photoshoot_id,
@@ -1290,8 +1290,8 @@ _CREDIT_FABRIC_CHANGE = 3.0
     summary="Fabric Change Photoshoot",
     description=(
         "Re-runs the full SeedDream + Modal pipeline for selected poses using new garment images "
-        "(fabric-changed). Fetches pose_prompts from the original photoshoot's output_images for "
-        "the given image_ids, replaces front/back garment images with those supplied in the request, "
+        "(fabric-changed). Fetches pose_data (mannequin image + prompt) from the original photoshoot's "
+        "output_images, replaces front/back garment images with those supplied in the request, "
         "and keeps all other input_parameter values unchanged. "
         "Credits: 3 per image. Secured — user_id from auth token."
     ),
@@ -1331,7 +1331,7 @@ async def fabric_change_photoshoot(
             ),
         )
 
-    # ── Step 3: resolve pose_prompts for the selected image_ids ───────────────
+    # ── Step 3: resolve pose_data for the selected image_ids ────────────────
     id_set   = set(body.image_ids)
     selected = [img for img in original_ps.get("output_images", []) if img["image_id"] in id_set]
     if not selected:
@@ -1340,7 +1340,10 @@ async def fabric_change_photoshoot(
             detail="None of the provided image_ids were found in this photoshoot.",
         )
 
-    pose_prompts = [img["pose_prompt"] for img in selected]
+    pose_data = [
+        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        for img in selected
+    ]
 
     # ── Step 4: build job payload — original params with new garment images ───
     original_params   = original_ps.get("input_parameter", {})
@@ -1355,10 +1358,8 @@ async def fabric_change_photoshoot(
         **original_params,
         **updated_garments,
         "user_id":                   user_id,
-        "which_pose_option":         "prompt",
-        "poses_prompts":             pose_prompts,
+        "pose_data":                 pose_data,
         "poses_ids":                 [],
-        "poses_images":              [],
         "regeneration_type":         "fabric_change",
         "regenerate_photoshoot_id":  body.photoshoot_id,
     }
@@ -1371,10 +1372,8 @@ async def fabric_change_photoshoot(
         "input_parameter": {
             **original_params,
             **updated_garments,
-            "which_pose_option":        "prompt",
-            "poses_prompts":            pose_prompts,
+            "pose_data":                pose_data,
             "poses_ids":                [],
-            "poses_images":             [],
             "regeneration_type":        "fabric_change",
             "regenerate_photoshoot_id": body.photoshoot_id,
         },
@@ -1491,8 +1490,8 @@ _CREDIT_TEXTURE_CHANGE = 3.0
     summary="Texture Change Photoshoot",
     description=(
         "Re-runs the full SeedDream + Modal pipeline for selected poses using new garment images "
-        "(texture-changed). Fetches pose_prompts from the original photoshoot's output_images for "
-        "the given image_ids, replaces front/back garment images with those supplied in the request, "
+        "(texture-changed). Fetches pose_data (mannequin image + prompt) from the original photoshoot's "
+        "output_images, replaces front/back garment images with those supplied in the request, "
         "and keeps all other input_parameter values unchanged. "
         "Credits: 3 per image. Secured — user_id from auth token."
     ),
@@ -1532,7 +1531,7 @@ async def texture_change_photoshoot(
             ),
         )
 
-    # ── Step 3: resolve pose_prompts for the selected image_ids ───────────────
+    # ── Step 3: resolve pose_data for the selected image_ids ────────────────
     id_set   = set(body.image_ids)
     selected = [img for img in original_ps.get("output_images", []) if img["image_id"] in id_set]
     if not selected:
@@ -1541,7 +1540,10 @@ async def texture_change_photoshoot(
             detail="None of the provided image_ids were found in this photoshoot.",
         )
 
-    pose_prompts = [img["pose_prompt"] for img in selected]
+    pose_data = [
+        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        for img in selected
+    ]
 
     # ── Step 4: build job payload — original params with new garment images ───
     original_params   = original_ps.get("input_parameter", {})
@@ -1556,10 +1558,8 @@ async def texture_change_photoshoot(
         **original_params,
         **updated_garments,
         "user_id":                   user_id,
-        "which_pose_option":         "prompt",
-        "poses_prompts":             pose_prompts,
+        "pose_data":                 pose_data,
         "poses_ids":                 [],
-        "poses_images":              [],
         "regeneration_type":         "texture_change",
         "regenerate_photoshoot_id":  body.photoshoot_id,
     }
@@ -1572,10 +1572,8 @@ async def texture_change_photoshoot(
         "input_parameter": {
             **original_params,
             **updated_garments,
-            "which_pose_option":        "prompt",
-            "poses_prompts":            pose_prompts,
+            "pose_data":                pose_data,
             "poses_ids":                [],
-            "poses_images":             [],
             "regeneration_type":        "texture_change",
             "regenerate_photoshoot_id": body.photoshoot_id,
         },
@@ -1693,8 +1691,8 @@ _CREDIT_COLOR_CHANGE = 3.0
     summary="Color Change Photoshoot",
     description=(
         "Re-runs the full SeedDream + Modal pipeline for selected poses using new garment images "
-        "(color-changed). Fetches pose_prompts from the original photoshoot's output_images for "
-        "the given image_ids, replaces front/back garment images with those supplied in the request, "
+        "(color-changed). Fetches pose_data (mannequin image + prompt) from the original photoshoot's "
+        "output_images, replaces front/back garment images with those supplied in the request, "
         "and keeps all other input_parameter values unchanged. "
         "Credits: 3 per image. Secured — user_id from auth token."
     ),
@@ -1734,7 +1732,7 @@ async def color_change_photoshoot(
             ),
         )
 
-    # ── Step 3: resolve pose_prompts for the selected image_ids ───────────────
+    # ── Step 3: resolve pose_data for the selected image_ids ────────────────
     id_set   = set(body.image_ids)
     selected = [img for img in original_ps.get("output_images", []) if img["image_id"] in id_set]
     if not selected:
@@ -1743,7 +1741,10 @@ async def color_change_photoshoot(
             detail="None of the provided image_ids were found in this photoshoot.",
         )
 
-    pose_prompts = [img["pose_prompt"] for img in selected]
+    pose_data = [
+        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        for img in selected
+    ]
 
     # ── Step 4: build job payload — original params with new garment images ───
     original_params   = original_ps.get("input_parameter", {})
@@ -1758,10 +1759,8 @@ async def color_change_photoshoot(
         **original_params,
         **updated_garments,
         "user_id":                   user_id,
-        "which_pose_option":         "prompt",
-        "poses_prompts":             pose_prompts,
+        "pose_data":                 pose_data,
         "poses_ids":                 [],
-        "poses_images":              [],
         "regeneration_type":         "color_change",
         "regenerate_photoshoot_id":  body.photoshoot_id,
     }
@@ -1774,10 +1773,8 @@ async def color_change_photoshoot(
         "input_parameter": {
             **original_params,
             **updated_garments,
-            "which_pose_option":        "prompt",
-            "poses_prompts":            pose_prompts,
+            "pose_data":                pose_data,
             "poses_ids":                [],
-            "poses_images":             [],
             "regeneration_type":        "color_change",
             "regenerate_photoshoot_id": body.photoshoot_id,
         },

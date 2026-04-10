@@ -80,95 +80,24 @@ async def _fetch_pose_data(pose_ids: List[str], poses_col=None) -> List[dict]:
     return results
 
 
-async def _generate_pose_prompt_from_image(image_url: str) -> str:
-    """
-    Send a custom pose image to Gemini vision and extract ONLY body position
-    and pose details — no gender, age, clothing, or background details.
-    """
-    logger.info("[poses] Generating pose prompt from custom image: %s", image_url)
-    try:
-        from google import genai
-        from google.genai import types as gtypes
-    except ImportError as exc:
-        logger.error("[poses] Gemini SDK not available: %s", exc)
-        return f"Natural fashion model pose — Gemini unavailable: {exc}"
-
-    try:
-        logger.info("[poses] Downloading custom pose image...")
-        async with httpx.AsyncClient(timeout=30) as client:
-            img_resp = await client.get(image_url)
-            img_resp.raise_for_status()
-        img_bytes = img_resp.content
-        content_type = img_resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-        if content_type not in ("image/jpeg", "image/png", "image/webp"):
-            content_type = "image/jpeg"
-        logger.info("[poses] Custom pose image downloaded (%d bytes, %s)", len(img_bytes), content_type)
-    except Exception as exc:
-        logger.error("[poses] Failed to download custom pose image: %s", exc)
-        return f"Natural fashion model pose — could not download image: {exc}"
-
-    prompt_text = (
-        "You are a pose description specialist for fashion photoshoots.\n"
-        "Analyze this reference image and describe ONLY the body position and pose.\n\n"
-        "STRICT RULES — your description MUST:\n"
-        "- Include: exact body orientation (front/back/side/angle), limb positions, "
-        "  head direction, weight distribution, framing (full body/half body/close-up)\n"
-        "- EXCLUDE: gender, age, age group, clothing details, fabric, colors, "
-        "  accessories, background, setting, or environment\n\n"
-        "Output: a single concise paragraph, 2-4 sentences, describing only pose and body position."
-    )
-
-    def _call_gemini():
-        g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        return g_client.models.generate_content(
-            model=settings.GEMINI_VISION_MODEL,
-            contents=[
-                gtypes.Content(
-                    role="user",
-                    parts=[
-                        gtypes.Part.from_bytes(mime_type=content_type, data=img_bytes),
-                        gtypes.Part.from_text(text=prompt_text),
-                    ],
-                )
-            ],
-            config=gtypes.GenerateContentConfig(
-                response_modalities=["TEXT"],
-                temperature=0,
-            ),
-        )
-
-    try:
-        logger.info("[poses] Calling Gemini vision to extract pose description...")
-        response = await asyncio.get_running_loop().run_in_executor(None, _call_gemini)
-        result = response.candidates[0].content.parts[0].text.strip()
-        logger.info("[poses] Gemini pose description generated (%d chars)", len(result))
-        return result
-    except Exception as exc:
-        logger.error("[poses] Gemini vision error: %s", exc)
-        return f"Natural standing fashion model pose — vision error: {exc}"
-
 
 async def resolve_poses(req: dict, poses_col=None) -> List[dict]:
     """
-    Return a list of ``{"image_url": str, "pose_prompt": str}`` for each pose.
+    Return ``[{"image_url": str, "pose_prompt": str}, ...]`` for each pose.
 
-    - Normal path (``poses_ids``): fetches ``image_url`` (mannequin) and ``pose_prompt``
-      from each pose document.
-    - Legacy / regeneration (``which_pose_option="prompt"`` + ``poses_prompts``):
-      wraps each prompt as ``{"image_url": "", "pose_prompt": text}``.
-    - Legacy custom (``which_pose_option="custom"`` + ``poses_images``):
-      generates text prompt via Gemini from each image — no mannequin URL.
+    Two paths:
+
+    1. **pose_data** list already present (regeneration / background / fabric / texture / color
+       change): each entry is ``{"image_url": mannequin, "pose_prompt": text}`` — used directly.
+    2. **poses_ids** (normal create): loads ``image_url`` and ``pose_prompt`` from Mongo per id.
     """
-    opt = req.get("which_pose_option")
-    if opt == "prompt" and req.get("poses_prompts"):
-        result = [{"image_url": "", "pose_prompt": p} for p in req["poses_prompts"]]
-        logger.info("[poses] Using %d precomputed pose prompts (regeneration / legacy)", len(result))
-    elif opt == "custom" and req.get("poses_images"):
-        texts = await asyncio.gather(
-            *[_generate_pose_prompt_from_image(url) for url in req["poses_images"]]
-        )
-        result = [{"image_url": "", "pose_prompt": t} for t in texts]
-        logger.info("[poses] %d custom pose prompts generated via Gemini (legacy)", len(result))
+    pose_data = req.get("pose_data")
+    if pose_data and isinstance(pose_data, list):
+        result = [
+            {"image_url": pd.get("image_url") or "", "pose_prompt": pd.get("pose_prompt") or ""}
+            for pd in pose_data
+        ]
+        logger.info("[poses] Using %d pre-resolved pose_data entries (regeneration)", len(result))
     else:
         ids = req.get("poses_ids") or []
         logger.info("[poses] Resolving %d pose id(s) from database", len(ids))
@@ -923,9 +852,10 @@ async def _process_one_pose(
 
     logger.info("[%s] ── Pose pipeline COMPLETE ─────────────────────", pose_label)
     return {
-        "image_id":    image_id,
-        "pose_prompt": pose_prompt,
-        "image":       display_image,
+        "image_id":        image_id,
+        "pose_prompt":     pose_prompt,
+        "pose_image_url":  mannequin_url,
+        "image":           display_image,
     }
 
 
@@ -1009,10 +939,10 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
     logger.info("=" * 70)
     logger.info("[job] Photoshoot job STARTED — photoshoot_id=%s", photoshoot_id)
     logger.info(
-        "[job] user_id=%s | poses_ids=%d | legacy_pose_option=%s",
+        "[job] user_id=%s | poses_ids=%d | pose_data=%d",
         req.get("user_id"),
         len(req.get("poses_ids") or []),
-        req.get("which_pose_option"),
+        len(req.get("pose_data") or []),
     )
     logger.info("=" * 70)
 
@@ -1165,10 +1095,8 @@ def merge_photoshoot_batch_configs(default_config: dict, list_item: dict) -> dic
 
 
 def count_poses_in_merged_config(merged: dict) -> int:
-    """Return pose count for credit calculation (same rules as single create)."""
-    opt = merged.get("which_pose_option")
-    if opt == "prompt" and merged.get("poses_prompts"):
-        return len(merged["poses_prompts"])
-    if opt == "custom" and merged.get("poses_images"):
-        return len(merged["poses_images"])
+    """Return pose count for credit calculation."""
+    pd = merged.get("pose_data")
+    if pd and isinstance(pd, list):
+        return len(pd)
     return len(merged.get("poses_ids") or [])

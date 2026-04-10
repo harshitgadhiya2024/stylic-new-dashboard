@@ -126,10 +126,17 @@ def _sanitize_pose(pose: str) -> str:
     return re.sub(r'\s{2,}', ' ', result).strip()
 
 
-def _build_compact_prompt(pose: str, has_back: bool, req: dict) -> str:
+def _build_compact_prompt(
+    pose: str,
+    has_back: bool,
+    req: dict,
+    *,
+    has_mannequin_image: bool = False,
+) -> str:
     """Build a <=3000-char SeedDream prompt covering all photoshoot cases."""
     fi = 3 if has_back else 2
     bi = 4 if has_back else 3
+    mi = bi + 1
 
     if has_back:
         img_ref = f"IMG1=garment front, IMG2=garment back, IMG{fi}=face, IMG{bi}=background"
@@ -137,6 +144,9 @@ def _build_compact_prompt(pose: str, has_back: bool, req: dict) -> str:
     else:
         img_ref = f"IMG1=garment, IMG{fi}=face, IMG{bi}=background"
         g_imgs = "IMG1"
+
+    if has_mannequin_image:
+        img_ref += f", IMG{mi}=POSE MANNEQUIN (body posture reference ONLY)"
 
     ug = req.get("upper_garment_type", "").strip()
     us = req.get("upper_garment_specification", "").strip()
@@ -214,8 +224,17 @@ def _build_compact_prompt(pose: str, has_back: bool, req: dict) -> str:
         f"skin: {req.get('skin_tone','')}.\n"
         f"Weight: {w_desc}. Height: {h_desc}. Body must visibly reflect this build.\n"
         f"\n"
-        f"[POSE] {clean_pose}\n"
-        f"\n"
+        + (
+            f"[POSE — COPY FROM IMG{mi} MANNEQUIN]\n"
+            f"IMG{mi} is a grey featureless mannequin image used ONLY as a body-posture reference.\n"
+            f"Copy the EXACT body pose from IMG{mi}: every joint angle, limb position, torso lean, "
+            f"head tilt, hand placement, leg stance, weight distribution.\n"
+            f"IGNORE everything else about IMG{mi} — ignore its grey skin, featureless face, bald head, "
+            f"white background, and clothing. Only replicate the body posture on the real human model.\n"
+            if has_mannequin_image else
+            f"[POSE] {clean_pose}\n"
+        )
+        + f"\n"
         f"Matching footwear, no bare feet.{bag} Ornaments: {orn or 'none'}.\n"
         f"85mm f/2.8, shallow DOF sharp on subject, 4K 9:16. Vogue editorial, photojournalistic color grading, "
         f"lifelike hair strand detail, RAW quality, award-winning fashion photography."
@@ -463,12 +482,9 @@ async def main() -> None:
         "background_type": BACKGROUND_TYPE,
     }
     if USE_LEGACY_INLINE_PROMPTS:
-        req_snapshot["which_pose_option"] = "prompt"
-        req_snapshot["poses_prompts"] = list(LEGACY_POSES_PROMPTS)
-        req_snapshot["poses_images"] = []
-    else:
-        req_snapshot["poses_images"] = []
-        req_snapshot["poses_prompts"] = []
+        req_snapshot["pose_data"] = [
+            {"image_url": "", "pose_prompt": p} for p in LEGACY_POSES_PROMPTS
+        ]
 
     from app.services.photoshoot_service import (
         _download_bytes,
