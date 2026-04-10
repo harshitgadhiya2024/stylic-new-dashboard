@@ -474,10 +474,10 @@ async def main() -> None:
         _download_bytes,
         _poll_task,
         _submit_seeddream_task,
-        resolve_pose_prompts,
+        resolve_poses,
     )
 
-    pose_prompts = await resolve_pose_prompts(req_snapshot, poses_col=None)
+    pose_data_list = await resolve_poses(req_snapshot, poses_col=None)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_dir = OUTPUT_DIR.resolve() / f"{RUN_LABEL}_{stamp}"
@@ -488,7 +488,7 @@ async def main() -> None:
         "run_label": RUN_LABEL,
         "req_snapshot": req_snapshot,
         "image_urls": image_urls,
-        "pose_prompts": pose_prompts,
+        "pose_data": pose_data_list,
     }
     (out_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -499,13 +499,25 @@ async def main() -> None:
         (out_dir / "realism_prompt.txt").write_text(realism_prompt, encoding="utf-8")
         print(f"Realism pass ENABLED ({REALISM_MODEL}, {len(realism_prompt)} / {_REALISM_PROMPT_LIMIT} chars)")
 
-    async def run_one_pose(idx: int, pose_prompt: str) -> None:
-        pose_label = f"pose-{idx:02d}"
-        prompt = _build_compact_prompt(pose_prompt, has_back, req_snapshot)
-        (out_dir / f"{pose_label}_seeddream_prompt.txt").write_text(prompt, encoding="utf-8")
-        print(f"[{pose_label}] Prompt length: {len(prompt)} / {_PROMPT_LIMIT} chars")
+    async def run_one_pose(idx: int, pd: dict) -> None:
+        pose_label    = f"pose-{idx:02d}"
+        mannequin_url = (pd.get("image_url") or "").strip()
+        pose_prompt   = pd.get("pose_prompt") or ""
+        has_mannequin = bool(mannequin_url)
 
-        task_id = await _submit_seeddream_task(prompt, image_urls, pose_label)
+        prompt = _build_compact_prompt(
+            pose_prompt, has_back, req_snapshot,
+            has_mannequin_image=has_mannequin,
+        )
+        (out_dir / f"{pose_label}_seeddream_prompt.txt").write_text(prompt, encoding="utf-8")
+        print(f"[{pose_label}] Prompt length: {len(prompt)} / {_PROMPT_LIMIT} chars  mannequin={has_mannequin}")
+
+        urls = list(image_urls)
+        if has_mannequin:
+            urls.append(mannequin_url)
+            print(f"[{pose_label}] Mannequin image appended as IMG{len(urls)}")
+
+        task_id = await _submit_seeddream_task(prompt, urls, pose_label)
         result_url = await _poll_task(task_id, pose_label)
         image_bytes = await _download_bytes(result_url, pose_label)
 
@@ -522,7 +534,7 @@ async def main() -> None:
             realism_path.write_bytes(realism_bytes)
             print(f"Wrote {realism_path} ({len(realism_bytes)} bytes)")
 
-    tasks = [run_one_pose(i, p) for i, p in enumerate(pose_prompts, start=1)]
+    tasks = [run_one_pose(i, pd) for i, pd in enumerate(pose_data_list, start=1)]
     if RUN_POSES_IN_PARALLEL:
         print(f"Running {len(tasks)} pose(s) in parallel…")
         results = await asyncio.gather(*tasks, return_exceptions=True)

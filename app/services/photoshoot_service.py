@@ -57,22 +57,27 @@ _PHOTOSHOOT_CREDIT_PER_POSE = 2.0
 # Pose prompt resolution
 # ---------------------------------------------------------------------------
 
-async def _fetch_default_pose_prompts(pose_ids: List[str], poses_col=None) -> List[str]:
-    logger.info("[poses] Fetching %d default pose prompt(s) from DB", len(pose_ids))
-    # Celery: must use collection from the task-scoped Motor client — not the FastAPI
-    # global singleton (that client is tied to a loop that asyncio.run() has closed).
+async def _fetch_pose_data(pose_ids: List[str], poses_col=None) -> List[dict]:
+    """Return ``[{"image_url": ..., "pose_prompt": ...}, ...]`` for each pose_id."""
+    logger.info("[poses] Fetching %d pose doc(s) from DB", len(pose_ids))
     col = poses_col if poses_col is not None else get_poses_collection()
-    prompts = []
+    results: List[dict] = []
     for pid in pose_ids:
         doc = await col.find_one({"pose_id": pid})
-        if doc and doc.get("pose_prompt"):
-            logger.info("[poses] Found prompt for pose_id=%s", pid)
-            prompts.append(doc["pose_prompt"])
+        if doc:
+            logger.info("[poses] Found pose_id=%s  image_url=%s", pid, bool(doc.get("image_url")))
+            results.append({
+                "image_url":   doc.get("image_url") or "",
+                "pose_prompt": doc.get("pose_prompt") or "",
+            })
         else:
-            logger.warning("[poses] No prompt found for pose_id=%s — using fallback", pid)
-            prompts.append(f"Standing in a natural, relaxed fashion model pose — pose id: {pid}")
-    logger.info("[poses] Resolved %d default pose prompt(s)", len(prompts))
-    return prompts
+            logger.warning("[poses] No doc for pose_id=%s — text fallback only", pid)
+            results.append({
+                "image_url":   "",
+                "pose_prompt": f"Standing in a natural, relaxed fashion model pose — pose id: {pid}",
+            })
+    logger.info("[poses] Resolved %d pose doc(s)", len(results))
+    return results
 
 
 async def _generate_pose_prompt_from_image(image_url: str) -> str:
@@ -143,31 +148,36 @@ async def _generate_pose_prompt_from_image(image_url: str) -> str:
         return f"Natural standing fashion model pose — vision error: {exc}"
 
 
-async def resolve_pose_prompts(req: dict, poses_col=None) -> List[str]:
+async def resolve_poses(req: dict, poses_col=None) -> List[dict]:
     """
-    Resolve pose text prompts for the job payload.
+    Return a list of ``{"image_url": str, "pose_prompt": str}`` for each pose.
 
-    - New API / normal create: ``poses_ids`` only — load ``pose_prompt`` from Mongo per id.
-    - Legacy / internal regeneration: ``which_pose_option`` ``prompt`` + ``poses_prompts``, or
-      ``custom`` + ``poses_images`` (Gemini pose-from-image).
+    - Normal path (``poses_ids``): fetches ``image_url`` (mannequin) and ``pose_prompt``
+      from each pose document.
+    - Legacy / regeneration (``which_pose_option="prompt"`` + ``poses_prompts``):
+      wraps each prompt as ``{"image_url": "", "pose_prompt": text}``.
+    - Legacy custom (``which_pose_option="custom"`` + ``poses_images``):
+      generates text prompt via Gemini from each image — no mannequin URL.
     """
     opt = req.get("which_pose_option")
     if opt == "prompt" and req.get("poses_prompts"):
-        result = list(req["poses_prompts"])
+        result = [{"image_url": "", "pose_prompt": p} for p in req["poses_prompts"]]
         logger.info("[poses] Using %d precomputed pose prompts (regeneration / legacy)", len(result))
     elif opt == "custom" and req.get("poses_images"):
-        result = await asyncio.gather(
+        texts = await asyncio.gather(
             *[_generate_pose_prompt_from_image(url) for url in req["poses_images"]]
         )
-        result = list(result)
+        result = [{"image_url": "", "pose_prompt": t} for t in texts]
         logger.info("[poses] %d custom pose prompts generated via Gemini (legacy)", len(result))
     else:
         ids = req.get("poses_ids") or []
         logger.info("[poses] Resolving %d pose id(s) from database", len(ids))
-        result = await _fetch_default_pose_prompts(ids, poses_col=poses_col)
+        result = await _fetch_pose_data(ids, poses_col=poses_col)
 
-    for i, prompt in enumerate(result, 1):
-        logger.info("[poses] Pose #%d prompt:\n%s", i, prompt)
+    for i, pd in enumerate(result, 1):
+        has_img = bool(pd.get("image_url"))
+        logger.info("[poses] Pose #%d  mannequin_image=%s  prompt_len=%d",
+                     i, has_img, len(pd.get("pose_prompt", "")))
 
     return result
 
@@ -420,10 +430,22 @@ def _sanitize_pose_compact(pose: str) -> str:
     return _re.sub(r'\s{2,}', ' ', result).strip()
 
 
-def _build_compact_prompt(pose: str, has_back: bool, req: dict) -> str:
-    """Build a <=3000-char SeedDream prompt."""
+def _build_compact_prompt(
+    pose: str,
+    has_back: bool,
+    req: dict,
+    *,
+    has_mannequin_image: bool = False,
+) -> str:
+    """Build a <=3000-char SeedDream prompt.
+
+    When ``has_mannequin_image`` is True the last reference image is a grey
+    mannequin whose ONLY purpose is body posture — the prompt tells SeedDream
+    to copy limb / torso / head position and ignore everything else about it.
+    """
     fi = 3 if has_back else 2
     bi = 4 if has_back else 3
+    mi = bi + 1  # mannequin image number (only used when has_mannequin_image)
 
     if has_back:
         img_ref = f"IMG1=garment front, IMG2=garment back, IMG{fi}=face, IMG{bi}=background"
@@ -431,6 +453,9 @@ def _build_compact_prompt(pose: str, has_back: bool, req: dict) -> str:
     else:
         img_ref = f"IMG1=garment, IMG{fi}=face, IMG{bi}=background"
         g_imgs = "IMG1"
+
+    if has_mannequin_image:
+        img_ref += f", IMG{mi}=POSE MANNEQUIN (body posture reference ONLY)"
 
     ug  = req.get("upper_garment_type", "").strip()
     us  = req.get("upper_garment_specification", "").strip()
@@ -508,8 +533,17 @@ def _build_compact_prompt(pose: str, has_back: bool, req: dict) -> str:
         f"skin: {req.get('skin_tone','')}.\n"
         f"Weight: {w_desc}. Height: {h_desc}. Body must visibly reflect this build.\n"
         f"\n"
-        f"[POSE] {clean_pose}\n"
-        f"\n"
+        + (
+            f"[POSE — COPY FROM IMG{mi} MANNEQUIN]\n"
+            f"IMG{mi} is a grey featureless mannequin image used ONLY as a body-posture reference.\n"
+            f"Copy the EXACT body pose from IMG{mi}: every joint angle, limb position, torso lean, "
+            f"head tilt, hand placement, leg stance, weight distribution.\n"
+            f"IGNORE everything else about IMG{mi} — ignore its grey skin, featureless face, bald head, "
+            f"white background, and clothing. Only replicate the body posture on the real human model.\n"
+            if has_mannequin_image else
+            f"[POSE] {clean_pose}\n"
+        )
+        + f"\n"
         f"Matching footwear, no bare feet.{bag} Ornaments: {orn or 'none'}.\n"
         f"85mm f/2.8, shallow DOF sharp on subject, 4K 9:16. Vogue editorial, photojournalistic color grading, "
         f"lifelike hair strand detail, RAW quality, award-winning fashion photography."
@@ -803,7 +837,7 @@ def _resize_image(original_bytes: bytes, max_dimension: int) -> bytes:
 
 async def _process_one_pose(
     pose_idx:      int,
-    pose_prompt:   str,
+    pose_data:     dict,
     image_urls:    List[str],
     photoshoot_id: str,
     req_snapshot:  dict,
@@ -813,19 +847,36 @@ async def _process_one_pose(
     """
     Full async pipeline for one pose. Returns output_image dict or raises on failure.
     Flow: SeedDream generation -> nano-banana-pro realism pass -> Modal GPU enhancement.
+
+    ``pose_data`` is ``{"image_url": str, "pose_prompt": str}``.
+    When ``image_url`` (mannequin PNG) is present it is appended to the reference images
+    and the prompt tells SeedDream to copy only the body posture from it.
     """
-    pose_label = f"pose-{pose_idx:02d}"
-    image_id   = str(uuid.uuid4())
-    prefix     = f"photoshoots/{photoshoot_id}/{image_id}"
+    pose_label    = f"pose-{pose_idx:02d}"
+    image_id      = str(uuid.uuid4())
+    prefix        = f"photoshoots/{photoshoot_id}/{image_id}"
+    mannequin_url = (pose_data.get("image_url") or "").strip()
+    pose_prompt   = pose_data.get("pose_prompt") or ""
     logger.info("[%s] \u2500\u2500 Starting pose pipeline \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500", pose_label)
-    logger.info("[%s] Pose prompt:\n%s", pose_label, pose_prompt)
+    logger.info("[%s] mannequin_image=%s  pose_prompt_len=%d",
+                pose_label, bool(mannequin_url), len(pose_prompt))
 
-    # ── Step 1: build compact prompt and submit to SeedDream ─────────────
-    has_back = bool(req_snapshot.get("back_garment_image", ""))
-    prompt = _build_compact_prompt(pose_prompt, has_back, req_snapshot)
-    logger.info("[%s] SeedDream prompt built (%d chars, back_image=%s)", pose_label, len(prompt), has_back)
+    # ── Step 1: build prompt and submit to SeedDream ─────────────────────
+    has_back      = bool(req_snapshot.get("back_garment_image", ""))
+    has_mannequin = bool(mannequin_url)
+    prompt = _build_compact_prompt(
+        pose_prompt, has_back, req_snapshot,
+        has_mannequin_image=has_mannequin,
+    )
+    logger.info("[%s] SeedDream prompt (%d chars, back=%s, mannequin=%s)",
+                pose_label, len(prompt), has_back, has_mannequin)
 
-    task_id = await _submit_seeddream_task(prompt, image_urls, pose_label)
+    urls_for_task = list(image_urls)
+    if has_mannequin:
+        urls_for_task.append(mannequin_url)
+        logger.info("[%s] Mannequin image appended as IMG%d", pose_label, len(urls_for_task))
+
+    task_id = await _submit_seeddream_task(prompt, urls_for_task, pose_label)
     seeddream_url = await _poll_task(task_id, pose_label)
     logger.info("[%s] SeedDream complete \u2014 URL received", pose_label)
 
@@ -989,12 +1040,12 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
     try:
         # ── Step 1: resolve pose prompts ──────────────────────────────────
         logger.info("[job] STEP 1 — Resolving pose prompts...")
-        pose_prompts = await resolve_pose_prompts(req, poses_col=poses_col)
+        pose_data_list = await resolve_poses(req, poses_col=poses_col)
 
-        if not pose_prompts:
-            raise ValueError("No pose prompts could be resolved.")
+        if not pose_data_list:
+            raise ValueError("No poses could be resolved.")
 
-        logger.info("[job] STEP 1 DONE — %d pose prompt(s) ready", len(pose_prompts))
+        logger.info("[job] STEP 1 DONE — %d pose(s) ready", len(pose_data_list))
 
         # ── Step 2: fetch background and model face URLs ──────────────────
         logger.info("[job] STEP 2 — Fetching background and model face from DB...")
@@ -1019,14 +1070,14 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
         logger.info("[job] STEP 2 DONE — %d reference images assembled", len(image_urls))
 
         # ── Step 3: process all poses concurrently ────────────────────────
-        logger.info("[job] STEP 3 — Launching %d pose(s) concurrently...", len(pose_prompts))
+        logger.info("[job] STEP 3 — Launching %d pose(s) concurrently...", len(pose_data_list))
 
         tasks = [
             _process_one_pose(
-                idx, prompt, image_urls, photoshoot_id, req,
+                idx, pd, image_urls, photoshoot_id, req,
                 upscaling_col=upscaling_col,
             )
-            for idx, prompt in enumerate(pose_prompts, 1)
+            for idx, pd in enumerate(pose_data_list, 1)
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
