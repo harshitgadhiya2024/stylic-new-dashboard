@@ -418,12 +418,10 @@ def _build_compact_prompt(
     if op:
         if "saree" in op_lower or "sari" in op_lower:
             garment_rules = (
-                "\n[GARMENT WEARING RULE]\n"
-                "This is a SAREE. Drape it in authentic Gujarati style: "
-                "pallu draped over the LEFT shoulder falling to the back, neatly pleated at the waist, "
-                "worn with a matching fitted blouse and petticoat (chaniya) underneath. "
-                "Show proper saree pleats at the front. Pallu must NOT cover both hands. "
-                "BOTH HANDS must be clearly visible and unobstructed.\n"
+                "\n[GARMENT]\n"
+                "SAREE\u2014Gujarati drape: pallu over LEFT shoulder to back; neat waist pleats; "
+                "fitted blouse + petticoat (chaniya); clear front pleats. "
+                "Hands and all fingers visible\u2014pallu must not cover them.\n"
             )
             hands_must_show = True
         elif "dress" in op_lower:
@@ -434,12 +432,10 @@ def _build_compact_prompt(
             ))
             if is_3piece:
                 garment_rules = (
-                    "\n[GARMENT WEARING RULE]\n"
-                    "This is a 3-PIECE DRESS. Wear all three pieces: top (kameez/kurta), "
-                    "bottom (salwar/churidar/palazzo), AND dupatta. "
-                    "Drape the dupatta in Gujarati style over one shoulder or across the chest. "
-                    "Do NOT skip the dupatta. "
-                    "BOTH HANDS must be clearly visible and unobstructed\u2014dupatta must NOT hide the hands.\n"
+                    "\n[GARMENT]\n"
+                    "3-PIECE dress: top + bottom + dupatta (all mandatory, do not skip dupatta). "
+                    "Dupatta Gujarati\u2014one shoulder or across chest. "
+                    "Hands and all fingers visible\u2014dupatta must not cover them.\n"
                 )
                 hands_must_show = True
             else:
@@ -488,10 +484,7 @@ def _build_compact_prompt(
 
     hands_note = ""
     if hands_must_show:
-        hands_note = (
-            " CRITICAL: Both hands and all fingers must be fully visible and clearly rendered"
-            "\u2014do NOT let fabric, dupatta, or pallu obscure any part of either hand."
-        )
+        hands_note = " Do not let dupatta/pallu/fabric hide hands or fingers."
 
     prompt = (
         f"Hyperrealistic editorial fashion photograph\u2014real person, NOT illustration, NOT AI-looking, NOT plastic skin.\n"
