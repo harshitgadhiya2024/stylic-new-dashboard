@@ -1225,7 +1225,7 @@ async def background_change_photoshoot(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# API-1: Change fabric on garment image (Gemini only, no photoshoot re-run)
+# API-1: Change fabric on garment image (kie.ai nano-banana-pro, no photoshoot re-run)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @router.post(
@@ -1234,8 +1234,9 @@ async def background_change_photoshoot(
     summary="Change Fabric on Garment Image",
     description=(
         "Fetches the front_garment_image (and back_garment_image if present) from the original "
-        "photoshoot's input_parameter, passes each to Gemini to apply the requested fabric "
-        "texture, uploads the result(s) to S3, and returns the new garment image URL(s). "
+        "photoshoot's input_parameter, passes each to kie.ai (nano-banana-pro) to apply **upper_fabric** on "
+        "upper garment regions and **lower_fabric** on lower garment regions, uploads the result(s) to S3, "
+        "and returns the new garment image URL(s). "
         "No new photoshoot is created. No credits are deducted. "
         "Secured — user_id from auth token."
     ),
@@ -1244,7 +1245,7 @@ async def change_fabric_garment(
     body: FabricChangeRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    from app.services.fabric_service import change_fabric
+    from app.services.fabric_service import change_garment_upper_lower_fabrics
     from app.services.s3_service import upload_bytes_to_s3
 
     user_id = current_user["user_id"]
@@ -1269,26 +1270,39 @@ async def change_fabric_garment(
             detail="Original photoshoot has no front_garment_image in input_parameter.",
         )
 
-    # ── Step 3: call Gemini for each garment image and upload to S3 ───────────
-    now    = datetime.now(timezone.utc)
+    # ── Step 3: call kie.ai (nano-banana-pro) for each garment image and upload to S3 ──
+    def _fab_slug(t: str, max_len: int = 28) -> str:
+        s = (t or "").replace(" ", "_").replace("/", "-")
+        return (s[:max_len] if s else "x").strip("_") or "x"
+
+    tag = f"u{_fab_slug(body.upper_fabric)}_l{_fab_slug(body.lower_fabric)}"
     result: dict = {}
 
-    front_bytes  = await change_fabric(front_garment_url, body.fabric)
-    front_key    = f"photoshoots/fabric/{body.photoshoot_id}/front_{body.fabric}_{uuid.uuid4().hex[:8]}.png"
+    front_bytes = await change_garment_upper_lower_fabrics(
+        front_garment_url,
+        body.upper_fabric,
+        body.lower_fabric,
+    )
+    front_key = f"photoshoots/fabric/{body.photoshoot_id}/front_{tag}_{uuid.uuid4().hex[:8]}.png"
     front_s3_url = await upload_bytes_to_s3(front_bytes, front_key, content_type="image/png")
     result["front_garment_image"] = front_s3_url
 
     if back_garment_url:
-        back_bytes  = await change_fabric(back_garment_url, body.fabric)
-        back_key    = f"photoshoots/fabric/{body.photoshoot_id}/back_{body.fabric}_{uuid.uuid4().hex[:8]}.png"
+        back_bytes = await change_garment_upper_lower_fabrics(
+            back_garment_url,
+            body.upper_fabric,
+            body.lower_fabric,
+        )
+        back_key = f"photoshoots/fabric/{body.photoshoot_id}/back_{tag}_{uuid.uuid4().hex[:8]}.png"
         back_s3_url = await upload_bytes_to_s3(back_bytes, back_key, content_type="image/png")
         result["back_garment_image"] = back_s3_url
 
     return {
-        "message":        "Fabric changed successfully.",
-        "photoshoot_id":  body.photoshoot_id,
-        "fabric":         body.fabric,
-        "garment_images": result,
+        "message":           "Fabric changed successfully.",
+        "photoshoot_id":     body.photoshoot_id,
+        "upper_fabric":      body.upper_fabric,
+        "lower_fabric":      body.lower_fabric,
+        "garment_images":    result,
     }
 
 
@@ -1425,7 +1439,7 @@ async def fabric_change_photoshoot(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# API-1: Change texture on garment image (Gemini only, no photoshoot re-run)
+# API-1: Change texture on garment image (kie.ai nano-banana-pro, no photoshoot re-run)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @router.post(
@@ -1434,8 +1448,9 @@ async def fabric_change_photoshoot(
     summary="Change Texture on Garment Image",
     description=(
         "Fetches the front_garment_image (and back_garment_image if present) from the original "
-        "photoshoot's input_parameter, passes each to Gemini to apply the requested surface "
-        "texture/pattern, uploads the result(s) to S3, and returns the new garment image URL(s). "
+        "photoshoot's input_parameter, passes each to kie.ai (nano-banana-pro) to apply **upper_texture** on "
+        "upper garment regions and **lower_texture** on lower garment regions, uploads the result(s) to S3, "
+        "and returns the new garment image URL(s). "
         "No new photoshoot is created. No credits are deducted. "
         "Secured — user_id from auth token."
     ),
@@ -1444,7 +1459,7 @@ async def change_texture_garment(
     body: TextureChangeRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    from app.services.fabric_service import change_texture
+    from app.services.fabric_service import change_garment_upper_lower_textures
     from app.services.s3_service import upload_bytes_to_s3
 
     user_id = current_user["user_id"]
@@ -1469,25 +1484,39 @@ async def change_texture_garment(
             detail="Original photoshoot has no front_garment_image in input_parameter.",
         )
 
-    # ── Step 3: call Gemini for each garment image and upload to S3 ───────────
+    # ── Step 3: call kie.ai (nano-banana-pro) for each garment image and upload to S3 ──
+    def _tex_slug(t: str, max_len: int = 28) -> str:
+        s = (t or "").replace(" ", "_").replace("/", "-")
+        return (s[:max_len] if s else "x").strip("_") or "x"
+
+    tag = f"u{_tex_slug(body.upper_texture)}_l{_tex_slug(body.lower_texture)}"
     result: dict = {}
 
-    front_bytes  = await change_texture(front_garment_url, body.texture)
-    front_key    = f"photoshoots/texture/{body.photoshoot_id}/front_{body.texture.replace(' ', '_')}_{uuid.uuid4().hex[:8]}.png"
+    front_bytes = await change_garment_upper_lower_textures(
+        front_garment_url,
+        body.upper_texture,
+        body.lower_texture,
+    )
+    front_key = f"photoshoots/texture/{body.photoshoot_id}/front_{tag}_{uuid.uuid4().hex[:8]}.png"
     front_s3_url = await upload_bytes_to_s3(front_bytes, front_key, content_type="image/png")
     result["front_garment_image"] = front_s3_url
 
     if back_garment_url:
-        back_bytes  = await change_texture(back_garment_url, body.texture)
-        back_key    = f"photoshoots/texture/{body.photoshoot_id}/back_{body.texture.replace(' ', '_')}_{uuid.uuid4().hex[:8]}.png"
+        back_bytes = await change_garment_upper_lower_textures(
+            back_garment_url,
+            body.upper_texture,
+            body.lower_texture,
+        )
+        back_key = f"photoshoots/texture/{body.photoshoot_id}/back_{tag}_{uuid.uuid4().hex[:8]}.png"
         back_s3_url = await upload_bytes_to_s3(back_bytes, back_key, content_type="image/png")
         result["back_garment_image"] = back_s3_url
 
     return {
-        "message":        "Texture changed successfully.",
-        "photoshoot_id":  body.photoshoot_id,
-        "texture":        body.texture,
-        "garment_images": result,
+        "message":           "Texture changed successfully.",
+        "photoshoot_id":     body.photoshoot_id,
+        "upper_texture":     body.upper_texture,
+        "lower_texture":     body.lower_texture,
+        "garment_images":    result,
     }
 
 
@@ -1624,7 +1653,7 @@ async def texture_change_photoshoot(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# API-1: Change color on garment image (Gemini only, no photoshoot re-run)
+# API-1: Change color on garment image (kie.ai nano-banana-pro, no photoshoot re-run)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @router.post(
@@ -1633,7 +1662,8 @@ async def texture_change_photoshoot(
     summary="Change Color on Garment Image",
     description=(
         "Fetches the front_garment_image (and back_garment_image if present) from the original "
-        "photoshoot's input_parameter, passes each to Gemini to apply the requested hex color, "
+        "photoshoot's input_parameter, passes each to kie.ai (nano-banana-pro) to recolor **upper** garment "
+        "areas with ``upper_color_hex`` and **lower** garment areas with ``lower_color_hex``, "
         "uploads the result(s) to S3, and returns the new garment image URL(s). "
         "No new photoshoot is created. No credits are deducted. "
         "Secured — user_id from auth token."
@@ -1643,7 +1673,7 @@ async def change_color_garment(
     body: ColorChangeRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    from app.services.fabric_service import change_color
+    from app.services.fabric_service import change_garment_upper_lower_colors
     from app.services.s3_service import upload_bytes_to_s3
 
     user_id = current_user["user_id"]
@@ -1668,26 +1698,37 @@ async def change_color_garment(
             detail="Original photoshoot has no front_garment_image in input_parameter.",
         )
 
-    # ── Step 3: call Gemini for each garment image and upload to S3 ───────────
-    safe_hex = body.color_hex.lstrip("#")
+    # ── Step 3: call kie.ai (nano-banana-pro) for each garment image and upload to S3 ──
+    u = body.upper_color_hex.lstrip("#")
+    l = body.lower_color_hex.lstrip("#")
+    tag = f"u{u}_l{l}"
     result: dict = {}
 
-    front_bytes  = await change_color(front_garment_url, body.color_hex)
-    front_key    = f"photoshoots/color/{body.photoshoot_id}/front_{safe_hex}_{uuid.uuid4().hex[:8]}.png"
+    front_bytes = await change_garment_upper_lower_colors(
+        front_garment_url,
+        body.upper_color_hex,
+        body.lower_color_hex,
+    )
+    front_key = f"photoshoots/color/{body.photoshoot_id}/front_{tag}_{uuid.uuid4().hex[:8]}.png"
     front_s3_url = await upload_bytes_to_s3(front_bytes, front_key, content_type="image/png")
     result["front_garment_image"] = front_s3_url
 
     if back_garment_url:
-        back_bytes  = await change_color(back_garment_url, body.color_hex)
-        back_key    = f"photoshoots/color/{body.photoshoot_id}/back_{safe_hex}_{uuid.uuid4().hex[:8]}.png"
+        back_bytes = await change_garment_upper_lower_colors(
+            back_garment_url,
+            body.upper_color_hex,
+            body.lower_color_hex,
+        )
+        back_key = f"photoshoots/color/{body.photoshoot_id}/back_{tag}_{uuid.uuid4().hex[:8]}.png"
         back_s3_url = await upload_bytes_to_s3(back_bytes, back_key, content_type="image/png")
         result["back_garment_image"] = back_s3_url
 
     return {
-        "message":        "Color changed successfully.",
-        "photoshoot_id":  body.photoshoot_id,
-        "color_hex":      body.color_hex,
-        "garment_images": result,
+        "message":           "Color changed successfully.",
+        "photoshoot_id":     body.photoshoot_id,
+        "upper_color_hex":   body.upper_color_hex,
+        "lower_color_hex":   body.lower_color_hex,
+        "garment_images":    result,
     }
 
 

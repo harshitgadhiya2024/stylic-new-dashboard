@@ -40,9 +40,18 @@ class BackgroundChangeRequest(BaseModel):
 
 
 class FabricChangeRequest(BaseModel):
-    """API-1: Change fabric on a single garment image using Gemini."""
+    """API-1: Change upper vs lower garment fabric/material (kie.ai)."""
     photoshoot_id: str
-    fabric:        str   # e.g. "cotton", "silk", "denim"
+    upper_fabric:  str = Field(..., min_length=1, description="Material for upper garment(s), e.g. silk, linen")
+    lower_fabric:  str = Field(..., min_length=1, description="Material for lower garment(s), e.g. denim, wool")
+
+    @field_validator("upper_fabric", "lower_fabric", mode="before")
+    @classmethod
+    def strip_fabric(cls, v: object) -> str:
+        s = str(v).strip() if v is not None else ""
+        if not s:
+            raise ValueError("fabric description is required")
+        return s
 
 
 class FabricPhotoshootRequest(BaseModel):
@@ -54,9 +63,18 @@ class FabricPhotoshootRequest(BaseModel):
 
 
 class TextureChangeRequest(BaseModel):
-    """API-1: Change texture on a single garment image using Gemini."""
-    photoshoot_id: str
-    texture:       str   # e.g. "plain weave", "checked", "printed", "striped"
+    """API-1: Change upper vs lower garment surface texture/pattern (kie.ai)."""
+    photoshoot_id:  str
+    upper_texture:  str = Field(..., min_length=1, description="Texture/pattern for upper garment(s), e.g. herringbone weave")
+    lower_texture:  str = Field(..., min_length=1, description="Texture/pattern for lower garment(s), e.g. fine pinstripe")
+
+    @field_validator("upper_texture", "lower_texture", mode="before")
+    @classmethod
+    def strip_texture(cls, v: object) -> str:
+        s = str(v).strip() if v is not None else ""
+        if not s:
+            raise ValueError("texture description is required")
+        return s
 
 
 class TexturePhotoshootRequest(BaseModel):
@@ -68,9 +86,27 @@ class TexturePhotoshootRequest(BaseModel):
 
 
 class ColorChangeRequest(BaseModel):
-    """API-1: Change color on a single garment image using Gemini."""
-    photoshoot_id: str
-    color_hex:     str   # e.g. "#fff28f", "#fe2a3e"
+    """API-1: Change upper vs lower garment colors on flat-lay / reference garment images (kie.ai)."""
+    photoshoot_id:     str
+    upper_color_hex:   str = Field(..., description="Target color for upper garment(s), e.g. #fe2a3e")
+    lower_color_hex:   str = Field(..., description="Target color for lower garment(s), e.g. #112233")
+
+    @field_validator("upper_color_hex", "lower_color_hex", mode="before")
+    @classmethod
+    def normalize_hex(cls, v: object) -> str:
+        if v is None or (isinstance(v, str) and not str(v).strip()):
+            raise ValueError("color hex is required")
+        s = str(v).strip()
+        if not s.startswith("#"):
+            s = "#" + s
+        body = s[1:]
+        if len(body) == 3:
+            body = "".join(c * 2 for c in body)
+            s = "#" + body
+            body = s[1:]
+        if len(body) != 6 or any(c not in "0123456789abcdefABCDEF" for c in body):
+            raise ValueError("color hex must be #RRGGBB (6 hex digits)")
+        return s.lower()
 
 
 class ColorPhotoshootRequest(BaseModel):
