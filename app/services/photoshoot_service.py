@@ -16,7 +16,7 @@ Responsibilities:
        e. Download realism 4K bytes; resize to 2K and 1K; upload 4K / 2K / 1K to S3.
        f. Send realism 4K bytes to Modal GPU pipeline for enhancement.
        g. Upload enhanced 8K, 4K, 2K, 1K to S3 and save to upscaling_data.
-  5. Build output_images mapping — each entry stores the upscaled 1K URL as `image`.
+  5. Build output_images mapping — each entry stores the upscaled 2K URL as `image`.
   6. Deduct credits and record history only for poses that fully succeeded (full pipeline + S3 output).
   7. Update photoshoot document: output_images, status, is_completed, is_credit_deducted.
      On any unhandled error → status="failed", error field set.
@@ -50,7 +50,6 @@ from app.services.modal_enhance_service import enhance_and_upload
 
 _CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
 _STATUS_URL  = "https://api.kie.ai/api/v1/jobs/recordInfo"
-_PHOTOSHOOT_CREDIT_PER_POSE = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -905,11 +904,11 @@ async def _process_one_pose(
         seeddream_1k_url=url_1k,
         upscaling_col=upscaling_col,
     )
-    logger.info("[%s] Modal enhancement complete \u2014 upscaled 1K: %s", pose_label,
-                upscale_result.get("1k_upscaled", "N/A")[:80])
+    logger.info("[%s] Modal enhancement complete \u2014 upscaled 2K: %s", pose_label,
+                upscale_result.get("2k_upscaled", "N/A")[:80])
 
-    # Use the upscaled 1K as the primary display image; fall back to realism 1K
-    display_image = upscale_result.get("1k_upscaled") or url_1k
+    # Use the upscaled 2K as the primary display image; fall back to realism 2K
+    display_image = upscale_result.get("2k_upscaled") or url_2k
 
     logger.info("[%s] ── Pose pipeline COMPLETE ─────────────────────", pose_label)
     return {
@@ -967,7 +966,7 @@ async def _deduct_photoshoot_credits(
         "user_id":          user_id,
         "feature_name":     feature_name,
         "credit":           total_credit,
-        "credit_per_image": credit_per_image if credit_per_image is not None else _PHOTOSHOOT_CREDIT_PER_POSE,
+        "credit_per_image": credit_per_image if credit_per_image is not None else settings.CREDIT_SINGLE_PHOTOSHOOT_PER_IMAGE,
         "image_ids":        image_ids or [],
         "type":             "deduct",
         "thumbnail_image":  "",
@@ -1088,7 +1087,8 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
         # ── Step 4: deduct credits only for fully successful poses ───────
         # Each success includes SeedDream → Modal upscale → S3 (see _process_one_pose).
         successful_count = len(output_images)
-        total_credit = round(successful_count * _PHOTOSHOOT_CREDIT_PER_POSE, 4)
+        credit_per_image = float(req.get("credit_per_image", settings.CREDIT_SINGLE_PHOTOSHOOT_PER_IMAGE))
+        total_credit = round(successful_count * credit_per_image, 4)
         generated_image_ids = [img["image_id"] for img in output_images]
 
         if total_credit > 0:
@@ -1101,7 +1101,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
                 regeneration_type=req.get("regeneration_type", ""),
                 regenerate_photoshoot_id=req.get("regenerate_photoshoot_id", ""),
                 image_ids=generated_image_ids,
-                credit_per_image=_PHOTOSHOOT_CREDIT_PER_POSE,
+                credit_per_image=credit_per_image,
                 users_col=_get_usr(),
                 history_col=_get_ch(),
             )

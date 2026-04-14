@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import ValidationError
 
+from app.config import settings
 from app.database import (
     get_photoshoots_collection,
     get_upscaling_collection,
@@ -33,9 +34,17 @@ from app.services.photoshoot_service import merge_photoshoot_batch_configs, coun
 
 router = APIRouter(prefix="/api/v1/photoshoots", tags=["Photoshoots"])
 
-_CREDIT_PER_POSE   = 2.0
-_CREDIT_UPSCALE_2X = 2.0
-_CREDIT_UPSCALE_4X = 4.0
+_CREDIT_SINGLE_PHOTOSHOOT = settings.CREDIT_SINGLE_PHOTOSHOOT_PER_IMAGE
+_CREDIT_REGENERATE        = settings.CREDIT_REGENERATE_PER_IMAGE
+_CREDIT_BACKGROUND_CHANGE = settings.CREDIT_BACKGROUND_CHANGE_PER_IMAGE
+_CREDIT_UPSCALE_4X        = settings.CREDIT_UPSCALE_4X_PER_IMAGE
+_CREDIT_UPSCALE_8X        = settings.CREDIT_UPSCALE_8X_PER_IMAGE
+_CREDIT_BRANDING          = settings.CREDIT_BRANDING_PER_IMAGE
+_CREDIT_RESIZE            = settings.CREDIT_RESIZE_PER_IMAGE
+_CREDIT_ADJUST_IMAGE      = settings.CREDIT_ADJUST_IMAGE_PER_IMAGE
+_CREDIT_FABRIC_CHANGE     = settings.CREDIT_FABRIC_CHANGE_PER_IMAGE
+_CREDIT_TEXTURE_CHANGE    = settings.CREDIT_TEXTURE_CHANGE_PER_IMAGE
+_CREDIT_COLOR_CHANGE      = settings.CREDIT_COLOR_CHANGE_PER_IMAGE
 
 
 @router.post(
@@ -62,7 +71,7 @@ async def create_photoshoot(
     total_poses = len(body.poses_ids)
 
     # ── Step 2: credit check ──────────────────────────────────────────────────
-    total_credit    = total_poses * _CREDIT_PER_POSE
+    total_credit    = total_poses * _CREDIT_SINGLE_PHOTOSHOOT
     current_credits = float(current_user.get("credits", 0))
 
     if current_credits < total_credit:
@@ -70,7 +79,7 @@ async def create_photoshoot(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
                 f"Insufficient credits. This photoshoot requires {total_credit} credits "
-                f"({total_poses} pose(s) × {_CREDIT_PER_POSE}) but you only have {current_credits}."
+                f"({total_poses} pose(s) × {_CREDIT_SINGLE_PHOTOSHOOT}) but you only have {current_credits}."
             ),
         )
 
@@ -106,6 +115,7 @@ async def create_photoshoot(
             "ornaments":                       body.ornaments or "",
             "regeneration_type":               body.regeneration_type or "",
             "regenerate_photoshoot_id":        body.regenerate_photoshoot_id or "",
+            "credit_per_image":                _CREDIT_SINGLE_PHOTOSHOOT,
         },
         "output_images":             [],
         "failed_poses":              [],
@@ -193,7 +203,7 @@ async def create_multiple_photoshoots(
             )
         validated.append((idx, row_req, n_poses))
 
-    total_credit_batch = sum(n * _CREDIT_PER_POSE for _, _, n in validated)
+    total_credit_batch = sum(n * _CREDIT_SINGLE_PHOTOSHOOT for _, _, n in validated)
     current_credits    = float(current_user.get("credits", 0))
 
     if current_credits < total_credit_batch:
@@ -211,7 +221,7 @@ async def create_multiple_photoshoots(
 
     for idx, row_req, total_poses in validated:
         photoshoot_id = str(uuid.uuid4())
-        total_credit    = total_poses * _CREDIT_PER_POSE
+        total_credit    = total_poses * _CREDIT_SINGLE_PHOTOSHOOT
 
         doc = {
             "photoshoot_id":       photoshoot_id,
@@ -243,6 +253,7 @@ async def create_multiple_photoshoots(
                 "ornaments":                       row_req.ornaments or "",
                 "regeneration_type":               row_req.regeneration_type or "",
                 "regenerate_photoshoot_id":        row_req.regenerate_photoshoot_id or "",
+                "credit_per_image":                _CREDIT_SINGLE_PHOTOSHOOT,
                 "batch_photoshoot_id":             batch_photoshoot_id,
                 "batch_index":                     idx,
             },
@@ -296,7 +307,7 @@ async def create_multiple_photoshoots(
     description=(
         "Given a list of image_ids from an existing photoshoot, fetches the already-upscaled "
         "images from upscaling_data, copies the original photoshoot document into a new one "
-        "with updated output_images, deducts credits (2× → 2 credits/image, 4× → 4 credits/image), "
+        "with updated output_images, deducts credits (4× → 4 credits/image, 8× → 8 credits/image), "
         "and returns the new photoshoot immediately as completed. "
         "Secured — user_id is taken from the auth token."
     ),
@@ -316,8 +327,8 @@ async def upscale_photoshoot(
         )
 
     # ── Step 2: credit check ──────────────────────────────────────────────────
-    is_4x          = "4x" in body.regeneration_type
-    credit_per_img = _CREDIT_UPSCALE_4X if is_4x else _CREDIT_UPSCALE_2X
+    is_8x          = "8x" in body.regeneration_type
+    credit_per_img = _CREDIT_UPSCALE_8X if is_8x else _CREDIT_UPSCALE_4X
     total_credit   = credit_per_img * len(body.image_ids)
     current_credits = float(current_user.get("credits", 0))
 
@@ -370,10 +381,10 @@ async def upscale_photoshoot(
     for image_id in body.image_ids:
         up_doc = upscaling_map.get(image_id)
         if up_doc:
-            if is_4x:
-                image_url = up_doc.get("4k_upscaled") or up_doc.get("4k", "")
+            if is_8x:
+                image_url = up_doc.get("8k_upscaled") or up_doc.get("4k_upscaled") or up_doc.get("4k", "")
             else:
-                image_url = up_doc.get("2k_upscaled") or up_doc.get("2k", "")
+                image_url = up_doc.get("4k_upscaled") or up_doc.get("4k", "")
         else:
             # fallback: find the original url from output_images
             image_url = next(
@@ -515,7 +526,7 @@ async def regenerate_photoshoot(
     total_poses = len(pose_data)
 
     # ── Step 3: credit check ──────────────────────────────────────────────────
-    total_credit    = total_poses * _CREDIT_PER_POSE
+    total_credit    = total_poses * _CREDIT_REGENERATE
     current_credits = float(current_user.get("credits", 0))
 
     if current_credits < total_credit:
@@ -523,7 +534,7 @@ async def regenerate_photoshoot(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
                 f"Insufficient credits. This regeneration requires {total_credit} credits "
-                f"({total_poses} pose(s) × {_CREDIT_PER_POSE}) but you only have {current_credits}."
+                f"({total_poses} pose(s) × {_CREDIT_REGENERATE}) but you only have {current_credits}."
             ),
         )
 
@@ -538,6 +549,7 @@ async def regenerate_photoshoot(
         "poses_ids":                 [],
         "regeneration_type":         "regenerate",
         "regenerate_photoshoot_id":  body.photoshoot_id,
+        "credit_per_image":          _CREDIT_REGENERATE,
     }
 
     # ── Step 5: store new photoshoot document (processing state) ──────────────
@@ -551,6 +563,7 @@ async def regenerate_photoshoot(
             "poses_ids":                [],
             "regeneration_type":        "regenerate",
             "regenerate_photoshoot_id": body.photoshoot_id,
+            "credit_per_image":         _CREDIT_REGENERATE,
         },
         "output_images":            [],
         "failed_poses":             [],
@@ -747,7 +760,7 @@ async def resize_photoshoot(
         )
 
     # ── Step 3: credit check ──────────────────────────────────────────────────
-    total_credit    = 1.0 * len(output_images)
+    total_credit    = _CREDIT_RESIZE * len(output_images)
     current_credits = float(current_user.get("credits", 0))
 
     if current_credits < total_credit:
@@ -755,7 +768,7 @@ async def resize_photoshoot(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
                 f"Insufficient credits. This resize requires {total_credit} credits "
-                f"({len(output_images)} image(s) × 1) but you only have {current_credits}."
+                f"({len(output_images)} image(s) × {_CREDIT_RESIZE}) but you only have {current_credits}."
             ),
         )
 
@@ -798,7 +811,7 @@ async def resize_photoshoot(
         "user_id":                  user_id,
         "feature_name":             "photoshoot_resize",
         "credit":                   total_credit,
-        "credit_per_image":         1.0,
+        "credit_per_image":         _CREDIT_RESIZE,
         "image_ids":                resized_image_ids,
         "type":                     "deduct",
         "thumbnail_image":          "",
@@ -873,7 +886,7 @@ async def branding_photoshoot(
                 "total_credit":  0.0,
             }
 
-        total_credit    = 1.0 * len(new_image_ids)
+        total_credit    = _CREDIT_BRANDING * len(new_image_ids)
         current_credits = float(current_user.get("credits", 0))
 
         if current_credits < total_credit:
@@ -881,7 +894,7 @@ async def branding_photoshoot(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=(
                     f"Insufficient credits. Branding requires {total_credit} credits "
-                    f"({len(new_image_ids)} new image(s) × 1) but you only have {current_credits}."
+                    f"({len(new_image_ids)} new image(s) × {_CREDIT_BRANDING}) but you only have {current_credits}."
                 ),
             )
 
@@ -915,7 +928,7 @@ async def branding_photoshoot(
         }
 
     # ── No existing record — create fresh ────────────────────────────────────
-    total_credit    = 1.0 * len(body.image_ids)
+    total_credit    = _CREDIT_BRANDING * len(body.image_ids)
     current_credits = float(current_user.get("credits", 0))
 
     if current_credits < total_credit:
@@ -923,7 +936,7 @@ async def branding_photoshoot(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
                 f"Insufficient credits. Branding requires {total_credit} credits "
-                f"({len(body.image_ids)} image(s) × 1) but you only have {current_credits}."
+                f"({len(body.image_ids)} image(s) × {_CREDIT_BRANDING}) but you only have {current_credits}."
             ),
         )
 
@@ -939,7 +952,7 @@ async def branding_photoshoot(
         "user_id":                  user_id,
         "feature_name":             "photoshoot_branding",
         "credit":                   total_credit,
-        "credit_per_image":         1.0,
+        "credit_per_image":         _CREDIT_BRANDING,
         "image_ids":                body.image_ids,
         "type":                     "deduct",
         "thumbnail_image":          "",
@@ -1007,7 +1020,7 @@ async def adjust_image_photoshoot(
         )
 
     # ── Step 3: credit check ──────────────────────────────────────────────────
-    total_credit    = 1.0 * len(output_images)
+    total_credit    = _CREDIT_ADJUST_IMAGE * len(output_images)
     current_credits = float(current_user.get("credits", 0))
 
     if current_credits < total_credit:
@@ -1015,7 +1028,7 @@ async def adjust_image_photoshoot(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
                 f"Insufficient credits. Adjust image requires {total_credit} credits "
-                f"({len(output_images)} image(s) × 1) but you only have {current_credits}."
+                f"({len(output_images)} image(s) × {_CREDIT_ADJUST_IMAGE}) but you only have {current_credits}."
             ),
         )
 
@@ -1058,7 +1071,7 @@ async def adjust_image_photoshoot(
         "user_id":                  user_id,
         "feature_name":             "photoshoot_adjust_image",
         "credit":                   total_credit,
-        "credit_per_image":         1.0,
+        "credit_per_image":         _CREDIT_ADJUST_IMAGE,
         "image_ids":                adjusted_image_ids,
         "type":                     "deduct",
         "thumbnail_image":          "",
@@ -1135,7 +1148,7 @@ async def background_change_photoshoot(
     total_poses = len(pose_data)
 
     # ── Step 3: credit check ──────────────────────────────────────────────────
-    total_credit    = total_poses * _CREDIT_PER_POSE
+    total_credit    = total_poses * _CREDIT_BACKGROUND_CHANGE
     current_credits = float(current_user.get("credits", 0))
 
     if current_credits < total_credit:
@@ -1143,7 +1156,7 @@ async def background_change_photoshoot(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
                 f"Insufficient credits. Background change requires {total_credit} credits "
-                f"({total_poses} pose(s) × {_CREDIT_PER_POSE}) but you only have {current_credits}."
+                f"({total_poses} pose(s) × {_CREDIT_BACKGROUND_CHANGE}) but you only have {current_credits}."
             ),
         )
 
@@ -1160,6 +1173,7 @@ async def background_change_photoshoot(
         "background_id":             body.background_id,
         "regeneration_type":         "background_change",
         "regenerate_photoshoot_id":  body.photoshoot_id,
+        "credit_per_image":          _CREDIT_BACKGROUND_CHANGE,
     }
 
     # ── Step 5: store new photoshoot document ─────────────────────────────────
@@ -1174,6 +1188,7 @@ async def background_change_photoshoot(
             "background_id":            body.background_id,
             "regeneration_type":        "background_change",
             "regenerate_photoshoot_id": body.photoshoot_id,
+            "credit_per_image":         _CREDIT_BACKGROUND_CHANGE,
         },
         "output_images":            [],
         "failed_poses":             [],
@@ -1281,9 +1296,6 @@ async def change_fabric_garment(
 # API-2: Re-generate photoshoot with new garment images (fabric change variant)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_CREDIT_FABRIC_CHANGE = 3.0
-
-
 @router.post(
     "/fabric-change-photoshoot",
     status_code=status.HTTP_202_ACCEPTED,
@@ -1362,6 +1374,7 @@ async def fabric_change_photoshoot(
         "poses_ids":                 [],
         "regeneration_type":         "fabric_change",
         "regenerate_photoshoot_id":  body.photoshoot_id,
+        "credit_per_image":          _CREDIT_FABRIC_CHANGE,
     }
 
     # ── Step 5: store new photoshoot document ─────────────────────────────────
@@ -1376,6 +1389,7 @@ async def fabric_change_photoshoot(
             "poses_ids":                [],
             "regeneration_type":        "fabric_change",
             "regenerate_photoshoot_id": body.photoshoot_id,
+            "credit_per_image":         _CREDIT_FABRIC_CHANGE,
         },
         "output_images":            [],
         "failed_poses":             [],
@@ -1481,9 +1495,6 @@ async def change_texture_garment(
 # API-2: Re-generate photoshoot with new garment images (texture change variant)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_CREDIT_TEXTURE_CHANGE = 3.0
-
-
 @router.post(
     "/texture-change-photoshoot",
     status_code=status.HTTP_202_ACCEPTED,
@@ -1562,6 +1573,7 @@ async def texture_change_photoshoot(
         "poses_ids":                 [],
         "regeneration_type":         "texture_change",
         "regenerate_photoshoot_id":  body.photoshoot_id,
+        "credit_per_image":          _CREDIT_TEXTURE_CHANGE,
     }
 
     # ── Step 5: store new photoshoot document ─────────────────────────────────
@@ -1576,6 +1588,7 @@ async def texture_change_photoshoot(
             "poses_ids":                [],
             "regeneration_type":        "texture_change",
             "regenerate_photoshoot_id": body.photoshoot_id,
+            "credit_per_image":         _CREDIT_TEXTURE_CHANGE,
         },
         "output_images":            [],
         "failed_poses":             [],
@@ -1682,9 +1695,6 @@ async def change_color_garment(
 # API-2: Re-generate photoshoot with new garment images (color change variant)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_CREDIT_COLOR_CHANGE = 3.0
-
-
 @router.post(
     "/color-change-photoshoot",
     status_code=status.HTTP_202_ACCEPTED,
@@ -1763,6 +1773,7 @@ async def color_change_photoshoot(
         "poses_ids":                 [],
         "regeneration_type":         "color_change",
         "regenerate_photoshoot_id":  body.photoshoot_id,
+        "credit_per_image":          _CREDIT_COLOR_CHANGE,
     }
 
     # ── Step 5: store new photoshoot document ─────────────────────────────────
@@ -1777,6 +1788,7 @@ async def color_change_photoshoot(
             "poses_ids":                [],
             "regeneration_type":        "color_change",
             "regenerate_photoshoot_id": body.photoshoot_id,
+            "credit_per_image":         _CREDIT_COLOR_CHANGE,
         },
         "output_images":            [],
         "failed_poses":             [],

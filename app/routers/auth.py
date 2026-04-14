@@ -4,6 +4,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from firebase_admin import auth as firebase_auth
 
 from app.config import settings
+from app.constants.free_plan import FREE_ROLE_MAPPING_DICT, build_free_plan_mapping_dict
 from app.database import get_users_collection
 from app.firebase_config import get_firebase_app
 from app.models.user import (
@@ -33,6 +34,7 @@ from app.services.otp_service import (
     get_pending_otp,
 )
 from app.utils.password import hash_password, verify_password, validate_password_strength
+from app.utils.user_response import user_dict_for_api
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
@@ -40,10 +42,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 # ─────────────────────────── Helpers ──────────────────────────────────────
 
 def _clean_user(user: dict) -> dict:
-    user = dict(user)
-    user.pop("_id", None)
-    user.pop("password", None)
-    return user
+    return user_dict_for_api(user)
 
 
 def _build_token_response(user: dict) -> dict:
@@ -87,6 +86,8 @@ def _new_user_doc(
         "time_zone": "",
         "credits": settings.DEFAULT_CREDITS,
         "plan": settings.DEFAULT_PLAN,
+        "role_mapping_dict": dict(FREE_ROLE_MAPPING_DICT),
+        "plan_mapping_dict": build_free_plan_mapping_dict(now, settings.DEFAULT_PLAN),
         "auth_provider": auth_provider,
         "notifications": {
             "email_notifications": False,

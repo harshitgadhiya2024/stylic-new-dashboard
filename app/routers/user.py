@@ -17,6 +17,7 @@ from app.services.email_service import send_otp_email
 from app.services.otp_service import generate_otp, save_otp, verify_otp, consume_otp
 from app.services.s3_service import upload_file_to_s3
 from app.utils.password import hash_password, verify_password, validate_password_strength
+from app.utils.user_response import user_dict_for_api
 
 router = APIRouter(prefix="/api/v1/user", tags=["User"])
 
@@ -29,10 +30,7 @@ _ALLOWED_MIME_TYPES = {
 # ─────────────────────────── Helpers ──────────────────────────────────────
 
 def _clean_user(user: dict) -> dict:
-    user = dict(user)
-    user.pop("_id", None)
-    user.pop("password", None)
-    return user
+    return user_dict_for_api(user)
 
 
 # ══════════════════════════════════════════════════════════════════════════

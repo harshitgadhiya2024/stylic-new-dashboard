@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Any, Optional
 from datetime import datetime
 
 
@@ -27,6 +27,8 @@ class UserSchema(BaseModel):
     time_zone: Optional[str] = ""
     credits: float = 5.0
     plan: str = ""
+    role_mapping_dict: dict[str, Any]
+    plan_mapping_dict: dict[str, Any]
     auth_provider: str = "email"
     notifications: NotificationPreferences = Field(default_factory=NotificationPreferences)
     is_active: bool = True

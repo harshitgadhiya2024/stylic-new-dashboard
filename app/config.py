@@ -72,6 +72,19 @@ class Settings(BaseSettings):
     DEFAULT_PLAN: str = "free"
     OTP_EXPIRE_MINUTES: int = 10
 
+    # Credit limits (per image)
+    CREDIT_SINGLE_PHOTOSHOOT_PER_IMAGE: float = 2.0
+    CREDIT_REGENERATE_PER_IMAGE: float = 2.0
+    CREDIT_BACKGROUND_CHANGE_PER_IMAGE: float = 2.0
+    CREDIT_UPSCALE_4X_PER_IMAGE: float = 4.0
+    CREDIT_UPSCALE_8X_PER_IMAGE: float = 8.0
+    CREDIT_BRANDING_PER_IMAGE: float = 1.0
+    CREDIT_RESIZE_PER_IMAGE: float = 1.0
+    CREDIT_ADJUST_IMAGE_PER_IMAGE: float = 1.0
+    CREDIT_FABRIC_CHANGE_PER_IMAGE: float = 3.0
+    CREDIT_TEXTURE_CHANGE_PER_IMAGE: float = 3.0
+    CREDIT_COLOR_CHANGE_PER_IMAGE: float = 3.0
+
     # Modal GPU enhancement pipeline
     # Class names must match what is currently DEPLOYED on Modal.
     # After running `modal deploy modal_realism_pipeline.py` with the new GPU classes,

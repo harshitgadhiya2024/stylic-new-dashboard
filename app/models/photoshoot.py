@@ -6,7 +6,7 @@ from datetime import datetime
 class UpscalePhotoshootRequest(BaseModel):
     photoshoot_id:     str
     image_ids:         List[str]
-    regeneration_type: Literal["upscale (2x)", "upscale (4x)"]
+    regeneration_type: Literal["upscale (4x)", "upscale (8x)"]
 
 
 class RegeneratePhotoshootRequest(BaseModel):
