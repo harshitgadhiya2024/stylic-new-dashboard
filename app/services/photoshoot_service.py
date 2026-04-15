@@ -770,6 +770,7 @@ async def _submit_realism_task(prompt: str, image_url: str, pose_label: str) -> 
             "image_input":  [image_url],
             "aspect_ratio": settings.REALISM_ASPECT,
             "resolution":   settings.REALISM_QUALITY,
+            "output_format": "jpg"
         },
     })
     headers = {
