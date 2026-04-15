@@ -264,15 +264,18 @@ def _build_compact_prompt(
         f"hair style/color/length, skin tone/undertone, moles/marks. No beautification. Expression identical to IMG{fi}.\n"
         f"\n"
         f"[SKIN REALISM—NO BEAUTY FILTER]\n"
-        f"Natural skin texture with visible pores, fine peach-fuzz on cheeks and arms, subtle veins on "
-        f"hands/forearms/wrists, subsurface scattering, uneven skin tone, micro pigmentation variation, "
-        f"knuckle folds, skin crease lines, realistic elbow texture. No skin smoothing—raw unretouched hyperrealistic skin.\n"
+        f"Visible pores, peach-fuzz, subtle veins/SSS, natural tone variation, knuckle and crease lines, "
+        f"realistic elbow texture. No beauty smoothing—raw hyperreal skin.\n"
         f"\n"
-        f"[BG + LIGHTING—IMG{bi} ({bg_label})]\n"
-        f"Seamlessly blend model into IMG{bi} scene. Match lighting direction, color temperature, shadow hardness/softness. "
-        f"Ground contact shadow at feet on surface. Rim light on hair/shoulder edges from scene source. "
-        f"Subtle shadow cast on nearby surfaces. Skin subsurface scattering from scene light. "
-        f"No floating, no cutout, no halo. Do not alter background.\n"
+        f"[BG + IN-SCENE SUBJECT—IMG{bi} ({bg_label})]\n"
+        f"Single real capture—not a composite paste. Light the subject ONLY from the same light field as IMG{bi} "
+        f"(key direction, WB, shadow softness); avoid flat frontal studio fill. "
+        f"Ambient color bounce from walls, floor, foliage, visible lamps onto skin, garment, and shoes. "
+        f"Ambient occlusion plus tight contact shadow at soles and hem where fabric meets floor; cast shadow matches scene key. "
+        f"Feet on the floor plane following tile/arch perspective. Rim on hair/shoulders from scene sources; "
+        f"subtle light wrap on silhouette edges toward bright areas—no razor cutout. "
+        f"Match subject exposure, contrast, and saturation to the environment (not brighter/punchier than the room). "
+        f"No floating, no halo. Do not alter background.\n"
         f"\n"
         f"[BODY] {req.get('gender','')}, {req.get('ethnicity','')}, age {req.get('age','')} ({req.get('age_group','')}), "
         f"skin: {req.get('skin_tone','')}.\n"
@@ -297,8 +300,7 @@ def _build_compact_prompt(
         )
         + f"\n"
         f"Matching footwear, no bare feet.{bag} Ornaments: {orn or 'none'}.\n"
-        f"85mm f/2.8, shallow DOF sharp on subject, 4K 9:16. Vogue editorial, photojournalistic color grading, "
-        f"lifelike hair strand detail, RAW quality, award-winning fashion photography."
+        f"85mm f/2.8, shallow DOF on subject, 4K 9:16, editorial color; natural hair detail; one coherent in-camera exposure."
     )
 
     if len(prompt) > _PROMPT_LIMIT:
@@ -364,11 +366,19 @@ Shoes must NOT look like 3D renders or brand-new pristine objects:
 - GROUND INTERACTION: Shoe sole is FLAT on the ground surface — not floating. Where shoe meets ground, add contact shadow and slight dirt/dust accumulation at the sole-ground junction. Shoe laces (if present) have natural drape and slight twist, not rigid symmetrical bows.
 - LIGHT RESPONSE: Shoes respond to scene lighting — proper shadow under shoe tongue, highlight on toe cap, matte vs glossy areas matching real shoe material. Not uniformly lit.
 
-[4. SKIN TEXTURE — HYPERREALISTIC]
-Add natural skin micro-detail across ALL visible skin (face, neck, arms, hands, legs, feet):
-- PORES: Visible open pores on nose, cheeks, forehead, chin. Larger pores on nose/inner cheeks, finer on forehead/outer cheeks. Pore depth varies — not uniform.
-- PEACH FUZZ: Fine translucent vellus hair on cheeks, jawline, upper lip, temples, forearms, upper arms. Catches light as tiny golden wisps especially where backlit/sidelit.
-- VEINS: Subtle blue-green veins on dorsal hands, inner wrists, forearms, temples, neck. Subcutaneous — beneath skin, not painted on.
+[4. SKIN TEXTURE — HYPERREALISTIC (PRIORITIZE PORES + VEINS)]
+Push skin toward a real 100% zoom DSLR read: micro-structure must be obvious but natural—never plastic or airbrushed.
+Apply across ALL visible skin (face, neck, décolleté if shown, arms, hands, legs, feet):
+- MICRO-PORES: Fine irregular pore field on nose, inner cheeks, forehead, chin—visible at normal viewing distance.
+  Vary pore size and depth; cluster slightly around nose sides and mid-cheek; subtle shadow inside each pore opening
+  (tiny dark wells), not a flat dot pattern. T-zone slightly more visible sebaceous texture; do NOT erase pores on face.
+- PERIORBITAL + CHEEK MICRO-TEXTURE: Very fine micro-grain and tiny creases under eyes and at smile lines; keep them light—
+  not deep wrinkles—unless already strong in the source.
+- VEINS (SUBCUTANEOUS, READABLE): Make thin blue-green venous lines slightly more visible where real skin shows them:
+  dorsal hands and knuckles, inner wrists, forearms, temples, side of neck, optional faint periorbital/temple branches.
+  They must follow natural anatomy (branching, tapering), sit under the skin with soft edges, and respond to scene light
+  (not neon stickers). Slightly stronger read on arms/hands than on face—face veins stay subtle.
+- PEACH FUZZ: Fine translucent vellus on cheeks, jawline, upper lip, temples, forearms, upper arms. Catches light as tiny wisps when sidelit.
 - SKIN TONE VARIATION: Slightly redder on knuckles, elbows, knees, nose tip; darker in joint creases, under-eye; lighter on inner arms.
 - TEXTURE: Knuckle folds, finger joint wrinkles, nail detail with cuticles, wrist crease lines, realistic elbow texture, natural lip vertical lines.
 - SUBSURFACE SCATTERING: Ear edges glow reddish when backlit, fingertip translucency, nostril light transmission.
