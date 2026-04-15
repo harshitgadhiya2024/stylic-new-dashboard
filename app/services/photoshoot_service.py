@@ -986,14 +986,33 @@ async def _process_one_pose(
         urls_for_task.append(mannequin_url)
         logger.info("[%s] Mannequin image appended as IMG%d", pose_label, len(urls_for_task))
 
-    task_id = await _submit_seeddream_task(prompt, urls_for_task, pose_label)
-    seeddream_url = await _poll_task(task_id, pose_label)
-    logger.info("[%s] SeedDream complete \u2014 URL received", pose_label)
+    counter_seeddream_task = 0
+    while counter_seeddream_task < 3:
+        try:
+            task_id = await _submit_seeddream_task(prompt, urls_for_task, pose_label)
+            seeddream_url = await _poll_task(task_id, pose_label)
+            logger.info("[%s] SeedDream complete \u2014 URL received", pose_label)
+            if seeddream_url:
+                break
+            counter_seeddream_task += 1
+        except Exception as e:
+            counter_seeddream_task += 1
+            await asyncio.sleep(3)
 
     # ── Step 2: realism pass (nano-banana-pro) ───────────────────────────
     realism_prompt = _build_realism_prompt()
-    realism_task_id = await _submit_realism_task(realism_prompt, seeddream_url, pose_label)
-    result_url_4k = await _poll_realism_task(realism_task_id, pose_label)
+    counter_realism_task = 0
+    while counter_realism_task < 3:
+        try:
+            realism_task_id = await _submit_realism_task(realism_prompt, seeddream_url, pose_label)
+            result_url_4k = await _poll_realism_task(realism_task_id, pose_label)
+            if result_url_4k:
+                break
+            counter_realism_task += 1
+        except Exception as e:
+            counter_realism_task += 1
+            await asyncio.sleep(3)
+    
     logger.info("[%s] Realism pass complete \u2014 4K URL received", pose_label)
 
     bytes_4k = await _download_bytes(result_url_4k, pose_label)
