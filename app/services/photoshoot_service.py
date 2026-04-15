@@ -318,7 +318,7 @@ Canon DSLR / full-frame. 4K, 9:16. Candid composition. Shallow depth of field \u
 
 [P5 \u2014 POSE] {clean_pose if clean_pose else "Natural, relaxed full-body fashion model pose."}
 
-[FOOTWEAR] Appropriate footwear matching outfit \u2014 visible on ground. No bare feet.{bag_note}
+[FOOTWEAR] MANDATORY: footwear is required in every image; it must match garment style/color theme, stay clearly visible on ground, and bare feet are not allowed.{bag_note}
 
 [STYLE] Ornaments: {req.get('ornaments', 'none')}.
 
@@ -533,15 +533,103 @@ def _build_compact_prompt(
             f"[POSE] {clean_pose}\n"
         )
         + f"\n"
-        f"Matching footwear, no bare feet.{bag} Ornaments: {orn or 'none'}.\n"
+        f"MANDATORY footwear in every image: match garment style/color theme, keep visible on ground, and no bare feet.{bag} Ornaments: {orn or 'none'}.\n"
         f"85mm f/2.8, shallow DOF sharp on subject, 4K 9:16. Vogue editorial, photojournalistic color grading, "
         f"lifelike hair strand detail, RAW quality, award-winning fashion photography."
     )
 
-    if len(prompt) > _COMPACT_PROMPT_LIMIT:
-        prompt = prompt[:_COMPACT_PROMPT_LIMIT]
+    if len(prompt) <= _COMPACT_PROMPT_LIMIT:
+        return prompt
 
-    return prompt
+    compact = _build_compact_prompt_optimized(
+        pose=clean_pose,
+        img_ref=img_ref,
+        g_imgs=g_imgs,
+        fi=fi,
+        bi=bi,
+        mi=mi,
+        gt_line=gt_line,
+        fitting=fitting,
+        paired=paired,
+        garment_rules=garment_rules,
+        req=req,
+        w_desc=w_desc,
+        h_desc=h_desc,
+        bg_label=bg_label,
+        has_mannequin_image=has_mannequin_image,
+        hands_note=hands_note,
+        bag=bag,
+        orn=orn,
+        op=op,
+        os_=os_,
+    )
+    if len(compact) <= _COMPACT_PROMPT_LIMIT:
+        return compact
+
+    raise RuntimeError(
+        f"Compact prompt exceeds {_COMPACT_PROMPT_LIMIT} chars after optimization "
+        f"(len={len(compact)})."
+    )
+
+
+def _build_compact_prompt_optimized(
+    *,
+    pose: str,
+    img_ref: str,
+    g_imgs: str,
+    fi: int,
+    bi: int,
+    mi: int,
+    gt_line: str,
+    fitting: str,
+    paired: str,
+    garment_rules: str,
+    req: dict,
+    w_desc: str,
+    h_desc: str,
+    bg_label: str,
+    has_mannequin_image: bool,
+    hands_note: str,
+    bag: str,
+    orn: str,
+    op: str,
+    os_: str,
+) -> str:
+    """Optimized <=3000-char variant with preserved instructions (especially one-piece)."""
+    onepiece_hint = ""
+    if op:
+        onepiece_hint = (
+            "\n[ONE-PIECE LOCK]\n"
+            f"Type: {op}" + (f" ({os_})" if os_ else "") + ". "
+            "Follow one-piece wearing rules exactly; do not invent extra layers."
+        )
+
+    pose_block = (
+        f"[POSE FROM IMG{mi}]\n"
+        f"Copy exact posture from IMG{mi}: hands/fingers/wrists, torso lean, shoulder tilt, hip rotation, "
+        f"legs/knees/feet, head tilt/turn/chin/gaze. Use mannequin only for body pose; ignore mannequin face/clothes/bg.{hands_note}\n"
+        if has_mannequin_image
+        else f"[POSE] {pose}\n"
+    )
+
+    return (
+        "Hyperrealistic editorial fashion photo (real DSLR look; no AI/plastic skin).\n"
+        f"Refs: {img_ref}\n"
+        f"[GARMENT EXACT {g_imgs}]{gt_line}\n"
+        "Keep exact garment color/pattern/fabric/embroidery/details/stitching/fit/drape/wrinkles. "
+        f"Fitting: {fitting}.{paired}\n"
+        f"{garment_rules}"
+        f"{onepiece_hint}\n"
+        f"[FACE EXACT IMG{fi}] Same identity and expression; no beautification or feature edits.\n"
+        "[SKIN REALISM] Preserve pores, peach fuzz, micro texture, subtle veins, natural tone variation; no smoothing.\n"
+        f"[BG+LIGHT IMG{bi} {bg_label}] Match scene light direction/temp/shadows/contact shadows; no halo/floating; "
+        "do not alter background.\n"
+        f"[BODY] {req.get('gender','')}, {req.get('ethnicity','')}, age {req.get('age','')} ({req.get('age_group','')}), "
+        f"skin {req.get('skin_tone','')}; weight {w_desc}; height {h_desc}.\n"
+        f"{pose_block}"
+        f"[STYLE] MANDATORY footwear in every image; match garment style/color theme, keep visible on ground, and no bare feet.{bag} Ornaments: {orn or 'none'}.\n"
+        "85mm f/2.8, shallow DOF, 4K 9:16, Vogue/editorial color grade, realistic hair strands."
+    )
 
 
 # ---------------------------------------------------------------------------
