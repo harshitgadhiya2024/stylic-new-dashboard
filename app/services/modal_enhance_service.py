@@ -52,29 +52,55 @@ def _fit_within_box(orig_w: int, orig_h: int, max_w: int, max_h: int) -> tuple[i
     return new_w, new_h
 
 
-def _downsample_from_8k_bytes(img_bytes: bytes) -> dict[str, bytes]:
-    """
-    Downsample one 8K (or near-8K) image into 8K/4K/2K/1K PNG bytes.
-    Mirrors the aspect-preserving strategy from upscaling_data.py.
-    """
-    with Image.open(io.BytesIO(img_bytes)) as img:
-        img = img.convert("RGB")
-        src_w, src_h = img.size
-        boxes = {
-            "8k": (7680, 4320),
-            "4k": (3840, 2160),
-            "2k": (2560, 1440),
-            "1k": (1280, 720),
-        }
-        out: dict[str, bytes] = {}
-        for label, (max_w, max_h) in boxes.items():
-            w, h = _fit_within_box(src_w, src_h, max_w, max_h)
-            resized = img.resize((w, h), Image.LANCZOS)
-            buf = io.BytesIO()
-            resized.save(buf, format="PNG")
-            out[label] = buf.getvalue()
-        return out
+# def _downsample_from_8k_bytes(img_bytes: bytes) -> dict[str, bytes]:
+#     """
+#     Downsample one 8K (or near-8K) image into 8K/4K/2K/1K PNG bytes.
+#     Mirrors the aspect-preserving strategy from upscaling_data.py.
+#     """
+#     with Image.open(io.BytesIO(img_bytes)) as img:
+#         img = img.convert("RGB")
+#         src_w, src_h = img.size
+#         boxes = {
+#             "8k": (7680, 4320),
+#             "4k": (3840, 2160),
+#             "2k": (2560, 1440),
+#             "1k": (1280, 720),
+#         }
+#         out: dict[str, bytes] = {}
+#         for label, (max_w, max_h) in boxes.items():
+#             w, h = _fit_within_box(src_w, src_h, max_w, max_h)
+#             resized = img.resize((w, h), Image.LANCZOS)
+#             buf = io.BytesIO()
+#             resized.save(buf, format="PNG")
+#             out[label] = buf.getvalue()
+#         return out
 
+def _downsample_from_8k_bytes(img_bytes: bytes) -> dict[str, bytes]:
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+    w, h = img.size
+
+    # Ensure aspect ratio stays same
+    # Generate sizes
+    sizes = {
+        "8k": (w, h),
+        "4k": (w // 2, h // 2),
+        "2k": (w // 4, h // 4),
+        "1k": (w // 8, h // 8),
+    }
+
+    results = {}
+
+    for key, (new_w, new_h) in sizes.items():
+        resized_img = img.resize((new_w, new_h), Image.LANCZOS)
+
+        buffer = io.BytesIO()
+        resized_img.save(buffer, format="PNG", optimize=True)
+        buffer.seek(0)
+
+        results[key] = buffer.getvalue()
+
+    return results
 
 async def _upload_upscaled_outputs(prefix: str, outputs: dict[str, bytes]) -> dict[str, str]:
     label_to_key = {
@@ -119,7 +145,7 @@ async def _run_modal_upscale(image_bytes: bytes, image_id: str) -> dict[str, byt
         return await cls().enhance.remote.aio(image_bytes, filename)
 
 
-async def _run_kie_upscale(source_image_url: str, image_id: str) -> dict[str, bytes]:
+async def _run_kie_upscale(source_image_url: str, image_id: str, seeddream_url: str) -> dict[str, bytes]:
     if not source_image_url:
         raise ValueError("source_image_url is required for KIE upscale.")
     if not (settings.SEEDDREAM_API_KEY or "").strip():
@@ -143,18 +169,24 @@ async def _run_kie_upscale(source_image_url: str, image_id: str) -> dict[str, by
     for attempt in range(1, int(getattr(settings, "KIE_REQUEST_RETRIES", 3)) + 1):
         try:
             async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
+                if attempt == 1:
+                    pass
+                else:
+                    payload["input"]["image_url"] = seeddream_url
+                    payload["input"]["upscale_factor"] = "4"
                 create_resp = await client.post(_KIE_CREATE_URL, headers=headers, content=payload)
                 create_resp.raise_for_status()
+            print(create_resp.json())
+            task_id = create_resp.json().get("data", {}).get("taskId")
+            if not task_id:
+                print(f"No taskId from kie upscale createTask: {create_resp.text.get('data')}")
             break
         except Exception as exc:
             logger.warning("[kie-upscale] createTask attempt %d failed for image_id=%s: %s", attempt, image_id, exc)
             if attempt == int(getattr(settings, "KIE_REQUEST_RETRIES", 3)):
                 raise
             await asyncio.sleep(2)
-    task_id = create_resp.json().get("data", {}).get("taskId")
-    if not task_id:
-        raise RuntimeError(f"No taskId from kie upscale createTask: {create_resp.text}")
-
+    
     result_url = ""
     async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
         for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
@@ -225,7 +257,7 @@ async def enhance_and_upload(
     try:
         if provider == "kie":
             logger.info("[upscale] Using KIE provider for image_id=%s", image_id)
-            outputs = await _run_kie_upscale(source_image_url=source_image_url, image_id=image_id)
+            outputs = await _run_kie_upscale(source_image_url=source_image_url, image_id=image_id, seeddream_url=seeddream_2k_url)
             upscaled_urls = await _upload_upscaled_outputs(prefix, outputs)
         else:
             # Modal branch intentionally disabled for now.
