@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     WHICH_UPSCALE: str = "modal"  # "modal" | "kie"
     KIE_UPSCALE_MODEL: str = "topaz/image-upscale"
     KIE_UPSCALE_FACTOR: int = 2
+    KIE_REQUEST_RETRIES: int = 3
+    KIE_HTTP_TIMEOUT: int = 300
 
     # Redis / Celery queue
     REDIS_URL: str = "redis://localhost:6379/0"

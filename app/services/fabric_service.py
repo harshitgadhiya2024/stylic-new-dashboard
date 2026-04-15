@@ -216,7 +216,7 @@ async def _submit_nano_banana_garment_task(prompt: str, image_url: str, log_labe
         "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
         "Content-Type":  "application/json",
     }
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
         resp = await client.post(_CREATE_URL, headers=headers, content=payload)
         resp.raise_for_status()
     task_id = resp.json().get("data", {}).get("taskId")
@@ -235,7 +235,7 @@ async def _poll_kie_garment_task(task_id: str, log_label: str) -> str:
     headers = {"Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}"}
     for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
                 resp = await client.get(f"{_STATUS_URL}?taskId={task_id}", headers=headers)
                 resp.raise_for_status()
             data = resp.json().get("data", {})
@@ -269,7 +269,7 @@ async def _poll_kie_garment_task(task_id: str, log_label: str) -> str:
 async def _download_result_bytes(url: str, log_label: str) -> bytes:
     for attempt in range(1, 4):
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
                 resp = await client.get(url, follow_redirects=True)
                 resp.raise_for_status()
             logger.info("[%s] Downloaded result (%d bytes)", log_label, len(resp.content))

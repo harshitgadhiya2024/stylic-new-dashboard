@@ -140,18 +140,34 @@ async def _run_kie_upscale(source_image_url: str, image_id: str) -> dict[str, by
         "[kie-upscale] Submit image_id=%s model=%s factor=%s",
         image_id, settings.KIE_UPSCALE_MODEL, settings.KIE_UPSCALE_FACTOR,
     )
-    async with httpx.AsyncClient(timeout=60) as client:
-        create_resp = await client.post(_KIE_CREATE_URL, headers=headers, content=payload)
-        create_resp.raise_for_status()
+    for attempt in range(1, int(getattr(settings, "KIE_REQUEST_RETRIES", 3)) + 1):
+        try:
+            async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
+                create_resp = await client.post(_KIE_CREATE_URL, headers=headers, content=payload)
+                create_resp.raise_for_status()
+            break
+        except Exception as exc:
+            logger.warning("[kie-upscale] createTask attempt %d failed for image_id=%s: %s", attempt, image_id, exc)
+            if attempt == int(getattr(settings, "KIE_REQUEST_RETRIES", 3)):
+                raise
+            await asyncio.sleep(2)
     task_id = create_resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise RuntimeError(f"No taskId from kie upscale createTask: {create_resp.text}")
 
     result_url = ""
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
         for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
-            poll_resp = await client.get(f"{_KIE_STATUS_URL}?taskId={task_id}", headers=headers)
-            poll_resp.raise_for_status()
+            poll_resp = None
+            for req_try in range(1, int(getattr(settings, "KIE_REQUEST_RETRIES", 3)) + 1):
+                try:
+                    poll_resp = await client.get(f"{_KIE_STATUS_URL}?taskId={task_id}", headers=headers)
+                    poll_resp.raise_for_status()
+                    break
+                except Exception as req_exc:
+                    if req_try == int(getattr(settings, "KIE_REQUEST_RETRIES", 3)):
+                        raise req_exc
+                    await asyncio.sleep(1)
             data = poll_resp.json().get("data", {})
             state = data.get("state")
             if state == "success":
@@ -172,10 +188,18 @@ async def _run_kie_upscale(source_image_url: str, image_id: str) -> dict[str, by
         else:
             raise RuntimeError(f"KIE upscale timed out after {settings.SEEDDREAM_MAX_RETRIES} polls.")
 
-    async with httpx.AsyncClient(timeout=180) as client:
-        out_resp = await client.get(result_url, follow_redirects=True)
-        out_resp.raise_for_status()
-        bytes_8k = out_resp.content
+    for attempt in range(1, int(getattr(settings, "KIE_REQUEST_RETRIES", 3)) + 1):
+        try:
+            async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
+                out_resp = await client.get(result_url, follow_redirects=True)
+                out_resp.raise_for_status()
+                bytes_8k = out_resp.content
+            break
+        except Exception as exc:
+            logger.warning("[kie-upscale] download attempt %d failed for image_id=%s: %s", attempt, image_id, exc)
+            if attempt == int(getattr(settings, "KIE_REQUEST_RETRIES", 3)):
+                raise
+            await asyncio.sleep(2)
     logger.info("[kie-upscale] Downloaded 8K output for image_id=%s (%d bytes)", image_id, len(bytes_8k))
     return _downsample_from_8k_bytes(bytes_8k)
 
@@ -204,9 +228,14 @@ async def enhance_and_upload(
             outputs = await _run_kie_upscale(source_image_url=source_image_url, image_id=image_id)
             upscaled_urls = await _upload_upscaled_outputs(prefix, outputs)
         else:
-            logger.info("[upscale] Using Modal provider for image_id=%s", image_id)
-            outputs = await _run_modal_upscale(image_bytes=image_bytes, image_id=image_id)
-            upscaled_urls = await _upload_upscaled_outputs(prefix, outputs)
+            # Modal branch intentionally disabled for now.
+            # logger.info("[upscale] Using Modal provider for image_id=%s", image_id)
+            # outputs = await _run_modal_upscale(image_bytes=image_bytes, image_id=image_id)
+            # upscaled_urls = await _upload_upscaled_outputs(prefix, outputs)
+            logger.warning(
+                "[upscale] Provider '%s' is disabled in code path. Set WHICH_UPSCALE=kie.",
+                provider,
+            )
     except ImportError:
         logger.warning("[upscale] Modal import failed — skipping upscale.")
     except Exception as exc:
@@ -219,9 +248,10 @@ async def enhance_and_upload(
         "2k_upscaled": upscaled_urls.get("2k_upscaled", ""),
         "4k_upscaled": upscaled_urls.get("4k_upscaled", ""),
         "8k_upscaled": upscaled_urls.get("8k_upscaled", ""),
-        "1k": seeddream_1k_url,
-        "2k": seeddream_2k_url,
-        "4k": seeddream_4k_url,
+        # Keep legacy keys populated with upscaled URLs for downstream consumers.
+        "1k": upscaled_urls.get("1k_upscaled", seeddream_1k_url),
+        "2k": upscaled_urls.get("2k_upscaled", seeddream_2k_url),
+        "4k": upscaled_urls.get("4k_upscaled", seeddream_4k_url),
         "created_at": now,
         "updated_at": now,
     }

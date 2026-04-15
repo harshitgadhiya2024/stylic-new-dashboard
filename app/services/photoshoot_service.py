@@ -688,9 +688,17 @@ async def _submit_realism_task(prompt: str, image_url: str, pose_label: str) -> 
         "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
         "Content-Type":  "application/json",
     }
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(_CREATE_URL, headers=headers, content=payload)
-        resp.raise_for_status()
+    for attempt in range(1, int(getattr(settings, "KIE_REQUEST_RETRIES", 3)) + 1):
+        try:
+            async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
+                resp = await client.post(_CREATE_URL, headers=headers, content=payload)
+                resp.raise_for_status()
+            break
+        except Exception as exc:
+            logger.warning("[%s] Realism submit attempt %d failed: %s", pose_label, attempt, exc)
+            if attempt == int(getattr(settings, "KIE_REQUEST_RETRIES", 3)):
+                raise RuntimeError(f"Realism submit failed after {attempt} attempts: {exc}") from exc
+            await asyncio.sleep(2)
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise RuntimeError(f"No taskId returned (realism): {resp.text}")
@@ -704,9 +712,17 @@ async def _poll_realism_task(task_id: str, pose_label: str) -> str:
     headers = {"Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}"}
     for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(f"{_STATUS_URL}?taskId={task_id}", headers=headers)
-                resp.raise_for_status()
+            resp = None
+            for req_try in range(1, int(getattr(settings, "KIE_REQUEST_RETRIES", 3)) + 1):
+                try:
+                    async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
+                        resp = await client.get(f"{_STATUS_URL}?taskId={task_id}", headers=headers)
+                        resp.raise_for_status()
+                    break
+                except Exception as req_exc:
+                    if req_try == int(getattr(settings, "KIE_REQUEST_RETRIES", 3)):
+                        raise req_exc
+                    await asyncio.sleep(1)
             data  = resp.json().get("data", {})
             state = data.get("state")
             if state == "success":
@@ -749,10 +765,18 @@ async def _submit_seeddream_task(prompt: str, image_urls: List[str], pose_label:
         "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
         "Content-Type":  "application/json",
     }
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(_CREATE_URL, headers=headers, content=payload)
-        resp.raise_for_status()
-    print(resp.json())
+    for attempt in range(1, int(getattr(settings, "KIE_REQUEST_RETRIES", 3)) + 1):
+        try:
+            async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
+                resp = await client.post(_CREATE_URL, headers=headers, content=payload)
+                resp.raise_for_status()
+            break
+        except Exception as exc:
+            logger.warning("[%s] SeedDream submit attempt %d failed: %s", pose_label, attempt, exc)
+            if attempt == int(getattr(settings, "KIE_REQUEST_RETRIES", 3)):
+                raise RuntimeError(f"SeedDream submit failed after {attempt} attempts: {exc}") from exc
+            await asyncio.sleep(2)
+
     task_id = resp.json().get("data", {}).get("taskId")
     if not task_id:
         raise RuntimeError(f"No taskId returned (SeedDream): {resp.text}")
@@ -765,9 +789,17 @@ async def _poll_task(task_id: str, pose_label: str) -> str:
     headers = {"Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}"}
     for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(f"{_STATUS_URL}?taskId={task_id}", headers=headers)
-                resp.raise_for_status()
+            resp = None
+            for req_try in range(1, int(getattr(settings, "KIE_REQUEST_RETRIES", 3)) + 1):
+                try:
+                    async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
+                        resp = await client.get(f"{_STATUS_URL}?taskId={task_id}", headers=headers)
+                        resp.raise_for_status()
+                    break
+                except Exception as req_exc:
+                    if req_try == int(getattr(settings, "KIE_REQUEST_RETRIES", 3)):
+                        raise req_exc
+                    await asyncio.sleep(1)
             data  = resp.json().get("data", {})
             state = data.get("state")
             if state == "success":
@@ -796,7 +828,7 @@ async def _download_bytes(url: str, label: str = "") -> bytes:
     logger.info("[%s] Downloading image from URL...", label)
     for attempt in range(1, 4):
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
             data = resp.content
