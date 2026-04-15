@@ -835,7 +835,7 @@ async def _process_one_pose(
 ) -> dict:
     """
     Full async pipeline for one pose. Returns output_image dict or raises on failure.
-    Flow: SeedDream generation -> nano-banana-pro realism pass -> Modal GPU enhancement.
+    Flow: SeedDream generation -> nano-banana-pro realism pass -> configured upscale enhancement.
 
     ``pose_data`` is ``{"image_url": str, "pose_prompt": str}``.
     When ``image_url`` (mannequin PNG) is present it is appended to the reference images
@@ -893,8 +893,8 @@ async def _process_one_pose(
     )
     logger.info("[%s] Uploaded realism 4K, 2K, 1K", pose_label)
 
-    # ── Step 4: Modal GPU enhancement: 4K \u2192 enhanced 8K / 4K / 2K / 1K ──
-    logger.info("[%s] Sending realism 4K bytes to Modal GPU pipeline...", pose_label)
+    # ── Step 4: Upscale enhancement (provider from WHICH_UPSCALE) ─────────
+    logger.info("[%s] Sending realism output to configured upscale provider...", pose_label)
     upscale_result = await enhance_and_upload(
         image_bytes=bytes_4k,
         photoshoot_id=photoshoot_id,
@@ -902,9 +902,10 @@ async def _process_one_pose(
         seeddream_4k_url=url_4k,
         seeddream_2k_url=url_2k,
         seeddream_1k_url=url_1k,
+        source_image_url=result_url_4k,
         upscaling_col=upscaling_col,
     )
-    logger.info("[%s] Modal enhancement complete \u2014 upscaled 2K: %s", pose_label,
+    logger.info("[%s] Upscale enhancement complete \u2014 upscaled 2K: %s", pose_label,
                 upscale_result.get("2k_upscaled", "N/A")[:80])
 
     # Use the upscaled 2K as the primary display image; fall back to realism 2K

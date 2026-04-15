@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     MODAL_APP_NAME:    str = "fashion-realism"
     MODAL_CLS_PRIMARY: str = "FashionRealismT4"   # L40S — primary GPU class
     MODAL_CLS_FALLBACK: str = "FashionRealismL4" 
+    WHICH_UPSCALE: str = "modal"  # "modal" | "kie"
+    KIE_UPSCALE_MODEL: str = "topaz/image-upscale"
+    KIE_UPSCALE_FACTOR: int = 2
 
     # Redis / Celery queue
     REDIS_URL: str = "redis://localhost:6379/0"
