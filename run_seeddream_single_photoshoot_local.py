@@ -318,14 +318,23 @@ def _build_realism_prompt() -> str:
     """
     return """You are an expert photo retoucher. You receive a single fashion photoshoot image (IMG1).
 Your ONLY job is to make it look like a real, unretouched DSLR photograph — NOT an AI render.
-Do NOT change anything about the composition, pose, garment, background scene, or face identity.
+Do NOT change composition, pose, background geometry, or facial identity (bone structure, feature shapes/sizes, expression, gaze, moles/freckles, hair style).
+PRIORITY-1 (NON-NEGOTIABLE): If skin looks airbrushed, poreless, waxy, or uniform, you MUST add visible micro-pores, fine grain, subsurface veins, and natural specular micro-highlights—that is required realism, NOT an identity change.
+
+=== HARD CONSTRAINTS — NEVER CHANGE THESE (only add surface/lighting micro-detail ON the existing subject) ===
+- FACE IDENTITY: Same person as IMG1. Do NOT change face shape, bone structure, feature size/position/spacing, ethnicity read, age, eye size/openness, nose width/length, lip fullness, jaw/chin line, brow height, ear shape, or expression/gaze beyond rendering existing skin more realistically. Skin edits are SURFACE ONLY (pores, veins, grain, tiny speculars on existing skin)—never cosmetic reshaping or beautification that alters who they are.
+- GARMENT: Same exact outfit as IMG1—same garment pieces, colors, print/pattern placement, embroidery, cut, buttons, hem, drape silhouette, accessories. Do NOT swap, add, remove, recolor, or reinterpret the clothing.
+- BACKGROUND: Do NOT repaint, replace, extend, crop, or alter the environment. Same architecture, floor, sky, props, colors, and layout as IMG1. All scene edits are limited to how the subject's edges and light response sit against that unchanged background (no new bg elements).
+- POSE: IDENTICAL to IMG1—same limb angles, torso orientation, head tilt, hand/finger placement, foot placement, and framing. Do NOT move, rotate, rescale, or reposition the person in the frame; do not change gesture or stance.
 
 === ABSOLUTE PRESERVATION LOCKS (do NOT alter) ===
 
 [FACE IDENTITY LOCK]
 - Preserve every facial feature exactly: face shape, eye shape/size/color/spacing, eyebrow shape/thickness/arch, nose bridge/tip/width, lip shape/fullness/color, jaw angle, chin shape, cheekbone prominence, ear shape, skin tone/undertone, all moles/marks/freckles, facial hair if present.
 - Preserve exact expression, head angle, gaze direction.
-- Do NOT beautify, reshape, slim, smooth, or alter any facial proportion.
+- Do NOT reshape, slim, or alter facial proportions or feature geometry.
+- Do NOT apply beauty blur, skin smoothing, or porcelain/airbrush filters.
+- SKIN TEXTURE (additive only): Intensify DSLR-like micro-pores on nose, inner cheeks, forehead, and chin so they read at NORMAL viewing size (not microscopic). Add fine irregular grain, tiny specular hits on nose bridge and cheek peaks from the SAME light direction as the scene, and subtle blue-green venous hints on temples/sides of face and neck where real skin would show them under sidelight. Hands/arms/legs: veins and tendons must read clearly. Do NOT alter facial structure or proportions to do this—only surface micro-detail. Plastic or featureless skin means failure.
 
 [BODY & POSE LOCK]
 - Preserve exact body shape, weight, proportions, height, limb positions, posture, hand placement, finger positions, foot placement.
@@ -334,6 +343,7 @@ Do NOT change anything about the composition, pose, garment, background scene, o
 [GARMENT LOCK]
 - Preserve every detail of clothing: fabric type, pattern, color, print, embroidery, buttons, pockets, stitching, hem, neckline, sleeves, cuffs, weave texture, closures, trims, pleats, wrinkles, drape, fit, tucked/untucked state.
 - Do NOT change any garment color, pattern, or styling.
+- You MAY add scene-correct lighting RESPONSE only (how light hits existing fabric): directional highlights and micro-shadows along existing weave, embroidery, folds, and lace; subtle bounce tint—without changing base color, pattern, print registration, or garment shape.
 
 [BACKGROUND & COMPOSITION LOCK]
 - Preserve the entire background scene: geometry, objects, colors, sky, furniture, walls, floor, props — everything.
@@ -366,51 +376,46 @@ Shoes must NOT look like 3D renders or brand-new pristine objects:
 - GROUND INTERACTION: Shoe sole is FLAT on the ground surface — not floating. Where shoe meets ground, add contact shadow and slight dirt/dust accumulation at the sole-ground junction. Shoe laces (if present) have natural drape and slight twist, not rigid symmetrical bows.
 - LIGHT RESPONSE: Shoes respond to scene lighting — proper shadow under shoe tongue, highlight on toe cap, matte vs glossy areas matching real shoe material. Not uniformly lit.
 
-[4. SKIN TEXTURE — HYPERREALISTIC (PRIORITIZE PORES + VEINS)]
-Push skin toward a real 100% zoom DSLR read: micro-structure must be obvious but natural—never plastic or airbrushed.
+[4. SKIN TEXTURE — PRIORITY-1 (PORES + VEINS + MICRO-CONTRAST)]
+Treat the face like a 24–70mm beauty shot at f/4: micro-structure must READ clearly on screen—not optional polish.
 Apply across ALL visible skin (face, neck, décolleté if shown, arms, hands, legs, feet):
-- MICRO-PORES: Fine irregular pore field on nose, inner cheeks, forehead, chin—visible at normal viewing distance.
-  Vary pore size and depth; cluster slightly around nose sides and mid-cheek; subtle shadow inside each pore opening
-  (tiny dark wells), not a flat dot pattern. T-zone slightly more visible sebaceous texture; do NOT erase pores on face.
-- PERIORBITAL + CHEEK MICRO-TEXTURE: Very fine micro-grain and tiny creases under eyes and at smile lines; keep them light—
-  not deep wrinkles—unless already strong in the source.
-- VEINS (SUBCUTANEOUS, READABLE): Make thin blue-green venous lines slightly more visible where real skin shows them:
-  dorsal hands and knuckles, inner wrists, forearms, temples, side of neck, optional faint periorbital/temple branches.
-  They must follow natural anatomy (branching, tapering), sit under the skin with soft edges, and respond to scene light
-  (not neon stickers). Slightly stronger read on arms/hands than on face—face veins stay subtle.
-- PEACH FUZZ: Fine translucent vellus on cheeks, jawline, upper lip, temples, forearms, upper arms. Catches light as tiny wisps when sidelit.
-- SKIN TONE VARIATION: Slightly redder on knuckles, elbows, knees, nose tip; darker in joint creases, under-eye; lighter on inner arms.
-- TEXTURE: Knuckle folds, finger joint wrinkles, nail detail with cuticles, wrist crease lines, realistic elbow texture, natural lip vertical lines.
-- SUBSURFACE SCATTERING: Ear edges glow reddish when backlit, fingertip translucency, nostril light transmission.
-- IMPERFECTIONS: Occasional tiny bumps, slight blemish, milia. No perfectly smooth skin. No beauty filter, no airbrushing, no porcelain look.
+- MICRO-PORES (MUST BE VISIBLE): Irregular pore field on nose, inner cheeks, forehead, chin. Each pore: tiny shadowed well + soft rim highlight from scene light—not a flat uniform dot grid. T-zone slightly oilier sheen; do NOT blur or melt pores away.
+- MICRO-CONTRAST: Add fine high-frequency grain on cheeks/jaw/forehead (sensor+skin texture), not noise blobs. Break up large smooth skin patches.
+- VEINS (READABLE, ANATOMICAL): Hands/forearms/wrists: clearly visible branching blue-green veins and tendons. Neck/temples/side of face: subtle but real venous map where sidelight would reveal it—soft, under-skin, tapered; must react to light (not tattoo-like).
+- SPECULAR / OIL: Small natural skin highlights on nose bridge, cheekbones, Cupid's bow, and shoulders that MATCH the scene's key light color and direction—breaks the dead matte AI look.
+- PERIORBITAL + CHEEK: Fine micro-creases and micro-grain under eyes and smile zones (light, not deep wrinkles unless already in source).
+- PEACH FUZZ: Fine vellus on cheeks, jaw, upper lip, temples, forearms; catchlight on fuzz when backlit.
+- SKIN TONE VARIATION: Redder knuckles, elbows, knees, nose tip; darker creases, under-eye.
+- SSS: Ear-edge redness when backlit, fingertip translucency, nostril light transmission.
+- IMPERFECTIONS: Tiny bumps or blemish OK. Zero porcelain/airbrush/wax.
 
-[5. HAIR REALISM + EDGE FIX]
+[5. HAIR REALISM + EDGE FIX — PRIORITY-2 LIGHTING]
 - Individual strand detail — not a smooth blob. Each strand has its own path with natural irregularity.
 - Flyaway hairs and baby hairs at hairline, temples, nape, part line.
-- Specular highlights on individual strands from scene light, not uniform sheen.
+- Specular highlights on strands from the scene key + fill (warm/cool matching environment), not flat global sheen. Rim/backlight on hair mass where background is bright; secondary bounce tint from walls/sky onto dark hair.
 - HAIR EDGE — CRITICAL: NO compositing halo or bright fringe around hair edges against the background. Hair edges must have natural semi-transparent wisps that blend into the background — not a hard cutout. Individual stray hairs extend beyond the main hair silhouette and are semi-transparent where they overlap the background. Match the background color/brightness through thin hair strands at the edge.
 - Eyebrows: individual hairs with natural direction. Eyelashes: natural variation in length/curl.
 
-[6. SPATIAL GROUNDING — ANTI-PASTED FIX]
-The model must look like a REAL PERSON physically present at that location — NOT pasted or composited:
-- ANALYZE the scene: ground plane, perspective lines, vanishing point, object scale. Model's feet/seated contact must sit ON the ground plane at correct perspective depth.
-- If spatially misplaced (wrong scale, feet not touching ground, perspective mismatch, cutout look), ADJUST spatial position so they belong naturally. Move slightly if needed so feet contact surface and body scale matches scene.
-- KEEP exact same pose, limb placement, gesture. Only fix WHERE in the scene, not HOW posed.
-- If already grounded correctly — do NOT change anything.
-- PERSPECTIVE: Model foreshortening must match camera angle of the scene.
+[6. SPATIAL GROUNDING — ANTI-PASTED FIX (pose & bg unchanged)]
+POSE IS LOCKED: do not move, rotate, or rescale the subject; do not change limb or foot placement.
+Make the existing placement READ MORE grounded WITHOUT changing pose: refine contact shadows, AO at soles, and edge integration so feet read on the existing floor plane at the SAME pixel position as IMG1.
+- If feet already touch the ground convincingly, do NOT change position—only improve shadow realism if needed.
+- PERSPECTIVE: Keep model foreshortening and scale as in IMG1; only harmonize shadow/light with the unchanged background.
 
-[7. BACKGROUND BLENDING & LIGHTING]
-Make the person genuinely PRESENT in the scene:
-- Match light direction, color temp, shadow hardness between model and scene.
-- Ground contact shadow with soft penumbra at feet. Shoes cast realistic shadow onto floor.
-- Rim light on hair/shoulder edges from scene backlight. Color bounce from nearby surfaces.
-- Atmospheric depth matching. Reflections on glossy surfaces.
-- Remove ANY visible halo, edge glow, bright fringe, or compositing artifacts — especially around hair and shoulder edges.
-- EDGE BLENDING: Seamless boundary — no sharp cutout edges, no aliasing, no color fringe. Natural anti-aliasing matching camera optics.
+[7. BACKGROUND BLENDING & LIGHTING — PRIORITY-2 (subject only; bg pixels unchanged)]
+Background in IMG1 is FIXED—do not edit background pixels, colors, or objects. Only adjust how the SUBJECT receives light so it matches the existing scene:
+- Match key light direction, color temperature, and shadow hardness on face, garment, and hair to the environment (e.g. warm sun from alley opening, cool sky fill, colored walls).
+- COLOR BOUNCE / GI: Add believable reflected light from ground, buildings, flowers, sky onto lower face, chin, undersides of arms, garment folds, and hair—same hues as nearby surfaces, low intensity.
+- Rim and edge light on hair, shoulders, and ear rims from bright areas behind/side of subject; soft light wrap on silhouette against bright bg.
+- Ground contact shadow with soft penumbra at feet; darker ambient occlusion where sole meets ground. Shoes cast shadow onto floor consistent with scene light.
+- Atmospheric depth: slight haze match if bg is hazy; reflections on glossy props if present.
+- Remove halos, edge glow, bright fringe, compositing artifacts—especially hair and shoulders.
+- EDGE BLENDING: Seamless boundary; no razor cutout; no aliasing or color fringe. Natural anti-aliasing matching camera optics.
 
-[8. FABRIC & MATERIAL REALISM]
-- Thread weave micro-texture visible. Material-appropriate sheen (cotton matte, silk specular, denim rough).
-- Realistic wrinkle shadow/highlight from scene lighting. Natural skin-to-fabric transition.
+[8. FABRIC & MATERIAL REALISM — PRIORITY-2 LIGHTING]
+- Thread weave and embroidery micro-texture visible; tiny thread-level highlights from scene key light.
+- Material-appropriate sheen (linen matte, silk specular, denim rough) with directionally correct micro-shadows in folds.
+- Realistic wrinkle shadow/highlight tied to the SAME light as background. Natural skin-to-fabric contact shadow.
 
 [9. CAMERA / LENS]
 - Mild chromatic aberration at frame edges, natural vignette. Consistent bokeh.
@@ -418,7 +423,8 @@ Make the person genuinely PRESENT in the scene:
 
 [10. FINAL QUALITY]
 - Indistinguishable from real DSLR photo at 100% zoom. No plastic/waxy surfaces, no AI uniformity.
-- Real photos have micro-imperfections — embrace them. Same resolution and aspect ratio as input."""
+- Real photos have micro-imperfections — embrace them. Same resolution and aspect ratio as input.
+- RECHECK: Output must still show the SAME face identity, SAME garment, SAME pose, SAME background as IMG1—only surface realism and scene-consistent light on the subject improved."""
 
 
 _CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
