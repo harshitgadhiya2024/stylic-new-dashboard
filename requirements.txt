@@ -19,7 +19,7 @@ python-jose[cryptography]
 passlib[argon2]
 firebase-admin
 
-# ── AWS S3 (async) ────────────────────────────────────────────────────────
+# ── Cloudflare R2 (S3-compatible API, async via aioboto3) ─────────────────────
 aioboto3
 
 # ── HTTP client (async) ───────────────────────────────────────────────────

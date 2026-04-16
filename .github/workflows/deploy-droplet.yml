@@ -1,0 +1,31 @@
+# Deploy to Ubuntu 22.04 droplet — see DEPLOYMENT.md §15
+# Required secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PATH
+
+name: Deploy to Ubuntu droplet
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd ${{ secrets.DEPLOY_PATH }}
+            git fetch origin main
+            git reset --hard origin/main
+            source .venv/bin/activate
+            pip install -r requirements.txt
+            pip install -q flower || true
+            sudo systemctl restart stylicai-api
+            sudo systemctl restart stylicai-celery
+            sudo systemctl restart stylicai-flower

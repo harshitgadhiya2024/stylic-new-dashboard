@@ -271,7 +271,7 @@ async def get_poses(
     summary="Create Pose from Image (Streaming)",
     description=(
         "Uses `image_url` with SeedDream 5.0 Lite (image-to-image) to produce a mannequin PNG, "
-        "derives pose prompt with Gemini vision, uploads PNG to S3, saves document. "
+        "derives pose prompt with Gemini vision, uploads PNG to R2, saves document. "
         "SSE stream; final `done` has record. Costs the same credits as face generation (2.5)."
     ),
 )
@@ -349,7 +349,7 @@ async def create_pose_from_image(
     summary="Create Pose from Prompt (Streaming)",
     description=(
         "Generates mannequin image from `pose_prompt` + `pose_type` via SeedDream 5.0 Lite "
-        "(text-to-image), uploads S3, stores document using the same `pose_prompt` text. SSE stream."
+        "(text-to-image), uploads to R2, stores document using the same `pose_prompt` text. SSE stream."
     ),
 )
 async def create_pose_from_prompt(

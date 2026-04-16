@@ -6,7 +6,7 @@ Pipeline:
   2. build_configuration — merge vision overrides with category defaults (persisted; not sent to image).
   3. SeedDream 5.0 Lite image-to-image — user's reference photo URL + passport / black t-shirt prompt
      to preserve identity while standardizing framing and clothing.
-  4. Download result, upload to S3.
+  4. Download result, upload to R2.
 """
 
 import asyncio
@@ -19,7 +19,7 @@ from fastapi import HTTPException, status
 
 from app.config import settings
 from app.services.ai_face_service import build_configuration
-from app.services.s3_service import upload_bytes_to_s3
+from app.services.r2_service import upload_bytes_to_r2
 
 _ALLOWED_VISION_OVERRIDE_KEYS: FrozenSet[str] = frozenset(
     {
@@ -355,7 +355,7 @@ async def _download_image(result_url: str) -> bytes:
 async def generate_model_face_from_reference(image_url: str, model_category: str) -> str:
     """
     Validate reference photo, merge vision attributes into config for storage semantics,
-    run SeedDream image-to-image (reference URL + passport prompt), upload to S3.
+    run SeedDream image-to-image (reference URL + passport prompt), upload to R2.
     """
     parsed = await validate_face(image_url)
     config = build_configuration(model_category, parsed["overrides"])
@@ -365,7 +365,7 @@ async def generate_model_face_from_reference(image_url: str, model_category: str
     img_bytes  = await _download_image(result_url)
     face_id    = str(uuid.uuid4())
     s3_key     = f"model-faces/{model_category}_{face_id[:8]}.png"
-    return await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    return await upload_bytes_to_r2(img_bytes, s3_key, content_type="image/png")
 
 
 async def generate_model_face_from_reference_stream(
@@ -420,7 +420,7 @@ async def generate_model_face_from_reference_stream(
     img_bytes = await _download_image(result_url)
     face_id   = str(uuid.uuid4())
     s3_key    = f"model-faces/{model_category}_{face_id[:8]}.png"
-    s3_url    = await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    s3_url    = await upload_bytes_to_r2(img_bytes, s3_key, content_type="image/png")
     await asyncio.sleep(0.5)
 
     persist_meta: dict[str, Any] = {

@@ -55,7 +55,7 @@ _CREDIT_COLOR_CHANGE      = settings.CREDIT_COLOR_CHANGE_PER_IMAGE
         "Validates credits (len(poses_ids) × 2), stores the photoshoot document with "
         "status='processing', then fires a background job that: loads pose_prompt from each "
         "pose_id in Mongo, runs all poses concurrently via SeedDream (quality=high, 9:16), "
-        "generates 4K/2K/1K images for each pose, uploads all to S3, deducts credits, "
+        "generates 4K/2K/1K images for each pose, uploads all to Cloudflare R2, deducts credits, "
         "and updates the document to status='completed' (or 'failed'). "
         "Requires at least one poses_ids entry. "
         "Secured — user_id is taken from the auth token."
@@ -1235,7 +1235,7 @@ async def background_change_photoshoot(
     description=(
         "Fetches the front_garment_image (and back_garment_image if present) from the original "
         "photoshoot's input_parameter, passes each to kie.ai (nano-banana-pro) to apply **upper_fabric** on "
-        "upper garment regions and **lower_fabric** on lower garment regions, uploads the result(s) to S3, "
+        "upper garment regions and **lower_fabric** on lower garment regions, uploads the result(s) to R2, "
         "and returns the new garment image URL(s). "
         "No new photoshoot is created. No credits are deducted. "
         "Secured — user_id from auth token."
@@ -1246,7 +1246,7 @@ async def change_fabric_garment(
     current_user: dict = Depends(get_current_user),
 ):
     from app.services.fabric_service import change_garment_upper_lower_fabrics
-    from app.services.s3_service import upload_bytes_to_s3
+    from app.services.r2_service import upload_bytes_to_r2
 
     user_id = current_user["user_id"]
 
@@ -1270,7 +1270,7 @@ async def change_fabric_garment(
             detail="Original photoshoot has no front_garment_image in input_parameter.",
         )
 
-    # ── Step 3: call kie.ai (nano-banana-pro) for each garment image and upload to S3 ──
+    # ── Step 3: call kie.ai (nano-banana-pro) for each garment image and upload to R2 ──
     def _fab_slug(t: str, max_len: int = 28) -> str:
         s = (t or "").replace(" ", "_").replace("/", "-")
         return (s[:max_len] if s else "x").strip("_") or "x"
@@ -1284,7 +1284,7 @@ async def change_fabric_garment(
         body.lower_fabric,
     )
     front_key = f"photoshoots/fabric/{body.photoshoot_id}/front_{tag}_{uuid.uuid4().hex[:8]}.png"
-    front_s3_url = await upload_bytes_to_s3(front_bytes, front_key, content_type="image/png")
+    front_s3_url = await upload_bytes_to_r2(front_bytes, front_key, content_type="image/png")
     result["front_garment_image"] = front_s3_url
 
     if back_garment_url:
@@ -1294,7 +1294,7 @@ async def change_fabric_garment(
             body.lower_fabric,
         )
         back_key = f"photoshoots/fabric/{body.photoshoot_id}/back_{tag}_{uuid.uuid4().hex[:8]}.png"
-        back_s3_url = await upload_bytes_to_s3(back_bytes, back_key, content_type="image/png")
+        back_s3_url = await upload_bytes_to_r2(back_bytes, back_key, content_type="image/png")
         result["back_garment_image"] = back_s3_url
 
     return {
@@ -1449,7 +1449,7 @@ async def fabric_change_photoshoot(
     description=(
         "Fetches the front_garment_image (and back_garment_image if present) from the original "
         "photoshoot's input_parameter, passes each to kie.ai (nano-banana-pro) to apply **upper_texture** on "
-        "upper garment regions and **lower_texture** on lower garment regions, uploads the result(s) to S3, "
+        "upper garment regions and **lower_texture** on lower garment regions, uploads the result(s) to R2, "
         "and returns the new garment image URL(s). "
         "No new photoshoot is created. No credits are deducted. "
         "Secured — user_id from auth token."
@@ -1460,7 +1460,7 @@ async def change_texture_garment(
     current_user: dict = Depends(get_current_user),
 ):
     from app.services.fabric_service import change_garment_upper_lower_textures
-    from app.services.s3_service import upload_bytes_to_s3
+    from app.services.r2_service import upload_bytes_to_r2
 
     user_id = current_user["user_id"]
 
@@ -1484,7 +1484,7 @@ async def change_texture_garment(
             detail="Original photoshoot has no front_garment_image in input_parameter.",
         )
 
-    # ── Step 3: call kie.ai (nano-banana-pro) for each garment image and upload to S3 ──
+    # ── Step 3: call kie.ai (nano-banana-pro) for each garment image and upload to R2 ──
     def _tex_slug(t: str, max_len: int = 28) -> str:
         s = (t or "").replace(" ", "_").replace("/", "-")
         return (s[:max_len] if s else "x").strip("_") or "x"
@@ -1498,7 +1498,7 @@ async def change_texture_garment(
         body.lower_texture,
     )
     front_key = f"photoshoots/texture/{body.photoshoot_id}/front_{tag}_{uuid.uuid4().hex[:8]}.png"
-    front_s3_url = await upload_bytes_to_s3(front_bytes, front_key, content_type="image/png")
+    front_s3_url = await upload_bytes_to_r2(front_bytes, front_key, content_type="image/png")
     result["front_garment_image"] = front_s3_url
 
     if back_garment_url:
@@ -1508,7 +1508,7 @@ async def change_texture_garment(
             body.lower_texture,
         )
         back_key = f"photoshoots/texture/{body.photoshoot_id}/back_{tag}_{uuid.uuid4().hex[:8]}.png"
-        back_s3_url = await upload_bytes_to_s3(back_bytes, back_key, content_type="image/png")
+        back_s3_url = await upload_bytes_to_r2(back_bytes, back_key, content_type="image/png")
         result["back_garment_image"] = back_s3_url
 
     return {
@@ -1664,7 +1664,7 @@ async def texture_change_photoshoot(
         "Fetches the front_garment_image (and back_garment_image if present) from the original "
         "photoshoot's input_parameter, passes each to kie.ai (nano-banana-pro) to recolor **upper** garment "
         "areas with ``upper_color_hex`` and **lower** garment areas with ``lower_color_hex``, "
-        "uploads the result(s) to S3, and returns the new garment image URL(s). "
+        "uploads the result(s) to R2, and returns the new garment image URL(s). "
         "No new photoshoot is created. No credits are deducted. "
         "Secured — user_id from auth token."
     ),
@@ -1674,7 +1674,7 @@ async def change_color_garment(
     current_user: dict = Depends(get_current_user),
 ):
     from app.services.fabric_service import change_garment_upper_lower_colors
-    from app.services.s3_service import upload_bytes_to_s3
+    from app.services.r2_service import upload_bytes_to_r2
 
     user_id = current_user["user_id"]
 
@@ -1698,7 +1698,7 @@ async def change_color_garment(
             detail="Original photoshoot has no front_garment_image in input_parameter.",
         )
 
-    # ── Step 3: call kie.ai (nano-banana-pro) for each garment image and upload to S3 ──
+    # ── Step 3: call kie.ai (nano-banana-pro) for each garment image and upload to R2 ──
     u = body.upper_color_hex.lstrip("#")
     l = body.lower_color_hex.lstrip("#")
     tag = f"u{u}_l{l}"
@@ -1710,7 +1710,7 @@ async def change_color_garment(
         body.lower_color_hex,
     )
     front_key = f"photoshoots/color/{body.photoshoot_id}/front_{tag}_{uuid.uuid4().hex[:8]}.png"
-    front_s3_url = await upload_bytes_to_s3(front_bytes, front_key, content_type="image/png")
+    front_s3_url = await upload_bytes_to_r2(front_bytes, front_key, content_type="image/png")
     result["front_garment_image"] = front_s3_url
 
     if back_garment_url:
@@ -1720,7 +1720,7 @@ async def change_color_garment(
             body.lower_color_hex,
         )
         back_key = f"photoshoots/color/{body.photoshoot_id}/back_{tag}_{uuid.uuid4().hex[:8]}.png"
-        back_s3_url = await upload_bytes_to_s3(back_bytes, back_key, content_type="image/png")
+        back_s3_url = await upload_bytes_to_r2(back_bytes, back_key, content_type="image/png")
         result["back_garment_image"] = back_s3_url
 
     return {

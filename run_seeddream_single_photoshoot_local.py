@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Run SeedDream only (kie.ai) with the same inputs as POST /api/v1/photoshoots/ — no Modal,
-no S3, no credits. Results are written under OUTPUT_DIR.
+no cloud upload, no credits. Results are written under OUTPUT_DIR.
 
 Configure everything via variables below (no CLI args). Loads .env from the project root
 for SEEDDREAM_API_KEY, SEEDDREAM_MODEL, SEEDDREAM_QUALITY, SEEDDREAM_ASPECT,
@@ -44,10 +44,11 @@ BACKGROUND_ID = ""
 MODEL_ID = ""
 
 # Used when RESOLVE_REF_URLS_FROM_DB is False (must be reachable HTTP(S) URLs).
-BACKGROUND_URL = "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/backgrounds/mediterranean_coastal_archway_f9b262e5.jpg"
-MODEL_FACE_URL = "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/model-faces/adult_female_495c3a0f.png"
+# Use keys under your R2_PUBLIC_URL (see cloudflare-r2-guide.md and .env R2_*).
+BACKGROUND_URL = "https://YOUR_R2_PUBLIC_URL/backgrounds/your-background.jpg"
+MODEL_FACE_URL = "https://YOUR_R2_PUBLIC_URL/model-faces/your-face.png"
 
-FRONT_GARMENT_IMAGE = "https://aavishailabs-uploads-prod.s3.eu-north-1.amazonaws.com/users/5971e90a-2682-4c24-a16e-2eda4162f4e8/606267637a214115968fb5cc4ec2d2a7.jpeg"
+FRONT_GARMENT_IMAGE = "https://YOUR_R2_PUBLIC_URL/users/your-user-id/your-front-garment.jpeg"
 BACK_GARMENT_IMAGE = ""  # optional; include back view URL for two-reference garment mode
 
 ETHNICITY = "Indian"

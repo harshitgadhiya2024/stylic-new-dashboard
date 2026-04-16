@@ -3,7 +3,7 @@ Credit service.
 
 Handles:
   - Checking whether a user has enough credits before generation.
-  - Creating a 100×100 thumbnail from a generated face image URL and uploading to S3.
+  - Creating a 100×100 thumbnail from a generated face image URL and uploading to R2.
   - Deducting credits from the user document after successful generation.
   - Inserting a record into the credit_history collection.
 """
@@ -16,7 +16,7 @@ import httpx
 from fastapi import HTTPException, status
 
 from app.database import get_users_collection, get_credit_history_collection
-from app.services.s3_service import upload_bytes_to_s3
+from app.services.r2_service import upload_bytes_to_r2
 
 FACE_GENERATION_COST: float = 2.5
 
@@ -54,10 +54,10 @@ async def _make_thumbnail(image_url: str) -> bytes:
 
 
 async def _upload_thumbnail(image_url: str, user_id: str) -> str:
-    """Create thumbnail from image_url, upload to S3, return public URL."""
+    """Create thumbnail from image_url, upload to R2, return public URL."""
     thumb_bytes = await _make_thumbnail(image_url)
     key = f"thumbnails/{user_id}_{uuid.uuid4().hex[:8]}.jpg"
-    return await upload_bytes_to_s3(thumb_bytes, key, content_type="image/jpeg")
+    return await upload_bytes_to_r2(thumb_bytes, key, content_type="image/jpeg")
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +87,7 @@ async def deduct_credits_and_record(
 ) -> None:
     """
     After successful face generation:
-      1. Create a thumbnail from generated_face_url and upload to S3.
+      1. Create a thumbnail from generated_face_url and upload to R2.
       2. Deduct FACE_GENERATION_COST from user.credits in the users collection.
       3. Insert a record into credit_history.
 

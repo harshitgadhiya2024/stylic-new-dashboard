@@ -19,7 +19,7 @@ import httpx
 from fastapi import HTTPException, status
 
 from app.config import settings
-from app.services.s3_service import upload_bytes_to_s3
+from app.services.r2_service import upload_bytes_to_r2
 
 _CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
 _STATUS_URL = "https://api.kie.ai/api/v1/jobs/recordInfo"
@@ -204,7 +204,7 @@ async def generate_background_stream(
     img_bytes = await _download_image(result_url)
     bg_id     = str(uuid.uuid4())
     s3_key    = f"backgrounds/generated_{bg_id[:8]}.png"
-    s3_url    = await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    s3_url    = await upload_bytes_to_r2(img_bytes, s3_key, content_type="image/png")
     await asyncio.sleep(0.5)
 
     yield ("done", "Background generation complete", s3_url)
@@ -316,7 +316,7 @@ async def generate_background_with_ai_stream(
     yield ("uploading", "Uploading generated background to storage", None)
     bg_id  = str(uuid.uuid4())
     s3_key = f"backgrounds/ai_{bg_id[:8]}.png"
-    s3_url = await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    s3_url = await upload_bytes_to_r2(img_bytes, s3_key, content_type="image/png")
     await asyncio.sleep(0.5)
 
     yield ("done", "Background generation complete", s3_url)

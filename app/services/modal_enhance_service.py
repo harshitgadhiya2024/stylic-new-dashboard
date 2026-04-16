@@ -17,7 +17,7 @@ from PIL import Image
 
 from app.config import settings
 from app.database import get_upscaling_collection
-from app.services.s3_service import upload_bytes_to_s3
+from app.services.r2_service import upload_bytes_to_r2
 
 logger = logging.getLogger("modal_enhance")
 
@@ -110,7 +110,7 @@ async def _upload_upscaled_outputs(prefix: str, outputs: dict[str, bytes]) -> di
         "1k": "1k_upscaled",
     }
     upload_tasks = {
-        label: upload_bytes_to_s3(data, f"{prefix}_{label}_upscaled.png", "image/png")
+        label: upload_bytes_to_r2(data, f"{prefix}_{label}_upscaled.png", "image/png")
         for label, data in outputs.items()
         if label in label_to_key
     }

@@ -18,11 +18,15 @@ class Settings(BaseSettings):
     SMTP_EMAIL: str = ""
     SMTP_PASSWORD: str = ""
 
-    # AWS S3
-    AWS_ACCESS_KEY_ID: str = ""
-    AWS_SECRET_ACCESS_KEY: str = ""
-    AWS_REGION: str = "us-east-1"
-    AWS_S3_BUCKET_NAME: str = ""
+    # Cloudflare R2 (S3-compatible API — see cloudflare-r2-guide.md)
+    R2_ACCOUNT_ID: str = ""
+    R2_ACCESS_KEY_ID: str = ""
+    R2_SECRET_ACCESS_KEY: str = ""
+    R2_BUCKET_NAME: str = ""
+    # Public base URL (no trailing slash), e.g. https://cdn.yourdomain.com or https://pub-xxx.r2.dev
+    R2_PUBLIC_URL: str = ""
+    # Optional full endpoint override; default is https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+    R2_ENDPOINT_URL: str = ""
 
     # Firebase (Google Sign-In)
     FIREBASE_SERVICE_ACCOUNT_KEY: str = "./stylic-ai-d1ee0-firebase-adminsdk-fbsvc-a4a36772f6.json"

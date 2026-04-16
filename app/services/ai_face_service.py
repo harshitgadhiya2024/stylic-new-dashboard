@@ -1,5 +1,5 @@
 """
-AI model-face portrait generation (text prompt → image → S3).
+AI model-face portrait generation (text prompt → image → R2).
 
 Uses the same prompt template and configuration JSON style as
 scripts/generate_model_faces.py (passport-style headshot instructions).
@@ -17,7 +17,7 @@ from fastapi import HTTPException, status
 from PIL import Image
 
 from app.config import settings
-from app.services.s3_service import upload_bytes_to_s3
+from app.services.r2_service import upload_bytes_to_r2
 
 _CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
 _STATUS_URL = "https://api.kie.ai/api/v1/jobs/recordInfo"
@@ -241,7 +241,7 @@ async def generate_face_image(config: dict) -> bytes:
 
 async def generate_and_upload_face(category: str, overrides: dict) -> tuple[str, dict]:
     """
-    Full pipeline: build config → generate image → upload to S3.
+    Full pipeline: build config → generate image → upload to R2.
     Returns (face_url, final_configuration).
     """
     config    = build_configuration(category, overrides)
@@ -249,7 +249,7 @@ async def generate_and_upload_face(category: str, overrides: dict) -> tuple[str,
 
     face_id  = str(uuid.uuid4())
     s3_key   = f"model-faces/{category}_{face_id[:8]}.png"
-    face_url = await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    face_url = await upload_bytes_to_r2(img_bytes, s3_key, content_type="image/png")
 
     return face_url, config
 
@@ -291,7 +291,7 @@ async def generate_and_upload_face_stream(
     yield ("uploading", "Uploading generated face to storage", None, None)
     face_id  = str(uuid.uuid4())
     s3_key   = f"model-faces/{category}_{face_id[:8]}.png"
-    face_url = await upload_bytes_to_s3(img_bytes, s3_key, content_type="image/png")
+    face_url = await upload_bytes_to_r2(img_bytes, s3_key, content_type="image/png")
     await asyncio.sleep(0.5)
 
     yield ("done", "Face generation complete", face_url, config)

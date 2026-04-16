@@ -44,11 +44,10 @@ except Exception:
 
 INPUT_IMAGE = "input1_4k.png"   # ← path to your input image
 
-# ── S3 Upload ───────────────────────────────────────────────────
-# Images are uploaded to S3 directly from Modal and public URLs are returned.
-AWS_REGION        = "eu-north-1"
-AWS_S3_BUCKET     = "aavishailabs-uploads-prod"
-S3_KEY_PREFIX     = "fashion-realism"   # folder path inside the bucket
+# ── Cloudflare R2 (optional local script prefix) ────────────────────────────
+# The FastAPI app uploads to R2 via app/services/r2_service.py (see cloudflare-r2-guide.md).
+# This Modal pipeline returns bytes to the app; it does not upload by default.
+R2_KEY_PREFIX     = "fashion-realism"   # logical folder prefix if you add R2 upload here
 
 # ── Outputs ────────────────────────────────────────────────────
 SAVE_8K = True   # useful when SR_UPSCALE_MODE=2 on 4K input
@@ -2033,7 +2032,7 @@ try:
             # gfpgan + facexlib + timm with --no-deps to prevent basicsr downgrade
             "pip install timm facexlib gfpgan opencv-python-headless Pillow "
             "requests tqdm --no-deps",
-            # runtime deps skipped by --no-deps; einops needed by HAT; boto3 for S3
+            # runtime deps skipped by --no-deps; einops needed by HAT; boto3 optional if adding R2 upload from Modal
             "pip install filterpy huggingface_hub safetensors einops boto3 "
             "diffusers transformers accelerate",
         )

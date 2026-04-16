@@ -13,11 +13,11 @@ Responsibilities:
        c. Poll until complete; get SeedDream result URL.
        d. Submit SeedDream result to nano-banana-pro realism pass (skin, eyes,
           hands, hair, shoes, background blending). Poll until complete.
-       e. Download realism 4K bytes; resize to 2K and 1K; upload 4K / 2K / 1K to S3.
+       e. Download realism 4K bytes; resize to 2K and 1K; upload 4K / 2K / 1K to R2.
        f. Send realism 4K bytes to Modal GPU pipeline for enhancement.
-       g. Upload enhanced 8K, 4K, 2K, 1K to S3 and save to upscaling_data.
+       g. Upload enhanced 8K, 4K, 2K, 1K to R2 and save to upscaling_data.
   5. Build output_images mapping — each entry stores the upscaled 2K URL as `image`.
-  6. Deduct credits and record history only for poses that fully succeeded (full pipeline + S3 output).
+  6. Deduct credits and record history only for poses that fully succeeded (full pipeline + R2 output).
   7. Update photoshoot document: output_images, status, is_completed, is_credit_deducted.
      On any unhandled error → status="failed", error field set.
 """
@@ -45,7 +45,7 @@ from app.database import (
     get_users_collection,
     get_credit_history_collection,
 )
-from app.services.s3_service import upload_bytes_to_s3
+from app.services.r2_service import upload_bytes_to_r2
 from app.services.modal_enhance_service import enhance_and_upload
 
 _CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
@@ -1071,12 +1071,12 @@ async def _process_one_pose(
     bytes_1k = await asyncio.get_running_loop().run_in_executor(None, _resize_image, bytes_4k, 1024)
     logger.info("[%s] Resize complete", pose_label)
 
-    logger.info("[%s] Uploading realism 4K / 2K / 1K to S3 (prefix=%s)...", pose_label, prefix)
+    logger.info("[%s] Uploading realism 4K / 2K / 1K to R2 (prefix=%s)...", pose_label, prefix)
 
     url_4k, url_2k, url_1k = await asyncio.gather(
-        upload_bytes_to_s3(bytes_4k, f"{prefix}_4k.png", "image/png"),
-        upload_bytes_to_s3(bytes_2k, f"{prefix}_2k.png", "image/png"),
-        upload_bytes_to_s3(bytes_1k, f"{prefix}_1k.png", "image/png"),
+        upload_bytes_to_r2(bytes_4k, f"{prefix}_4k.png", "image/png"),
+        upload_bytes_to_r2(bytes_2k, f"{prefix}_2k.png", "image/png"),
+        upload_bytes_to_r2(bytes_1k, f"{prefix}_1k.png", "image/png"),
     )
     logger.info("[%s] Uploaded realism 4K, 2K, 1K", pose_label)
 
@@ -1273,7 +1273,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
                     len(output_images), len(failed_poses))
 
         # ── Step 4: deduct credits only for fully successful poses ───────
-        # Each success includes SeedDream → Modal upscale → S3 (see _process_one_pose).
+        # Each success includes SeedDream → Modal upscale → R2 (see _process_one_pose).
         successful_count = len(output_images)
         credit_per_image = float(req.get("credit_per_image", settings.CREDIT_SINGLE_PHOTOSHOOT_PER_IMAGE))
         total_credit = round(successful_count * credit_per_image, 4)

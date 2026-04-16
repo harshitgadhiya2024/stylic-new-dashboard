@@ -15,7 +15,7 @@ from app.models.user import (
 from app.routers.auth import _generate_username
 from app.services.email_service import send_otp_email
 from app.services.otp_service import generate_otp, save_otp, verify_otp, consume_otp
-from app.services.s3_service import upload_file_to_s3
+from app.services.r2_service import upload_file_to_r2
 from app.utils.password import hash_password, verify_password, validate_password_strength
 from app.utils.user_response import user_dict_for_api
 
@@ -262,7 +262,7 @@ async def change_email_verify_otp(
 
 @router.post(
     "/upload-file",
-    summary="Upload File to S3",
+    summary="Upload File to Cloudflare R2",
     description="Upload a file (image, PDF, video) and receive a public URL.",
 )
 async def upload_file(
@@ -276,6 +276,6 @@ async def upload_file(
         )
 
     user_id = current_user["user_id"]
-    url = await upload_file_to_s3(file, folder=f"users/{user_id}")
+    url = await upload_file_to_r2(file, folder=f"users/{user_id}")
 
     return {"success": True, "url": url}

@@ -3,7 +3,7 @@ Pose mannequin pipeline (from pose_to_mannequin.py), adapted for the API.
 
 1. SeedDream 5.0 Lite (image-to-image) → mannequin PNG from reference photo URL
 2. Gemini flash (vision) → pose-only prompt from mannequin PNG
-3. S3 upload → public URL
+3. R2 upload → public URL
 
 Also: text-only mannequin generation from a written pose description (API-3)
 via SeedDream 5.0 Lite text-to-image.
@@ -25,7 +25,7 @@ from google.genai import types as gtypes
 from PIL import Image
 
 from app.config import settings
-from app.services.s3_service import upload_bytes_to_s3
+from app.services.r2_service import upload_bytes_to_r2
 
 logger = logging.getLogger("pose_mannequin")
 
@@ -299,7 +299,7 @@ async def _seedream_mannequin_from_text_with_retries(pose_prompt: str, pose_type
 
 async def upload_mannequin_png(png_bytes: bytes) -> str:
     key = f"{MANNEQUIN_PREFIX}/{uuid.uuid4()}.png"
-    return await upload_bytes_to_s3(png_bytes, key, content_type="image/png")
+    return await upload_bytes_to_r2(png_bytes, key, content_type="image/png")
 
 
 async def stream_pose_from_image_url(image_url: str) -> AsyncGenerator[tuple, None]:
@@ -318,7 +318,7 @@ async def stream_pose_from_image_url(image_url: str) -> AsyncGenerator[tuple, No
         ),
     )
 
-    yield ("progress", "Uploading mannequin to S3…")
+    yield ("progress", "Uploading mannequin to R2…")
     url = await upload_mannequin_png(png_bytes)
 
     yield ("done", url, pose_prompt)
@@ -331,6 +331,6 @@ async def stream_pose_from_text_prompt(
     yield ("progress", "Generating mannequin from pose description (SeedDream)…")
     raw = await _seedream_mannequin_from_text_with_retries(pose_prompt, pose_type)
     png_bytes = _to_png_bytes(raw)
-    yield ("progress", "Uploading mannequin to S3…")
+    yield ("progress", "Uploading mannequin to R2…")
     url = await upload_mannequin_png(png_bytes)
     yield ("done", url)
