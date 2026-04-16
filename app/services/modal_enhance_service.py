@@ -257,8 +257,25 @@ async def enhance_and_upload(
     try:
         if provider == "kie":
             logger.info("[upscale] Using KIE provider for image_id=%s", image_id)
-            outputs = await _run_kie_upscale(source_image_url=source_image_url, image_id=image_id, seeddream_url=seeddream_2k_url)
-            upscaled_urls = await _upload_upscaled_outputs(prefix, outputs)
+            counter_kie_upscale = 0
+            while counter_kie_upscale < 3:
+                try:
+                    outputs = await _run_kie_upscale(source_image_url=source_image_url, image_id=image_id, seeddream_url=seeddream_2k_url)
+                    if outputs:
+                        _8k_photo = outputs.get("8k")
+                        _4k_photo = outputs.get("4k")
+                        _2k_photo = outputs.get("2k")
+                        _1k_photo = outputs.get("1k")
+                        if _8k_photo and _4k_photo and _2k_photo and _1k_photo:
+                            upscaled_urls = await _upload_upscaled_outputs(prefix, outputs)
+                            break
+                    counter_kie_upscale += 1
+                except Exception as e:
+                    counter_kie_upscale += 1
+                    await asyncio.sleep(3)
+                    
+            # outputs = await _run_kie_upscale(source_image_url=source_image_url, image_id=image_id, seeddream_url=seeddream_2k_url)
+            # upscaled_urls = await _upload_upscaled_outputs(prefix, outputs)
         else:
             # Modal branch intentionally disabled for now.
             # logger.info("[upscale] Using Modal provider for image_id=%s", image_id)
