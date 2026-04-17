@@ -447,7 +447,7 @@ Goal: on push to `main`, SSH into the droplet, `git pull`, restart **systemd** u
 
 ### 15.2 GitHub repository secrets
 
-In **GitHub → Settings → Secrets data and variables → Actions**, add:
+In **GitHub → Settings → Secrets and variables → Actions**, add:
 
 | Secret | Example |
 |--------|---------|
