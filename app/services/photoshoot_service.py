@@ -523,6 +523,12 @@ def _build_compact_prompt(
             f"[POSE \u2014 EXACT COPY FROM IMG{mi} MANNEQUIN]\n"
             f"IMG{mi} is a grey featureless mannequin. It is ONLY a body-posture reference.\n"
             f"You MUST replicate the EXACT pose from IMG{mi} with ZERO deviation:\n"
+            f"- FRAMING/CROP LOCK (CRITICAL): Match mannequin body coverage exactly. "
+            f"If IMG{mi} shows only upper half, output only upper half. "
+            f"If IMG{mi} shows only lower half, output only lower half. "
+            f"If IMG{mi} shows full body, output full body. "
+            f"Do NOT expand crop to full body when mannequin is half body. "
+            f"Do NOT crop body when mannequin is full body.\n"
             f"- HANDS: Copy exact hand position\u2014if hand is in pocket, keep it in pocket; if hand is on hip, "
             f"keep it on hip; if hands are clasped, keep them clasped. Reproduce exact finger curl, wrist angle, "
             f"and palm orientation. Do NOT invent a different hand placement.\n"
@@ -609,8 +615,10 @@ def _build_compact_prompt_optimized(
 
     pose_block = (
         f"[POSE FROM IMG{mi}]\n"
-        f"Copy exact posture from IMG{mi}: hands/fingers/wrists, torso lean, shoulder tilt, hip rotation, "
-        f"legs/knees/feet, head tilt/turn/chin/gaze. Use mannequin only for body pose; ignore mannequin face/clothes/bg.{hands_note}\n"
+        f"Copy exact posture and framing from IMG{mi}: same body coverage/crop (upper-half only, lower-half only, "
+        f"or full-body exactly as shown), same hands/fingers/wrists, torso lean, shoulder tilt, hip rotation, "
+        f"legs/knees/feet, head tilt/turn/chin/gaze. Do not change crop scope. "
+        f"Use mannequin only for body pose/framing; ignore mannequin face/clothes/bg.{hands_note}\n"
         if has_mannequin_image
         else f"[POSE] {pose}\n"
     )

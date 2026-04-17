@@ -116,11 +116,12 @@ def _normalize_background_type_filter(raw: Optional[str]) -> Optional[str]:
     description=(
         "Accepts a background image URL, name, and background_type (Indoor | Outdoor | Studio; stored lowercase). "
         "Streams real-time progress via SSE. "
-        "Validates the URL, generates an enhanced background via SeedDream (16:9), "
-        "uploads to Cloudflare R2, saves to DB, and deducts 2.5 credits in the background. "
+        "Validates the URL, uploads the same custom background image directly to Cloudflare R2, "
+        "saves the public URL to DB, and deducts 2.5 credits in the background. "
+        "No SeedDream call is made for this endpoint. "
         "Secured — user_id is taken from the auth token. "
         "Response is `text/event-stream`. Final event `done` contains the full background record. "
-        "Expected duration: 20-30 seconds."
+        "Expected duration: ~8-12 seconds with processing-style streaming updates."
     ),
 )
 async def create_background(
@@ -168,7 +169,7 @@ async def create_background(
                         saved or doc_db,
                         viewer_user_id=current_user["user_id"],
                     )
-                    yield _sse("done", {"step": "done", "message": "Background generation complete", "data": payload})
+                    yield _sse("done", {"step": "done", "message": "Custom background upload complete", "data": payload})
                 else:
                     yield _sse(step, {"step": step, "message": message})
         except HTTPException as exc:

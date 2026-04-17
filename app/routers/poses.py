@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
@@ -287,6 +288,15 @@ async def create_pose_from_image(
         mannequin_url: str | None = None
         pose_prompt_final: str | None = None
         try:
+            yield _sse("initialize", {"step": "initialize", "message": "Initializing custom pose generation"})
+            await asyncio.sleep(0.6)
+            yield _sse("validating_input", {"step": "validating_input", "message": "Validating pose request input"})
+            await asyncio.sleep(0.6)
+            yield _sse("validating_image", {"step": "validating_image", "message": "Checking source image accessibility"})
+            await asyncio.sleep(0.6)
+            yield _sse("preparing_pipeline", {"step": "preparing_pipeline", "message": "Preparing mannequin generation pipeline"})
+            await asyncio.sleep(0.6)
+
             async for chunk in stream_pose_from_image_url(body.image_url):
                 kind = chunk[0]
                 if kind == "progress":
@@ -363,6 +373,15 @@ async def create_pose_from_prompt(
     async def event_stream() -> AsyncGenerator[str, None]:
         mannequin_url: str | None = None
         try:
+            yield _sse("initialize", {"step": "initialize", "message": "Initializing custom pose generation"})
+            await asyncio.sleep(0.6)
+            yield _sse("validating_input", {"step": "validating_input", "message": "Validating pose prompt and pose type"})
+            await asyncio.sleep(0.6)
+            yield _sse("preparing_prompt", {"step": "preparing_prompt", "message": "Preparing structured mannequin generation prompt"})
+            await asyncio.sleep(0.6)
+            yield _sse("preparing_pipeline", {"step": "preparing_pipeline", "message": "Preparing mannequin generation pipeline"})
+            await asyncio.sleep(0.6)
+
             async for chunk in stream_pose_from_text_prompt(body.pose_prompt, body.pose_type):
                 kind = chunk[0]
                 if kind == "progress":

@@ -64,6 +64,14 @@ POSE (critical):
   weight shift, hand placement, foot placement, torso lean, and head tilt.
 - Do NOT simplify, straighten, or alter the pose in any way.
 
+FRAMING / CROP LOCK (critical):
+- Preserve the EXACT camera framing from the input photo.
+- If the input is a close-up crop (face/neck/shoulder/chest/waist detail), keep it as close-up.
+- If the input shows only upper half or torso details, do NOT zoom out to full body.
+- Keep the same visible garment regions and crop boundaries as the source image.
+- Maintain the same camera distance/composition so garment detailing visibility remains equivalent.
+- Never invent hidden body parts outside the original frame.
+
 BACKGROUND:
 - Critical: background must be ONLY pure white (#FFFFFF).
 - Do not use any other background color.
