@@ -66,16 +66,14 @@ async def _fetch_pose_data(pose_ids: List[str], poses_col=None) -> List[dict]:
         if doc:
             logger.info("[poses] Found pose_id=%s  image_url=%s", pid, bool(doc.get("image_url")))
             results.append({
-                "image_url":           doc.get("image_url") or "",
-                "pose_prompt":         doc.get("pose_prompt") or "",
-                "mannequin_framing":   doc.get("mannequin_framing"),
+                "image_url":   doc.get("image_url") or "",
+                "pose_prompt": doc.get("pose_prompt") or "",
             })
         else:
             logger.warning("[poses] No doc for pose_id=%s — text fallback only", pid)
             results.append({
-                "image_url":           "",
-                "pose_prompt":         f"Standing in a natural, relaxed fashion model pose — pose id: {pid}",
-                "mannequin_framing":   None,
+                "image_url":   "",
+                "pose_prompt": f"Standing in a natural, relaxed fashion model pose — pose id: {pid}",
             })
     logger.info("[poses] Resolved %d pose doc(s)", len(results))
     return results
@@ -95,11 +93,7 @@ async def resolve_poses(req: dict, poses_col=None) -> List[dict]:
     pose_data = req.get("pose_data")
     if pose_data and isinstance(pose_data, list):
         result = [
-            {
-                "image_url":         pd.get("image_url") or "",
-                "pose_prompt":       pd.get("pose_prompt") or "",
-                "mannequin_framing": pd.get("mannequin_framing"),
-            }
+            {"image_url": pd.get("image_url") or "", "pose_prompt": pd.get("pose_prompt") or ""}
             for pd in pose_data
         ]
         logger.info("[poses] Using %d pre-resolved pose_data entries (regeneration)", len(result))
@@ -324,7 +318,7 @@ Canon DSLR / full-frame. 4K, 9:16. Candid composition. Shallow depth of field \u
 
 [P5 \u2014 POSE] {clean_pose if clean_pose else "Natural, relaxed full-body fashion model pose."}
 
-[FOOTWEAR] MANDATORY: footwear is required in every image; it must match garment style/color theme, stay clearly visible on ground, and bare feet are not allowed.{bag_note}
+[FOOTWEAR] Include shoes only when the shot shows full body or visible feet\u2014match the outfit; no bare feet when feet are visible. Upper-body-only framing does not require shoes in frame.{bag_note}
 
 [STYLE] Ornaments: {req.get('ornaments', 'none')}.
 
@@ -364,242 +358,12 @@ def _sanitize_pose_compact(pose: str) -> str:
     return _re.sub(r'\s{2,}', ' ', result).strip()
 
 
-# Mannequin crop / framing for SeedDream prompt branching (see ``mannequin_framing`` on pose docs).
-_MANNEQUIN_FRAMING_CANONICAL = frozenset({
-    "full_body", "upper_body", "lower_body", "detail_closeup",
-})
-
-
-def _normalize_mannequin_framing_explicit(raw: str | None) -> str | None:
-    if raw is None:
-        return None
-    s = str(raw).strip().lower().replace(" ", "_").replace("-", "_")
-    while "__" in s:
-        s = s.replace("__", "_")
-    aliases = {
-        "full": "full_body",
-        "fullbody": "full_body",
-        "half_upper": "upper_body",
-        "upper": "upper_body",
-        "upper_half": "upper_body",
-        "half_lower": "lower_body",
-        "lower": "lower_body",
-        "lower_half": "lower_body",
-        "detail": "detail_closeup",
-        "closeup": "detail_closeup",
-        "close_up": "detail_closeup",
-    }
-    s = aliases.get(s, s)
-    return s if s in _MANNEQUIN_FRAMING_CANONICAL else None
-
-
-def _infer_mannequin_framing_from_pose_prompt(pose_prompt: str) -> str:
-    """Best-effort framing from pose text when ``mannequin_framing`` is not set on the pose."""
-    t = (pose_prompt or "").lower()
-    detail_kw = (
-        "close-up", "closeup", "detail shot", "detail view", "detail framing",
-        "extreme close", "macro framing", "tight crop", "cropped tight",
-        "neckline focus", "fabric detail", "texture shot", "beauty shot",
-        "headshot", "head shot", "facial close", "profile close",
-    )
-    if any(k in t for k in detail_kw):
-        return "detail_closeup"
-    upper_kw = (
-        "upper body", "upper half", "upper-body", "upperbody",
-        "waist-up", "waist up", "from waist up", "from the waist up",
-        "bust shot", "torso shot", "torso only", "chest up", "chest-up",
-        "shoulders up", "shoulders-up", "half-body upper", "half body upper",
-        "medium close-up", "medium shot", "mid shot", "portrait crop",
-    )
-    if any(k in t for k in upper_kw):
-        return "upper_body"
-    lower_kw = (
-        "lower body", "lower half", "lower-body", "waist down", "waist-down",
-        "from waist down", "from the waist down", "legs only", "leg shot",
-        "full leg", "knee down", "ankle down",
-    )
-    if any(k in t for k in lower_kw):
-        return "lower_body"
-    full_kw = (
-        "full body", "full-body", "full length", "full-length",
-        "head to toe", "entire figure", "whole body", "standing figure",
-        "three-quarter", "three quarter", "3/4 length", "american shot",
-    )
-    if any(k in t for k in full_kw):
-        return "full_body"
-    return "full_body"
-
-
-def resolve_mannequin_framing(pose_prompt: str, explicit: str | None) -> str:
-    """Return canonical framing for mannequin-driven photoshoot prompts."""
-    norm = _normalize_mannequin_framing_explicit(explicit)
-    if norm:
-        return norm
-    return _infer_mannequin_framing_from_pose_prompt(pose_prompt)
-
-
-def _compact_bg_block(bi: int, bg_label: str, *, has_mannequin: bool, framing: str) -> str:
-    """Background + in-scene subject integration; softer feet/shoes language for cropped mannequin shots."""
-    if not has_mannequin or framing == "full_body" or framing == "lower_body":
-        return (
-            f"[BG + IN-SCENE SUBJECT\u2014IMG{bi} ({bg_label})]\n"
-            f"Single real capture\u2014not a composite paste. Light the subject ONLY from the same light field as IMG{bi} "
-            f"(key direction, WB, shadow softness); avoid flat frontal studio fill. "
-            f"Ambient color bounce from walls, floor, foliage, visible lamps onto skin, garment, and shoes. "
-            f"Ambient occlusion plus tight contact shadow at soles and hem where fabric meets floor; cast shadow matches scene key. "
-            f"Feet on the floor plane following tile/arch perspective. Rim on hair/shoulders from scene sources; "
-            f"subtle light wrap on silhouette edges toward bright areas\u2014no razor cutout. "
-            f"Match subject exposure, contrast, and saturation to the environment (not brighter/punchier than the room). "
-            f"No floating, no halo. Do not alter background.\n"
-        )
-    # upper_body or detail_closeup — avoid pulling composition to full-length / feet on ground
-    return (
-        f"[BG + IN-SCENE SUBJECT\u2014IMG{bi} ({bg_label})]\n"
-        f"Single real capture\u2014not a composite paste. Light the VISIBLE subject ONLY from the same light field as IMG{bi} "
-        f"(key direction, WB, shadow softness); avoid flat frontal studio fill. "
-        f"Ambient bounce from the scene onto visible skin and garment only\u2014same palette and softness as IMG{bi}. "
-        f"Do NOT invent feet, shoes, floor contact, or out-of-frame body parts; do NOT zoom out beyond the mannequin crop. "
-        f"Rim on visible hair/shoulders from scene sources; subtle edge light wrap\u2014no razor cutout. "
-        f"Match visible-subject exposure and saturation to the environment (not brighter/punchier than the room). "
-        f"No floating, no halo. Do not alter background.\n"
-    )
-
-
-def _compact_footwear_ornaments_line(
-    *,
-    has_mannequin: bool,
-    framing: str,
-    bag: str,
-    orn: str,
-    mannequin_img: int,
-) -> str:
-    base_orn = f"Ornaments: {orn or 'none'}."
-    if not has_mannequin:
-        return (
-            f"MANDATORY footwear in every image: match garment style/color theme, keep visible on ground, "
-            f"and no bare feet.{bag} {base_orn}\n"
-        )
-    if framing == "full_body":
-        return (
-            f"MANDATORY footwear in every image: match garment style/color theme, keep visible on ground, "
-            f"and no bare feet.{bag} {base_orn}\n"
-        )
-    if framing == "lower_body":
-        return (
-            f"MANDATORY footwear in frame: shoes on the ground plane, match garment style/color theme; "
-            f"no bare feet.{bag} {base_orn}\n"
-        )
-    if framing == "upper_body":
-        return (
-            f"Waist-up / upper-body crop: do NOT show feet or shoes; do NOT zoom out to add lower body.{bag} {base_orn}\n"
-        )
-    # detail_closeup
-    return (
-        f"Detail / close-up framing: show feet/shoes/footwear ONLY if they appear inside IMG{mannequin_img}; "
-        f"never zoom out or add legs to introduce shoes.{bag} {base_orn}\n"
-    )
-
-
-def _compact_mannequin_pose_block(mi: int, hands_note: str, framing: str) -> str:
-    """Pose instructions when IMG{mi} is the mannequin; varies by framing mode."""
-    common_head = (
-        f"[POSE \u2014 EXACT COPY FROM IMG{mi} MANNEQUIN]\n"
-        f"IMG{mi} is a grey featureless mannequin. It is ONLY a body-posture reference.\n"
-    )
-    lock_common = (
-        f"- FRAMING/CROP LOCK (CRITICAL): Match mannequin body coverage exactly. "
-        f"If IMG{mi} shows only upper half, output only upper half. "
-        f"If IMG{mi} shows only lower half, output only lower half. "
-        f"If IMG{mi} shows full body, output full body. "
-        f"Do NOT expand crop to full body when mannequin is half body. "
-        f"Do NOT crop body when mannequin is full body.\n"
-    )
-    detail_extra = (
-        f"- DETAIL / CLOSE-UP LOCK (CRITICAL): IMG{mi} is a detailing view\u2014replicate the SAME camera distance, "
-        f"same crop edges, and same visible body/garment regions. Do NOT zoom out or widen the frame. "
-        f"Do NOT invent anatomy or garment outside the mannequin frame.\n"
-    )
-    hands = (
-        f"- HANDS: Copy exact hand position\u2014if hand is in pocket, keep it in pocket; if hand is on hip, "
-        f"keep it on hip; if hands are clasped, keep them clasped. Reproduce exact finger curl, wrist angle, "
-        f"and palm orientation. Do NOT invent a different hand placement.\n"
-    )
-    torso = (
-        f"- BODY/TORSO: Copy exact torso lean angle, shoulder tilt, chest orientation, spine curvature, "
-        f"hip rotation, and weight shift. Do NOT straighten or alter the torso.\n"
-    )
-    legs_feet = (
-        f"- LEGS/FEET: Copy exact leg stance\u2014crossed, apart, bent, straight\u2014exactly as shown. "
-        f"Replicate knee bend angle, foot placement, foot direction, and weight distribution between legs.\n"
-    )
-    head = (
-        f"- HEAD: Copy exact head tilt, turn direction, chin angle, and gaze direction.\n"
-    )
-    ignore = (
-        f"IGNORE everything else about IMG{mi}\u2014ignore its grey skin, featureless face, bald head, "
-        f"white background, and clothing. Only replicate the body posture on the real human model.{hands_note}\n"
-    )
-
-    if framing == "detail_closeup":
-        return (
-            common_head
-            + f"You MUST match IMG{mi} as a DETAIL / CLOSE-UP reference with ZERO deviation:\n"
-            + detail_extra
-            + lock_common
-            + hands
-            + torso
-            + head
-            + ignore
-        )
-    if framing == "upper_body":
-        return (
-            common_head
-            + f"You MUST replicate the EXACT upper-body pose from IMG{mi} with ZERO deviation:\n"
-            + lock_common
-            + hands
-            + torso
-            + head
-            + f"- LEGS/FEET: OUT OF FRAME\u2014do not render legs, knees, feet, or shoes; do NOT zoom out.\n"
-            + ignore
-        )
-    if framing == "lower_body":
-        return (
-            common_head
-            + f"You MUST replicate the EXACT lower-body pose from IMG{mi} with ZERO deviation:\n"
-            + lock_common
-            + legs_feet
-            + f"- UPPER BODY: Only reproduce torso/head/hands exactly as VISIBLE in IMG{mi}; "
-            f"do NOT expand crop upward to invent missing upper body.\n"
-            + hands
-            + torso
-            + head
-            + ignore
-        )
-    # full_body
-    return (
-        common_head
-        + f"You MUST replicate the EXACT pose from IMG{mi} with ZERO deviation:\n"
-        + lock_common
-        + (
-            f"- CLOSE-UP DETAIL LOCK (CRITICAL): If IMG{mi} is a close-up/detail crop "
-            f"(neck/shoulder/chest/waist/garment-detail framing), keep the same close-up camera distance "
-            f"and same visible garment regions. Do NOT zoom out or invent out-of-frame body parts.\n"
-        )
-        + hands
-        + torso
-        + legs_feet
-        + head
-        + ignore
-    )
-
-
 def _build_compact_prompt(
     pose: str,
     has_back: bool,
     req: dict,
     *,
     has_mannequin_image: bool = False,
-    mannequin_framing: str = "full_body",
 ) -> str:
     """Build a <=3000-char SeedDream prompt.
 
@@ -721,27 +485,6 @@ def _build_compact_prompt(
     if hands_must_show:
         hands_note = " Do not let dupatta/pallu/fabric hide hands or fingers."
 
-    framing_eff = (
-        mannequin_framing
-        if mannequin_framing in _MANNEQUIN_FRAMING_CANONICAL
-        else "full_body"
-    )
-    bg_block = _compact_bg_block(
-        bi, bg_label, has_mannequin=has_mannequin_image, framing=framing_eff,
-    )
-    pose_block = (
-        _compact_mannequin_pose_block(mi, hands_note, framing_eff)
-        if has_mannequin_image
-        else f"[POSE] {clean_pose}\n"
-    )
-    footwear_block = _compact_footwear_ornaments_line(
-        has_mannequin=has_mannequin_image,
-        framing=framing_eff,
-        bag=bag,
-        orn=orn,
-        mannequin_img=mi,
-    )
-
     prompt = (
         f"Hyperrealistic editorial fashion photograph\u2014real person, NOT illustration, NOT AI-looking, NOT plastic skin.\n"
         f"\n"
@@ -762,16 +505,49 @@ def _build_compact_prompt(
         f"SSS, tone variation, knuckle/crease detail. Skin lit ONLY by IMG{bi} light\u2014include micro-specular hits on "
         f"cheek/nose from that light. No plastic or poreless beauty skin.\n"
         f"\n"
-        + bg_block
-        + f"\n"
+        f"[BG + IN-SCENE SUBJECT\u2014IMG{bi} ({bg_label})]\n"
+        f"Subject is physically present in the same space as IMG{bi}\u2014naturally lit and blended, not pasted. "
+        f"Use the same light field as IMG{bi} (key direction, WB, shadow softness); avoid flat frontal studio fill. "
+        f"Ambient bounce from the environment onto visible skin and garment (and footwear only if feet are in frame). "
+        f"Rim on hair/shoulders from scene sources; subtle light wrap on silhouette edges\u2014no razor cutout. "
+        f"When the framing includes full body or visible legs/feet: ground feet on the floor with believable contact shadow "
+        f"and cast matching the scene key; hem and soles follow scene perspective. "
+        f"Match subject exposure, contrast, and saturation to the environment (not brighter/punchier than the room). "
+        f"No floating, no halo. Do not alter background.\n"
+        f"\n"
         f"[BODY] {req.get('gender','')}, {req.get('ethnicity','')}, age {req.get('age','')} ({req.get('age_group','')}), "
         f"skin: {req.get('skin_tone','')}.\n"
         f"Weight: {w_desc}. Height: {h_desc}. Body must visibly reflect this build.\n"
         f"\n"
-        + pose_block
+        + (
+            f"[POSE \u2014 EXACT COPY FROM IMG{mi} MANNEQUIN]\n"
+            f"IMG{mi} is a grey featureless mannequin. It is ONLY a body-posture reference.\n"
+            f"You MUST replicate the EXACT pose from IMG{mi} with ZERO deviation:\n"
+            f"- FRAMING/CROP LOCK (CRITICAL): Match mannequin body coverage exactly. "
+            f"If IMG{mi} shows only upper half, output only upper half. "
+            f"If IMG{mi} shows only lower half, output only lower half. "
+            f"If IMG{mi} shows full body, output full body. "
+            f"Do NOT expand crop to full body when mannequin is half body. "
+            f"Do NOT crop body when mannequin is full body.\n"
+            f"- CLOSE-UP DETAIL LOCK (CRITICAL): If IMG{mi} is a close-up/detail crop "
+            f"(neck/shoulder/chest/waist/garment-detail framing), keep the same close-up camera distance "
+            f"and same visible garment regions. Do NOT zoom out or invent out-of-frame body parts.\n"
+            f"- HANDS: Copy exact hand position\u2014if hand is in pocket, keep it in pocket; if hand is on hip, "
+            f"keep it on hip; if hands are clasped, keep them clasped. Reproduce exact finger curl, wrist angle, "
+            f"and palm orientation. Do NOT invent a different hand placement.\n"
+            f"- BODY/TORSO: Copy exact torso lean angle, shoulder tilt, chest orientation, spine curvature, "
+            f"hip rotation, and weight shift. Do NOT straighten or alter the torso.\n"
+            f"- Legs/feet: Only if legs or feet appear in IMG{mi}\u2014match them; do not add or infer lower body for upper-only crops.\n"
+            f"- HEAD: Copy exact head tilt, turn direction, chin angle, and gaze direction.\n"
+            f"IGNORE everything else about IMG{mi}\u2014ignore its grey skin, featureless face, bald head, "
+            f"white background, and clothing. Only replicate the body posture on the real human model.{hands_note}\n"
+            if has_mannequin_image else
+            f"[POSE] {clean_pose}\n"
+        )
         + f"\n"
-        + footwear_block
-        + f"85mm f/2.8, shallow DOF on subject, 4K 9:16, editorial color; natural hair detail; one coherent in-camera exposure."
+        f"Footwear: only when full body or feet are visible\u2014match the garment; no bare feet when feet show. "
+        f"Upper-body-only shots do not need shoes in frame.{bag} Ornaments: {orn or 'none'}.\n"
+        f"85mm f/2.8, shallow DOF on subject, 4K 9:16, editorial color; natural hair detail; one coherent in-camera exposure."
     )
 
     if len(prompt) <= _COMPACT_PROMPT_LIMIT:
@@ -793,7 +569,6 @@ def _build_compact_prompt(
         h_desc=h_desc,
         bg_label=bg_label,
         has_mannequin_image=has_mannequin_image,
-        mannequin_framing=framing_eff,
         hands_note=hands_note,
         bag=bag,
         orn=orn,
@@ -807,73 +582,6 @@ def _build_compact_prompt(
         f"Compact prompt exceeds {_COMPACT_PROMPT_LIMIT} chars after optimization "
         f"(len={len(compact)})."
     )
-
-
-def _compact_bg_block_short(bi: int, bg_label: str, *, has_mannequin: bool, framing: str) -> str:
-    if not has_mannequin or framing in ("full_body", "lower_body"):
-        return (
-            f"[BG+IN-SCENE IMG{bi} {bg_label}] Subject lit from bg only (dir/WB/shadows); bounce on skin/clothes/shoes; "
-            f"AO+sole contact; cast matches key; feet on floor grid; rim+hair light wrap not cutout; match exposure to scene. "
-            f"No halo/float; do not alter bg.\n"
-        )
-    return (
-        f"[BG+IN-SCENE IMG{bi} {bg_label}] Subject lit from bg only; bounce on visible skin/garment; "
-        f"no invented feet/shoes/out-of-frame body; rim not cutout; match exposure to scene. "
-        f"No halo/float; do not alter bg.\n"
-    )
-
-
-def _compact_pose_block_short(
-    mi: int,
-    hands_note: str,
-    framing: str,
-    *,
-    has_mannequin: bool,
-    pose_fallback: str,
-) -> str:
-    if not has_mannequin:
-        return f"[POSE] {pose_fallback}\n"
-    if framing == "detail_closeup":
-        return (
-            f"[POSE FROM IMG{mi}] Same detail/close-up crop, camera distance, and frame edges as IMG{mi}; "
-            f"same visible anatomy and garment; no zoom-out; pose locked to mannequin.{hands_note}\n"
-        )
-    if framing == "upper_body":
-        return (
-            f"[POSE FROM IMG{mi}] Same waist-up crop and posture as IMG{mi}; hands/torso/head only; "
-            f"legs/feet/shoes out of frame; no zoom-out.{hands_note}\n"
-        )
-    if framing == "lower_body":
-        return (
-            f"[POSE FROM IMG{mi}] Same lower-body crop and leg/foot stance as IMG{mi}; "
-            f"do not expand crop upward beyond mannequin.{hands_note}\n"
-        )
-    return (
-        f"[POSE FROM IMG{mi}]\n"
-        f"Copy exact posture and framing from IMG{mi}: same body coverage/crop (upper-half only, lower-half only, "
-        f"or full-body exactly as shown), same close-up/detail camera distance when present, same visible garment "
-        f"regions, same hands/fingers/wrists, torso lean, shoulder tilt, hip rotation, "
-        f"legs/knees/feet, head tilt/turn/chin/gaze. Do not change crop scope. "
-        f"Use mannequin only for body pose/framing; ignore mannequin face/clothes/bg.{hands_note}\n"
-    )
-
-
-def _compact_style_line_short(
-    *,
-    has_mannequin: bool,
-    framing: str,
-    bag: str,
-    orn: str,
-    mi: int,
-) -> str:
-    o = f"Ornaments: {orn or 'none'}."
-    if not has_mannequin or framing == "full_body":
-        return f"[STYLE] MANDATORY footwear; visible on ground; no bare feet.{bag} {o}\n"
-    if framing == "lower_body":
-        return f"[STYLE] Footwear in frame on ground; no bare feet.{bag} {o}\n"
-    if framing == "upper_body":
-        return f"[STYLE] Waist-up only—no feet/shoes in frame.{bag} {o}\n"
-    return f"[STYLE] Detail crop—feet/shoes only if inside IMG{mi}; never bare if feet visible.{bag} {o}\n"
 
 
 def _build_compact_prompt_optimized(
@@ -893,7 +601,6 @@ def _build_compact_prompt_optimized(
     h_desc: str,
     bg_label: str,
     has_mannequin_image: bool,
-    mannequin_framing: str,
     hands_note: str,
     bag: str,
     orn: str,
@@ -909,25 +616,13 @@ def _build_compact_prompt_optimized(
             "Follow one-piece wearing rules exactly; do not invent extra layers."
         )
 
-    framing_eff = (
-        mannequin_framing
-        if mannequin_framing in _MANNEQUIN_FRAMING_CANONICAL
-        else "full_body"
-    )
-    pose_block = _compact_pose_block_short(
-        mi, hands_note, framing_eff,
-        has_mannequin=has_mannequin_image,
-        pose_fallback=pose,
-    )
-    bg_short = _compact_bg_block_short(
-        bi, bg_label, has_mannequin=has_mannequin_image, framing=framing_eff,
-    )
-    style_short = _compact_style_line_short(
-        has_mannequin=has_mannequin_image,
-        framing=framing_eff,
-        bag=bag,
-        orn=orn,
-        mi=mi,
+    pose_block = (
+        f"[POSE FROM IMG{mi}]\n"
+        f"Match IMG{mi} crop and coverage (upper, lower, or full body as shown); same close-up distance when applicable; "
+        f"same visible garment regions; hands, torso, head as shown. If legs/feet appear in IMG{mi}, match them; else do not add them. "
+        f"Do not change crop scope. Ignore mannequin face/clothes/bg.{hands_note}\n"
+        if has_mannequin_image
+        else f"[POSE] {pose}\n"
     )
 
     return (
@@ -940,11 +635,13 @@ def _build_compact_prompt_optimized(
         f"{onepiece_hint}\n"
         f"[FACE EXACT IMG{fi}] Same identity and expression; no beautification or feature edits.\n"
         "[SKIN] Readable face pores; veins/tendons on arms/hands; peach fuzz; micro-specular from scene light on cheeks/nose; no airbrush.\n"
-        f"{bg_short}"
+        f"[BG+IN-SCENE IMG{bi} {bg_label}] Subject naturally present in scene light (dir/WB/shadows); bounce on visible skin/garment; "
+        f"rim+hair light wrap, no cutout; match exposure to scene. When legs/full body visible: feet grounded with contact shadow matching scene. "
+        f"No halo/float; do not alter bg.\n"
         f"[BODY] {req.get('gender','')}, {req.get('ethnicity','')}, age {req.get('age','')} ({req.get('age_group','')}), "
         f"skin {req.get('skin_tone','')}; weight {w_desc}; height {h_desc}.\n"
         f"{pose_block}"
-        f"{style_short}"
+        f"[STYLE] Footwear only if full body or feet visible\u2014match garment; no bare feet when feet show.{bag} Ornaments: {orn or 'none'}.\n"
         "85mm f/2.8, shallow DOF, 4K 9:16, editorial color, natural hair; single coherent in-camera exposure."
     )
 
@@ -1327,12 +1024,9 @@ async def _process_one_pose(
     prefix        = f"photoshoots/{photoshoot_id}/{image_id}"
     mannequin_url = (pose_data.get("image_url") or "").strip()
     pose_prompt   = pose_data.get("pose_prompt") or ""
-    mf_raw        = pose_data.get("mannequin_framing")
-    mf_explicit   = str(mf_raw).strip() if mf_raw is not None and str(mf_raw).strip() else None
-    framing       = resolve_mannequin_framing(pose_prompt, mf_explicit)
     logger.info("[%s] \u2500\u2500 Starting pose pipeline \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500", pose_label)
-    logger.info("[%s] mannequin_image=%s  pose_prompt_len=%d  mannequin_framing=%s",
-                pose_label, bool(mannequin_url), len(pose_prompt), framing)
+    logger.info("[%s] mannequin_image=%s  pose_prompt_len=%d",
+                pose_label, bool(mannequin_url), len(pose_prompt))
 
     # ── Step 1: build prompt and submit to SeedDream ─────────────────────
     has_back      = bool(req_snapshot.get("back_garment_image", ""))
@@ -1340,10 +1034,9 @@ async def _process_one_pose(
     prompt = _build_compact_prompt(
         pose_prompt, has_back, req_snapshot,
         has_mannequin_image=has_mannequin,
-        mannequin_framing=framing,
     )
-    logger.info("[%s] SeedDream prompt (%d chars, back=%s, mannequin=%s, framing=%s)",
-                pose_label, len(prompt), has_back, has_mannequin, framing)
+    logger.info("[%s] SeedDream prompt (%d chars, back=%s, mannequin=%s)",
+                pose_label, len(prompt), has_back, has_mannequin)
 
     urls_for_task = list(image_urls)
     if has_mannequin:
@@ -1417,11 +1110,10 @@ async def _process_one_pose(
 
     logger.info("[%s] ── Pose pipeline COMPLETE ─────────────────────", pose_label)
     return {
-        "image_id":           image_id,
-        "pose_prompt":        pose_prompt,
-        "pose_image_url":     mannequin_url,
-        "mannequin_framing":  framing,
-        "image":              display_image,
+        "image_id":        image_id,
+        "pose_prompt":     pose_prompt,
+        "pose_image_url":  mannequin_url,
+        "image":           display_image,
     }
 
 

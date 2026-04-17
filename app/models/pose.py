@@ -4,9 +4,6 @@ from typing import Any, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
-MannequinFraming = Literal["full_body", "upper_body", "lower_body", "detail_closeup"]
-
-
 class PoseListItem(BaseModel):
     """Legacy minimal shape (still valid for embedded use)."""
 
@@ -34,14 +31,6 @@ class CreatePoseFromImageRequest(BaseModel):
     image_url: str
     tags: Optional[List[str]] = None
     notes: Optional[str] = ""
-    mannequin_framing: Optional[MannequinFraming] = Field(
-        default=None,
-        description=(
-            "How much of the body the mannequin shows. When set, photoshoot SeedDream uses matching "
-            "prompt rules (e.g. no mandatory full-length footwear for upper_body). "
-            "Omit to infer from pose_prompt when possible."
-        ),
-    )
 
     @field_validator("pose_type", mode="before")
     @classmethod
@@ -55,13 +44,6 @@ class CreatePoseFromPromptRequest(BaseModel):
     pose_type: str = Field(..., description="front, back, or side (any case).")
     tags: Optional[List[str]] = None
     notes: Optional[str] = ""
-    mannequin_framing: Optional[MannequinFraming] = Field(
-        default=None,
-        description=(
-            "How much of the body the mannequin shows. When set, photoshoot SeedDream uses matching "
-            "prompt rules. Omit to infer from pose_prompt when possible."
-        ),
-    )
 
     @field_validator("pose_type", mode="before")
     @classmethod
@@ -86,7 +68,6 @@ class PoseSchema(BaseModel):
     pose_type: str
     pose_prompt: str
     image_url: str
-    mannequin_framing: Optional[MannequinFraming] = None
     count: int = 0
     notes: str = ""
     tags: List[str] = []
