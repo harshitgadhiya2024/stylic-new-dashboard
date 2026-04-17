@@ -529,6 +529,9 @@ def _build_compact_prompt(
             f"If IMG{mi} shows full body, output full body. "
             f"Do NOT expand crop to full body when mannequin is half body. "
             f"Do NOT crop body when mannequin is full body.\n"
+            f"- CLOSE-UP DETAIL LOCK (CRITICAL): If IMG{mi} is a close-up/detail crop "
+            f"(neck/shoulder/chest/waist/garment-detail framing), keep the same close-up camera distance "
+            f"and same visible garment regions. Do NOT zoom out or invent out-of-frame body parts.\n"
             f"- HANDS: Copy exact hand position\u2014if hand is in pocket, keep it in pocket; if hand is on hip, "
             f"keep it on hip; if hands are clasped, keep them clasped. Reproduce exact finger curl, wrist angle, "
             f"and palm orientation. Do NOT invent a different hand placement.\n"
@@ -616,7 +619,8 @@ def _build_compact_prompt_optimized(
     pose_block = (
         f"[POSE FROM IMG{mi}]\n"
         f"Copy exact posture and framing from IMG{mi}: same body coverage/crop (upper-half only, lower-half only, "
-        f"or full-body exactly as shown), same hands/fingers/wrists, torso lean, shoulder tilt, hip rotation, "
+        f"or full-body exactly as shown), same close-up/detail camera distance when present, same visible garment "
+        f"regions, same hands/fingers/wrists, torso lean, shoulder tilt, hip rotation, "
         f"legs/knees/feet, head tilt/turn/chin/gaze. Do not change crop scope. "
         f"Use mannequin only for body pose/framing; ignore mannequin face/clothes/bg.{hands_note}\n"
         if has_mannequin_image
