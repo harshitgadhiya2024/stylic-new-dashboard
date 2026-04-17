@@ -41,42 +41,47 @@ You are a professional fashion-tech image editor.
 Convert the provided photograph of a person into a clean mannequin image.
 Follow every requirement below without exception.
 
-MANNEQUIN APPEARANCE:
+VISIBLE BODY PARTS ONLY — HIGHEST PRIORITY (read before all else):
+- Show ONLY the same body regions that appear in the input. Frame edges are hard limits — never reveal what was cropped out.
+- If the input does NOT show the full head (or shows no head at all), do NOT add a head, face, or hair — keep the crop exactly as implied by the source (neck-up, chin-up, or head fully absent).
+- If only ONE arm or ONE hand is visible, render only that arm/hand — do NOT invent a second arm, hand, or symmetrical pose outside the crop.
+- Bust-up / upper-chest garment detail / collar-button focus: keep that tight framing — no waist, hips, legs, or feet unless they appear in the source.
+- Midsection / waist–hip garment detail (no head in frame): output must also have NO head, NO shoulders above the crop, and NO legs or feet below the crop — same macro crop as the source.
+- Head-and-shoulders or over-the-shoulder portrait: match visible shoulders and head coverage only; omit any body parts not in frame.
+- Full body in the source only: then you may show head through feet on the mannequin; otherwise NEVER zoom out to full body.
+- Do NOT zoom in tighter than the source unless the source is already that tight; do NOT reframe to a standard catalogue full-length shot.
+
+MANNEQUIN APPEARANCE (apply only to visible mannequin areas):
 - Solid medium grey skin (#9E9E9E). Smooth matte finish, no skin texture.
-- Completely smooth, featureless face — absolutely no eyes, nose, mouth, ears, or any facial detail.
-- Completely bald — no hair, no stubble, no hairline. Smooth, rounded head.
-- Male mannequin body form with masculine proportions.
-- Body proportions stay identical to the person in the photo.
-- Skin color must remain grey across all visible skin/mannequin areas (no skin-tone variation).
+- Where the head is INSIDE the crop: completely smooth, featureless face — no eyes, nose, mouth, ears; completely bald, no hairline.
+- Where the head is OUTSIDE or cropped off: do not draw a head — let the image end at the crop (e.g. neck, upper chest, or garment edge only).
+- Male mannequin segment proportions for visible regions only — match the source silhouette; do not infer a hidden full-body shape.
+- Skin color must remain grey across all visible mannequin areas (no skin-tone variation).
 
 GARMENTS AND ACCESSORIES (critical):
-- The mannequin must wear ONLY these two garments:
+- The mannequin must wear ONLY these two garments on every visible body region:
   1) Plain white half-sleeve t-shirt (solid white, no print, no logo, no texture graphics).
   2) Plain dark grey jeans (solid dark charcoal grey, no print, no logo, no pattern).
+- Map garments to what the source shows: if only upper torso is visible, only the shirt (and shirt hem over jeans if that is in frame); if only jeans/waist band is visible, show only that portion — do not add the missing garment half as a full new layer beyond the crop.
 - Do NOT include any other garments or layers: no jacket, hoodie, shirt, vest, blazer,
   sweater, shorts, joggers, innerwear visibility, or extra fabric.
 - Do NOT include any accessories: no belt, jewellery, watch, hat, bag, scarf, or ornament.
-- Do NOT include footwear or socks.
-- Preserve clean garment fit while keeping the exact original body pose.
+- Do NOT include footwear or socks unless feet are clearly visible in the source (then plain neutral feet only, no shoes).
+- Preserve clean garment fit and fabric silhouette while keeping the exact visible pose.
 
-POSE (critical):
-- Replicate the EXACT pose from the original: every joint angle, limb position,
-  weight shift, hand placement, foot placement, torso lean, and head tilt.
-- Do NOT simplify, straighten, or alter the pose in any way.
+POSE (critical — only for limbs and segments that appear in the input):
+- Replicate the EXACT pose for every visible joint angle, limb segment, hand placement, torso lean, and head tilt that appears in frame.
+- Do NOT invent pose detail for legs, feet, a second arm, or head if those are not visible in the source.
 
 FRAMING / CROP LOCK (critical):
-- Preserve the EXACT camera framing from the input photo.
-- If the input is a close-up crop (face/neck/shoulder/chest/waist detail), keep it as close-up.
-- If the input shows only upper half or torso details, do NOT zoom out to full body.
-- Keep the same visible garment regions and crop boundaries as the source image.
-- Maintain the same camera distance/composition so garment detailing visibility remains equivalent.
-- Never invent hidden body parts outside the original frame.
+- Preserve the EXACT camera framing, scale, and subject placement from the input photo.
+- Garment-detail crops, half-body, one-sided upper body, and macro waist shots must stay that way — never pull back to show a complete mannequin.
 
 BACKGROUND:
 - Critical: background must be ONLY pure white (#FFFFFF).
 - Do not use any other background color.
 - No gradients, color casts, textures, reflections, or floor lines.
-- Subject perfectly centred in frame.
+- Match composition to the source (do not force recentre if the source subject is off-centre).
 
 SCENE OBJECTS / PROPS:
 - Prefer removing props entirely when possible.
@@ -96,9 +101,9 @@ Examine the mannequin image carefully. The user selected pose orientation VIEW =
 Your reply will be stored and reused as a pose prompt. It MUST lead with explicit shoot / framing metadata, then the body pose.
 
 MANDATORY LINE 1 — start your entire output with this exact prefix (fill the bracketed choices from the image only):
-Output tags: FRAMING = <choose exactly one: full body | upper half body | lower half body | head and shoulders | close-up upper garment fabric detail>; VIEW = <front | back | side — use **{pose_type}** unless the mannequin clearly faces another way, then pick the closest>; FOCUS = <choose exactly one: full-body pose | upper-body garment drape and fabric detailing pose | lower-body stance | head and neck region>.
+Output tags: FRAMING = <choose exactly one: full body | upper half body | lower half body | head and shoulders | bust and upper chest (garment detail, may exclude full head if cropped) | midsection waist–hip garment detail (no head in frame) | single-side partial upper body (only one arm/hand visible)>; VIEW = <front | back | side — use **{pose_type}** unless the mannequin clearly faces another way, then pick the closest>; FOCUS = <choose exactly one: full-body pose | upper-body garment drape and fabric detailing pose | lower-body stance | head and neck region | macro garment intersection only>.
 
-MANDATORY LINE 2 — blank line after line 1, then dense comma-separated pose-only phrases (no prose sentences): stance, torso angle, shoulders, hips, head tilt/turn, neck, arms, elbows, wrists, hands/fingers if visible, legs/knees/feet only if visible in frame, weight distribution.
+MANDATORY LINE 2 — blank line after line 1, then dense comma-separated pose-only phrases (no prose sentences). Describe ONLY anatomy that is VISIBLE in the image: e.g. if no head in frame, do not mention head; if only one arm, describe only that arm; if no legs, do not mention legs or feet.
 
 STRICT RULES for line 2:
 - NEVER mention: background, clothing colours, garment logos, gender, hair, skin tone, lighting, shadows, accessories, jewellery, facial features, or props.
@@ -171,28 +176,36 @@ TEXT_MANNEQUIN_PROMPT_TEMPLATE = """\
 You are a professional fashion-tech image generator.
 Create a single clean photograph of a fashion mannequin (not a real person).
 
-OUTPUT — READ FIRST (camera, framing, and view — obey before all else):
-- Set exactly ONE framing to match the written pose: **full body** (head to feet in frame); OR **upper half body** (waist-up / bust-up, no full legs); OR **lower half body** (waist-down); OR **head and shoulders**; OR **close-up upper garment fabric detail** (tight crop for neckline/chest/fabric fold behaviour, not a full-length shot).
-- If the description is about bust, portrait, torso, blouse detail, or fabric fold, you MUST use upper half body or close-up upper garment fabric detail — NOT full body.
-- If the description clearly covers stance from head through feet, use **full body**.
+OUTPUT — READ FIRST (camera, framing, visible body parts, and view):
+- Choose exactly ONE framing to match the written pose — do NOT default to full body:
+  **full body** (head to feet in frame) ONLY if the text clearly describes full stance head-to-toe;
+  **upper half body** (waist-up / bust-up, no full legs);
+  **lower half body** (waist-down, no full head) when the text is about hips/legs only;
+  **head and shoulders** or **bust / upper-chest garment detail** when the text is portrait, collar, buttons, neckline, or knit texture on chest — no waist or legs unless described;
+  **midsection waist–hip garment detail** when the text is about hem, jeans intersection, side slit, pocket — NO head above crop and NO feet below crop in the output;
+  **single-side partial upper body** when the text describes only one visible arm or over-one-shoulder — do NOT add a second arm or mirror a full torso.
+- Only show body parts implied by that framing: if framing omits head, the image must OMIT the head entirely; if only one arm is described, show only that arm.
+- If the description is about bust, portrait, torso, blouse detail, or fabric fold, you MUST use bust-up, head-and-shoulders, or close-up upper garment detail — NOT full body.
 - Body orientation / VIEW: **{pose_type}** — front = facing camera, side = 90° profile, back = back toward camera.
-- Do not contradict the chosen framing: do not pull back to full body when FRAMING is upper half or close-up fabric detail.
+- Never pull back to reveal a “complete” mannequin when the intent is garment detail or partial body.
 
 MANNEQUIN APPEARANCE:
-- Solid medium grey skin (#9E9E9E), smooth matte, featureless face (no eyes, nose, mouth, ears), completely bald.
-- Male mannequin proportions.
+- Solid medium grey skin (#9E9E9E), smooth matte on all visible mannequin areas.
+- Featureless face (no eyes, nose, mouth, ears) and bald head ONLY where the head is inside the chosen frame; if framing excludes the head, do not render a head.
+- Male mannequin proportions for visible segments only.
 
 CLOTHING (only these):
-- Plain white half-sleeve t-shirt, plain dark charcoal grey jeans. No other garments, no accessories, no footwear.
+- Plain white half-sleeve t-shirt, plain dark charcoal grey jeans, only on visible body regions matching the framing (e.g. midsection crop shows only the relevant shirt hem + jeans band).
+- No other garments, no accessories, no footwear unless full legs/feet are in frame (then no shoes, bare mannequin feet only if needed).
 
 BACKGROUND:
 - Pure white (#FFFFFF) only, no gradients.
 
 POSE AND VIEW:
-- The mannequin MUST display this exact body pose under the OUTPUT framing rules above (replicate precisely):
+- The mannequin MUST display this exact body pose under the OUTPUT rules above (replicate precisely, partial body if partial):
 {pose_prompt}
 
-OUTPUT: One sharp fashion mannequin photo, centred, no watermark or text.
+OUTPUT: One sharp fashion mannequin photo matching the chosen crop (not forced full-length), no watermark or text.
 """
 
 
