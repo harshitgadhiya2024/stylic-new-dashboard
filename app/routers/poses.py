@@ -61,6 +61,7 @@ def serialize_pose_response(
         "pose_type":     d.get("pose_type") or "front",
         "pose_prompt":   d.get("pose_prompt") or "",
         "image_url":     d.get("image_url") or "",
+        "mannequin_framing": d.get("mannequin_framing"),
         "count":         int(d.get("count", 0) or 0),
         "notes":         d.get("notes") or "",
         "tags":          d.get("tags") or [],
@@ -329,6 +330,8 @@ async def create_pose_from_image(
                 "created_at":    now,
                 "updated_at":    now,
             }
+            if body.mannequin_framing is not None:
+                doc_db["mannequin_framing"] = body.mannequin_framing
             col = get_poses_collection()
             await col.insert_one(doc_db)
             saved = await col.find_one({"pose_id": pose_id})
@@ -413,6 +416,8 @@ async def create_pose_from_prompt(
                 "created_at":    now,
                 "updated_at":    now,
             }
+            if body.mannequin_framing is not None:
+                doc_db["mannequin_framing"] = body.mannequin_framing
             col = get_poses_collection()
             await col.insert_one(doc_db)
             saved = await col.find_one({"pose_id": pose_id})

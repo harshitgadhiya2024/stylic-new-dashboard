@@ -370,8 +370,9 @@ async def upscale_photoshoot(
     # build pose data map from original output_images
     pose_data_map = {
         img["image_id"]: {
-            "pose_prompt": img.get("pose_prompt", ""),
-            "pose_image_url": img.get("pose_image_url", ""),
+            "pose_prompt":       img.get("pose_prompt", ""),
+            "pose_image_url":    img.get("pose_image_url", ""),
+            "mannequin_framing": img.get("mannequin_framing"),
         }
         for img in original_ps.get("output_images", [])
     }
@@ -395,10 +396,11 @@ async def upscale_photoshoot(
 
         pd = pose_data_map.get(image_id, {})
         output_images.append({
-            "image_id":        image_id,
-            "pose_prompt":     pd.get("pose_prompt", ""),
-            "pose_image_url":  pd.get("pose_image_url", ""),
-            "image":           image_url,
+            "image_id":           image_id,
+            "pose_prompt":        pd.get("pose_prompt", ""),
+            "pose_image_url":     pd.get("pose_image_url", ""),
+            "mannequin_framing":  pd.get("mannequin_framing"),
+            "image":              image_url,
         })
 
     # ── Step 6: build new photoshoot document (copy + override) ──────────────
@@ -520,7 +522,11 @@ async def regenerate_photoshoot(
         selected = all_output_images
 
     pose_data = [
-        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        {
+            "image_url":         img.get("pose_image_url", ""),
+            "pose_prompt":       img.get("pose_prompt", ""),
+            "mannequin_framing": img.get("mannequin_framing"),
+        }
         for img in selected
     ]
     total_poses = len(pose_data)
@@ -1142,7 +1148,11 @@ async def background_change_photoshoot(
         )
 
     pose_data = [
-        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        {
+            "image_url":         img.get("pose_image_url", ""),
+            "pose_prompt":       img.get("pose_prompt", ""),
+            "mannequin_framing": img.get("mannequin_framing"),
+        }
         for img in selected
     ]
     total_poses = len(pose_data)
@@ -1367,7 +1377,11 @@ async def fabric_change_photoshoot(
         )
 
     pose_data = [
-        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        {
+            "image_url":         img.get("pose_image_url", ""),
+            "pose_prompt":       img.get("pose_prompt", ""),
+            "mannequin_framing": img.get("mannequin_framing"),
+        }
         for img in selected
     ]
 
@@ -1581,7 +1595,11 @@ async def texture_change_photoshoot(
         )
 
     pose_data = [
-        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        {
+            "image_url":         img.get("pose_image_url", ""),
+            "pose_prompt":       img.get("pose_prompt", ""),
+            "mannequin_framing": img.get("mannequin_framing"),
+        }
         for img in selected
     ]
 
@@ -1793,7 +1811,11 @@ async def color_change_photoshoot(
         )
 
     pose_data = [
-        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        {
+            "image_url":         img.get("pose_image_url", ""),
+            "pose_prompt":       img.get("pose_prompt", ""),
+            "mannequin_framing": img.get("mannequin_framing"),
+        }
         for img in selected
     ]
 

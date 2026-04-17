@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -107,207 +106,6 @@ REALISM_ASPECT = "9:16"
 
 _PROMPT_LIMIT = 3000
 _REALISM_PROMPT_LIMIT = 10000
-
-_SANITIZE_PATTERNS = [
-    re.compile(
-        r'\b(wearing|dressed in|outfit|garment|clothing|cloth|clothes|fabric|'
-        r'top|bottom|skirt|pants|trousers|shirt|dress|blouse|jacket|coat|suit|'
-        r'saree|sari|kurta|lehenga|churidar|dupatta|salwar|kameez|gown|frock|'
-        r'shorts|jeans|denim|sweater|hoodie|cardigan|vest|crop|bralette|'
-        r'sleeve|collar|neckline|hem|waist|belt)\b', re.IGNORECASE),
-    re.compile(r'\b(street|garden|park|beach|office|store|shop)\b', re.IGNORECASE),
-    re.compile(r'\b(male|female|man|woman|boy|girl|he|she|his|her|they|them)\b', re.IGNORECASE),
-]
-
-
-def _sanitize_pose(pose: str) -> str:
-    result = pose
-    for pat in _SANITIZE_PATTERNS:
-        result = pat.sub('', result)
-    return re.sub(r'\s{2,}', ' ', result).strip()
-
-
-def _build_compact_prompt(
-    pose: str,
-    has_back: bool,
-    req: dict,
-    *,
-    has_mannequin_image: bool = False,
-) -> str:
-    """Build a <=3000-char SeedDream prompt covering all photoshoot cases."""
-    fi = 3 if has_back else 2
-    bi = 4 if has_back else 3
-    mi = bi + 1
-
-    if has_back:
-        img_ref = f"IMG1=garment front, IMG2=garment back, IMG{fi}=face, IMG{bi}=background"
-        g_imgs = "IMG1+IMG2"
-    else:
-        img_ref = f"IMG1=garment, IMG{fi}=face, IMG{bi}=background"
-        g_imgs = "IMG1"
-
-    if has_mannequin_image:
-        img_ref += f", IMG{mi}=POSE MANNEQUIN (body posture reference ONLY)"
-
-    ug = req.get("upper_garment_type", "").strip()
-    us = req.get("upper_garment_specification", "").strip()
-    lg = req.get("lower_garment_type", "").strip()
-    ls = req.get("lower_garment_specification", "").strip()
-    op = req.get("one_piece_garment_type", "").strip()
-    os_ = req.get("one_piece_garment_specification", "").strip()
-    op_lower = op.lower()
-
-    parts = []
-    if ug:
-        parts.append(f"Upper: {ug}" + (f" ({us})" if us else ""))
-    if lg:
-        parts.append(f"Lower: {lg}" + (f" ({ls})" if ls else ""))
-    if op:
-        parts.append(f"One-piece: {op}" + (f" ({os_})" if os_ else ""))
-    gt_line = f"\nTypes: {' | '.join(parts)}" if parts else ""
-
-    fitting = req.get("fitting", "regular fit")
-
-    paired = ""
-    if not op and not (ug and lg):
-        if ug and not lg:
-            paired = " Add matching lower garment—no bare legs."
-        elif lg and not ug:
-            paired = " Add matching upper garment—no bare torso."
-
-    # ── garment-specific wearing rules ────────────────────────────────────
-    garment_rules = ""
-    hands_must_show = False
-    if op:
-        if "saree" in op_lower or "sari" in op_lower:
-            garment_rules = (
-                "\n[GARMENT]\n"
-                "SAREE—Gujarati drape: pallu over LEFT shoulder to back; neat waist pleats; "
-                "fitted blouse + petticoat (chaniya); clear front pleats. "
-                "Hands and all fingers visible—pallu must not cover them.\n"
-            )
-            hands_must_show = True
-        elif "dress" in op_lower:
-            spec_lower = os_.lower()
-            is_3piece = any(kw in spec_lower for kw in (
-                "3 piece", "3-piece", "three piece", "dupatta", "duppata",
-                "chunni", "stole",
-            ))
-            if is_3piece:
-                garment_rules = (
-                    "\n[GARMENT]\n"
-                    "3-PIECE dress: top + bottom + dupatta (all mandatory, do not skip dupatta). "
-                    "Dupatta Gujarati—one shoulder or across chest. "
-                    "Hands and all fingers visible—dupatta must not cover them.\n"
-                )
-                hands_must_show = True
-            else:
-                garment_rules = (
-                    "\n[GARMENT WEARING RULE]\n"
-                    "This is a 2-PIECE DRESS. Wear only the top and bottom—"
-                    "do NOT add any dupatta, stole, or scarf.\n"
-                )
-        elif "lehenga" in op_lower:
-            garment_rules = (
-                "\n[GARMENT WEARING RULE]\n"
-                "This is a LEHENGA. Wear it in Gujarati style with the matching choli (blouse) "
-                "and dupatta draped over one shoulder. "
-                "BOTH HANDS must be clearly visible and unobstructed.\n"
-            )
-            hands_must_show = True
-        else:
-            garment_rules = (
-                "\n[GARMENT WEARING RULE]\n"
-                f"This is a ONE-PIECE garment ({op}). Wear it exactly as a single piece—"
-                "do NOT add extra layers, scarves, or separate top/bottom.\n"
-            )
-
-    weight = req.get("weight", "regular").strip().lower()
-    height = req.get("height", "regular").strip().lower()
-    w_desc = {
-        "fat": "plus-size/heavy build: broad torso, thick limbs, full waist, wide hips—genuinely heavy silhouette",
-        "slim": "slim/lean: narrow shoulders, defined waist, slender limbs",
-    }.get(weight, "average build, natural proportions")
-    h_desc = {
-        "short": "shorter than average",
-        "tall": "taller than average",
-    }.get(height, "average height")
-
-    bg_type = req.get("background_type", "").strip().lower()
-    bg_label = bg_type if bg_type in ("indoor", "outdoor", "studio") else "general"
-
-    clean_pose = _sanitize_pose(pose) if pose else "Natural relaxed full-body fashion pose"
-
-    gender = req.get("gender", "").strip().lower()
-    orn = req.get("ornaments", "").strip()
-    orn_lower = orn.lower()
-    bag = ""
-    if gender == "female" and any(kw in orn_lower for kw in ("bag", "purse", "handbag")):
-        bag = " Add matching bag/purse held naturally."
-
-    hands_note = ""
-    if hands_must_show:
-        hands_note = " Do not let dupatta/pallu/fabric hide hands or fingers."
-
-    prompt = (
-        f"Hyperrealistic editorial fashion photograph—real person, NOT illustration, NOT AI-looking, NOT plastic skin.\n"
-        f"\n"
-        f"Refs: {img_ref}\n"
-        f"\n"
-        f"[GARMENT—EXACT MATCH {g_imgs}]{gt_line}\n"
-        f"Copy exact fabric, pattern, color, print, embroidery, buttons, pockets, stitching, hem, neckline, "
-        f"sleeves, cuffs, weave, closures, trims, pleats, natural drape and wrinkles. "
-        f"No color shift, no simplification. Fitting: {fitting}.{paired}\n"
-        + garment_rules
-        + f"\n"
-        f"[FACE—EXACT COPY IMG{fi}]\n"
-        f"Lock all features: face shape, eyes, brows, nose, lips, jaw, chin, cheekbones, ears, hairline, "
-        f"hair style/color/length, skin tone/undertone, moles/marks. No beautification. Expression identical to IMG{fi}.\n"
-        f"\n"
-        f"[SKIN REALISM—NO BEAUTY FILTER]\n"
-        f"Visible pores, peach-fuzz, subtle veins/SSS, natural tone variation, knuckle and crease lines, "
-        f"realistic elbow texture. No beauty smoothing—raw hyperreal skin.\n"
-        f"\n"
-        f"[BG + IN-SCENE SUBJECT—IMG{bi} ({bg_label})]\n"
-        f"Single real capture—not a composite paste. Light the subject ONLY from the same light field as IMG{bi} "
-        f"(key direction, WB, shadow softness); avoid flat frontal studio fill. "
-        f"Ambient color bounce from walls, floor, foliage, visible lamps onto skin, garment, and shoes. "
-        f"Ambient occlusion plus tight contact shadow at soles and hem where fabric meets floor; cast shadow matches scene key. "
-        f"Feet on the floor plane following tile/arch perspective. Rim on hair/shoulders from scene sources; "
-        f"subtle light wrap on silhouette edges toward bright areas—no razor cutout. "
-        f"Match subject exposure, contrast, and saturation to the environment (not brighter/punchier than the room). "
-        f"No floating, no halo. Do not alter background.\n"
-        f"\n"
-        f"[BODY] {req.get('gender','')}, {req.get('ethnicity','')}, age {req.get('age','')} ({req.get('age_group','')}), "
-        f"skin: {req.get('skin_tone','')}.\n"
-        f"Weight: {w_desc}. Height: {h_desc}. Body must visibly reflect this build.\n"
-        f"\n"
-        + (
-            f"[POSE — EXACT COPY FROM IMG{mi} MANNEQUIN]\n"
-            f"IMG{mi} is a grey featureless mannequin. It is ONLY a body-posture reference.\n"
-            f"You MUST replicate the EXACT pose from IMG{mi} with ZERO deviation:\n"
-            f"- HANDS: Copy exact hand position—if hand is in pocket, keep it in pocket; if hand is on hip, "
-            f"keep it on hip; if hands are clasped, keep them clasped. Reproduce exact finger curl, wrist angle, "
-            f"and palm orientation. Do NOT invent a different hand placement.\n"
-            f"- BODY/TORSO: Copy exact torso lean angle, shoulder tilt, chest orientation, spine curvature, "
-            f"hip rotation, and weight shift. Do NOT straighten or alter the torso.\n"
-            f"- LEGS/FEET: Copy exact leg stance—crossed, apart, bent, straight—exactly as shown. "
-            f"Replicate knee bend angle, foot placement, foot direction, and weight distribution between legs.\n"
-            f"- HEAD: Copy exact head tilt, turn direction, chin angle, and gaze direction.\n"
-            f"IGNORE everything else about IMG{mi}—ignore its grey skin, featureless face, bald head, "
-            f"white background, and clothing. Only replicate the body posture on the real human model.{hands_note}\n"
-            if has_mannequin_image else
-            f"[POSE] {clean_pose}\n"
-        )
-        + f"\n"
-        f"Matching footwear, no bare feet.{bag} Ornaments: {orn or 'none'}.\n"
-        f"85mm f/2.8, shallow DOF on subject, 4K 9:16, editorial color; natural hair detail; one coherent in-camera exposure."
-    )
-
-    if len(prompt) > _PROMPT_LIMIT:
-        prompt = prompt[:_PROMPT_LIMIT]
-
-    return prompt
 
 
 def _build_realism_prompt() -> str:
@@ -565,9 +363,11 @@ async def main() -> None:
         ]
 
     from app.services.photoshoot_service import (
+        _build_compact_prompt,
         _download_bytes,
         _poll_task,
         _submit_seeddream_task,
+        resolve_mannequin_framing,
         resolve_poses,
     )
 
@@ -598,13 +398,20 @@ async def main() -> None:
         mannequin_url = (pd.get("image_url") or "").strip()
         pose_prompt   = pd.get("pose_prompt") or ""
         has_mannequin = bool(mannequin_url)
+        mf_raw = pd.get("mannequin_framing")
+        mf_explicit = str(mf_raw).strip() if mf_raw is not None and str(mf_raw).strip() else None
+        framing = resolve_mannequin_framing(pose_prompt, mf_explicit)
 
         prompt = _build_compact_prompt(
             pose_prompt, has_back, req_snapshot,
             has_mannequin_image=has_mannequin,
+            mannequin_framing=framing,
         )
         (out_dir / f"{pose_label}_seeddream_prompt.txt").write_text(prompt, encoding="utf-8")
-        print(f"[{pose_label}] Prompt length: {len(prompt)} / {_PROMPT_LIMIT} chars  mannequin={has_mannequin}")
+        print(
+            f"[{pose_label}] Prompt length: {len(prompt)} / {_PROMPT_LIMIT} chars  "
+            f"mannequin={has_mannequin}  framing={framing}",
+        )
 
         urls = list(image_urls)
         if has_mannequin:
