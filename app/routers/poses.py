@@ -272,7 +272,8 @@ async def get_poses(
     summary="Create Pose from Image (Streaming)",
     description=(
         "Uses `image_url` with SeedDream 5.0 Lite (image-to-image) to produce a mannequin PNG, "
-        "derives pose prompt with Gemini vision, uploads PNG to R2, saves document. "
+        "derives pose prompt with Gemini vision (leading line: FRAMING / VIEW / FOCUS tags from the image "
+        "plus your `pose_type`), uploads PNG to R2, saves document. "
         "SSE stream; final `done` has record. Costs the same credits as face generation (2.5)."
     ),
 )
@@ -297,7 +298,10 @@ async def create_pose_from_image(
             yield _sse("preparing_pipeline", {"step": "preparing_pipeline", "message": "Preparing mannequin generation pipeline"})
             await asyncio.sleep(0.6)
 
-            async for chunk in stream_pose_from_image_url(body.image_url):
+            async for chunk in stream_pose_from_image_url(
+                body.image_url,
+                pose_type=body.pose_type,
+            ):
                 kind = chunk[0]
                 if kind == "progress":
                     yield _sse("progress", {"step": "progress", "message": chunk[1]})
@@ -359,7 +363,8 @@ async def create_pose_from_image(
     summary="Create Pose from Prompt (Streaming)",
     description=(
         "Generates mannequin image from `pose_prompt` + `pose_type` via SeedDream 5.0 Lite "
-        "(text-to-image), uploads to R2, stores document using the same `pose_prompt` text. SSE stream."
+        "(text-to-image; prompt leads with framing/view rules), then derives stored `pose_prompt` with "
+        "Gemini vision on the result (leading FRAMING / VIEW / FOCUS line + dense pose body text). SSE stream."
     ),
 )
 async def create_pose_from_prompt(
@@ -372,6 +377,7 @@ async def create_pose_from_prompt(
 
     async def event_stream() -> AsyncGenerator[str, None]:
         mannequin_url: str | None = None
+        pose_prompt_final: str | None = None
         try:
             yield _sse("initialize", {"step": "initialize", "message": "Initializing custom pose generation"})
             await asyncio.sleep(0.6)
@@ -388,9 +394,13 @@ async def create_pose_from_prompt(
                     yield _sse("progress", {"step": "progress", "message": chunk[1]})
                 elif kind == "done":
                     mannequin_url = chunk[1]
+                    pose_prompt_final = chunk[2] if len(chunk) > 2 else None
                     break
-            if not mannequin_url:
-                yield _sse("error", {"step": "error", "message": "No image URL returned"})
+            if not mannequin_url or pose_prompt_final is None:
+                yield _sse(
+                    "error",
+                    {"step": "error", "message": "Pipeline returned no mannequin URL or pose description"},
+                )
                 return
 
             yield _sse("storing_db", {"step": "storing_db", "message": "Storing in database"})
@@ -401,7 +411,7 @@ async def create_pose_from_prompt(
                 "user_id":       current_user["user_id"],
                 "pose_name":     body.pose_name,
                 "pose_type":     body.pose_type,
-                "pose_prompt":   body.pose_prompt.strip(),
+                "pose_prompt":   pose_prompt_final,
                 "image_url":     mannequin_url,
                 "count":         0,
                 "notes":         body.notes or "",
