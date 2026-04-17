@@ -36,63 +36,43 @@ MANNEQUIN_PREFIX = "mannequin-output"
 _CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
 _STATUS_URL = "https://api.kie.ai/api/v1/jobs/recordInfo"
 
+# kie.ai SeedDream prompt limit (same cap as photoshoot compact prompts).
+POSE_MANNEQUIN_SEEDDREAM_PROMPT_MAX_CHARS = 3000
+
 MANNEQUIN_PROMPT = """\
-You are a professional fashion-tech image editor.
-Convert the provided photograph of a person into a clean mannequin image.
-Follow every requirement below without exception.
+Fashion-tech editor: convert the person photo into a clean grey mannequin on pure white (#FFFFFF) only.
 
-VISIBLE BODY PARTS ONLY — HIGHEST PRIORITY (read before all else):
-- Show ONLY the same body regions that appear in the input. Frame edges are hard limits — never reveal what was cropped out.
-- If the input does NOT show the full head (or shows no head at all), do NOT add a head, face, or hair — keep the crop exactly as implied by the source (neck-up, chin-up, or head fully absent).
-- If only ONE arm or ONE hand is visible, render only that arm/hand — do NOT invent a second arm, hand, or symmetrical pose outside the crop.
-- Bust-up / upper-chest garment detail / collar-button focus: keep that tight framing — no waist, hips, legs, or feet unless they appear in the source.
-- Midsection / waist–hip garment detail (no head in frame): output must also have NO head, NO shoulders above the crop, and NO legs or feet below the crop — same macro crop as the source.
-- Head-and-shoulders or over-the-shoulder portrait: match visible shoulders and head coverage only; omit any body parts not in frame.
-- Full body in the source only: then you may show head through feet on the mannequin; otherwise NEVER zoom out to full body.
-- Do NOT zoom in tighter than the source unless the source is already that tight; do NOT reframe to a standard catalogue full-length shot.
+VISIBILITY (strict — highest priority):
+- Only regions visible in the input; crop edges are hard limits — never reveal cropped-out body parts.
+- No head/face/hair if head is absent or cut off; end at neck, upper chest, or garment edge like the source.
+- One arm/hand visible only — never add a second arm or mirrored torso outside the crop.
+- Bust/collar/button/knit-detail crops stay tight — no waist, hips, legs, feet unless they appear in source.
+- Waist–hip macro (no head in source): no head/shoulders above crop, no legs/feet below — match macro crop.
+- Head-and-shoulders / over-shoulder: only what is in frame. Full head-to-feet mannequin only if source is full body — never zoom out to a catalogue full body.
 
-MANNEQUIN APPEARANCE (apply only to visible mannequin areas):
-- Solid medium grey skin (#9E9E9E). Smooth matte finish, no skin texture.
-- Where the head is INSIDE the crop: completely smooth, featureless face — no eyes, nose, mouth, ears; completely bald, no hairline.
-- Where the head is OUTSIDE or cropped off: do not draw a head — let the image end at the crop (e.g. neck, upper chest, or garment edge only).
-- Male mannequin segment proportions for visible regions only — match the source silhouette; do not infer a hidden full-body shape.
-- Skin color must remain grey across all visible mannequin areas (no skin-tone variation).
+MANNEQUIN (visible areas only):
+- Skin #9E9E9E matte grey, no texture. Featureless face + bald only if head is in frame; if head cropped out, do not draw a head.
+- Male segment proportions for visible parts; match source silhouette — do not infer hidden full-body shape.
 
-GARMENTS AND ACCESSORIES (critical):
-- The mannequin must wear ONLY these two garments on every visible body region:
-  1) Plain white half-sleeve t-shirt (solid white, no print, no logo, no texture graphics).
-  2) Plain dark grey jeans (solid dark charcoal grey, no print, no logo, no pattern).
-- Map garments to what the source shows: if only upper torso is visible, only the shirt (and shirt hem over jeans if that is in frame); if only jeans/waist band is visible, show only that portion — do not add the missing garment half as a full new layer beyond the crop.
-- Do NOT include any other garments or layers: no jacket, hoodie, shirt, vest, blazer,
-  sweater, shorts, joggers, innerwear visibility, or extra fabric.
-- Do NOT include any accessories: no belt, jewellery, watch, hat, bag, scarf, or ornament.
-- Do NOT include footwear or socks unless feet are clearly visible in the source (then plain neutral feet only, no shoes).
-- Preserve clean garment fit and fabric silhouette while keeping the exact visible pose.
+GARMENTS (visible regions only; no extras):
+- Only plain white half-sleeve tee + plain dark charcoal jeans — no prints, logos, patterns, jacket, hoodie, vest, belt, jewellery, hat, bag, scarf, socks, shoes.
+- Map to source: upper torso only = shirt (+ hem over jeans if in frame); waist/jeans band only = that band — no invented garment beyond crop.
+- Bare neutral mannequin feet only if feet clearly visible in source; otherwise no footwear.
 
-POSE (critical — only for limbs and segments that appear in the input):
-- Replicate the EXACT pose for every visible joint angle, limb segment, hand placement, torso lean, and head tilt that appears in frame.
-- Do NOT invent pose detail for legs, feet, a second arm, or head if those are not visible in the source.
+POSE: Replicate exact visible joints, lean, tilt, hands; never invent legs, second arm, or head if not in frame.
 
-FRAMING / CROP LOCK (critical):
-- Preserve the EXACT camera framing, scale, and subject placement from the input photo.
-- Garment-detail crops, half-body, one-sided upper body, and macro waist shots must stay that way — never pull back to show a complete mannequin.
+FRAMING: Same framing, scale, and placement as source — no forced recentre.
 
-BACKGROUND:
-- Critical: background must be ONLY pure white (#FFFFFF).
-- Do not use any other background color.
-- No gradients, color casts, textures, reflections, or floor lines.
-- Match composition to the source (do not force recentre if the source subject is off-centre).
+BG #FFFFFF flat; no gradients, floor lines, or cast. PROPS: remove if possible; if essential to pose, minimal solid black (#000000). No new props.
 
-SCENE OBJECTS / PROPS:
-- Prefer removing props entirely when possible.
-- If a prop is essential to preserve the exact pose (for example: table, chair, stool, bench, support object),
-  keep it minimal and render it in solid black (#000000) so it is clearly visible.
-- Do not introduce any new props or decorative objects.
-
-OUTPUT:
-- Clean, sharp, fashion-industry mannequin photograph.
-- No watermarks, text, or overlays.
+OUTPUT: Sharp mannequin, no watermark or text.
 """
+
+if len(MANNEQUIN_PROMPT) > POSE_MANNEQUIN_SEEDDREAM_PROMPT_MAX_CHARS:
+    raise RuntimeError(
+        f"MANNEQUIN_PROMPT is {len(MANNEQUIN_PROMPT)} chars; "
+        f"max {POSE_MANNEQUIN_SEEDDREAM_PROMPT_MAX_CHARS} for SeedDream."
+    )
 
 POSE_PROMPT_INSTRUCTION_TEMPLATE = """\
 You are an expert prompt engineer for AI image generation.
@@ -173,40 +153,59 @@ def _with_retry_sync(fn, label: str):
 
 
 TEXT_MANNEQUIN_PROMPT_TEMPLATE = """\
-You are a professional fashion-tech image generator.
-Create a single clean photograph of a fashion mannequin (not a real person).
+Fashion mannequin (not a real person), pure white #FFFFFF background, no watermark.
 
-OUTPUT — READ FIRST (camera, framing, visible body parts, and view):
-- Choose exactly ONE framing to match the written pose — do NOT default to full body:
-  **full body** (head to feet in frame) ONLY if the text clearly describes full stance head-to-toe;
-  **upper half body** (waist-up / bust-up, no full legs);
-  **lower half body** (waist-down, no full head) when the text is about hips/legs only;
-  **head and shoulders** or **bust / upper-chest garment detail** when the text is portrait, collar, buttons, neckline, or knit texture on chest — no waist or legs unless described;
-  **midsection waist–hip garment detail** when the text is about hem, jeans intersection, side slit, pocket — NO head above crop and NO feet below crop in the output;
-  **single-side partial upper body** when the text describes only one visible arm or over-one-shoulder — do NOT add a second arm or mirror a full torso.
-- Only show body parts implied by that framing: if framing omits head, the image must OMIT the head entirely; if only one arm is described, show only that arm.
-- If the description is about bust, portrait, torso, blouse detail, or fabric fold, you MUST use bust-up, head-and-shoulders, or close-up upper garment detail — NOT full body.
-- Body orientation / VIEW: **{pose_type}** — front = facing camera, side = 90° profile, back = back toward camera.
-- Never pull back to reveal a “complete” mannequin when the intent is garment detail or partial body.
+FRAMING (choose ONE; never default to full body): full body only if text clearly describes head-to-toe stance; waist-up/bust-up; waist-down (no head); head-and-shoulders or bust/collar/button/knit detail; waist–hip macro (no head above crop, no feet below); one-side partial (one arm only — no mirror arm).
 
-MANNEQUIN APPEARANCE:
-- Solid medium grey skin (#9E9E9E), smooth matte on all visible mannequin areas.
-- Featureless face (no eyes, nose, mouth, ears) and bald head ONLY where the head is inside the chosen frame; if framing excludes the head, do not render a head.
-- Male mannequin proportions for visible segments only.
+VISIBILITY: Omit head if framing omits it; one arm if only one is described. VIEW: **{pose_type}** (front|side|back). No pull-back to a "complete" mannequin for garment-detail intent.
 
-CLOTHING (only these):
-- Plain white half-sleeve t-shirt, plain dark charcoal grey jeans, only on visible body regions matching the framing (e.g. midsection crop shows only the relevant shirt hem + jeans band).
-- No other garments, no accessories, no footwear unless full legs/feet are in frame (then no shoes, bare mannequin feet only if needed).
+MANNEQUIN: #9E9E9E matte grey; featureless+bald head only if head is in frame.
 
-BACKGROUND:
-- Pure white (#FFFFFF) only, no gradients.
+CLOTHES: Plain white half-sleeve tee + dark charcoal jeans on visible areas only; no extra garments, belt, jewellery, shoes (bare feet only if feet in frame).
 
-POSE AND VIEW:
-- The mannequin MUST display this exact body pose under the OUTPUT rules above (replicate precisely, partial body if partial):
+POSE (match written + framing):
 {pose_prompt}
 
-OUTPUT: One sharp fashion mannequin photo matching the chosen crop (not forced full-length), no watermark or text.
+Sharp output matching crop, not forced full-length.
 """
+
+_text_mannequin_overhead_max = max(
+    len(TEXT_MANNEQUIN_PROMPT_TEMPLATE.format(pose_type=pt, pose_prompt=""))
+    for pt in ("front", "back", "side")
+)
+if _text_mannequin_overhead_max >= POSE_MANNEQUIN_SEEDDREAM_PROMPT_MAX_CHARS:
+    raise RuntimeError(
+        f"TEXT_MANNEQUIN_PROMPT_TEMPLATE overhead is {_text_mannequin_overhead_max} chars; "
+        f"must be <= {POSE_MANNEQUIN_SEEDDREAM_PROMPT_MAX_CHARS} so user pose text can fit."
+    )
+
+
+def _compose_text_mannequin_seeddream_prompt(pose_prompt: str, pose_type: str) -> str:
+    """Build text-to-image mannequin prompt; total length <= POSE_MANNEQUIN_SEEDDREAM_PROMPT_MAX_CHARS."""
+    pt = (pose_type or "front").strip().lower()
+    if pt not in ("front", "back", "side"):
+        pt = "front"
+    limit = POSE_MANNEQUIN_SEEDDREAM_PROMPT_MAX_CHARS
+    pp = pose_prompt.strip()
+    overhead = len(TEXT_MANNEQUIN_PROMPT_TEMPLATE.format(pose_type=pt, pose_prompt=""))
+    max_pp = max(0, limit - overhead)
+    if len(pp) > max_pp:
+        if max_pp <= 16:
+            pp = pp[:max_pp]
+        else:
+            pp = pp[: max_pp - 3].rstrip() + "..."
+        logger.warning(
+            "[mannequin text2img] pose_prompt truncated to %d chars (limit=%d, overhead=%d)",
+            len(pp),
+            limit,
+            overhead,
+        )
+    text = TEXT_MANNEQUIN_PROMPT_TEMPLATE.format(pose_type=pt, pose_prompt=pp)
+    if len(text) > limit:
+        # Defensive trim (template edits should keep overhead safe).
+        text = text[:limit]
+        logger.warning("[mannequin text2img] final prompt hard-trimmed to %d chars", limit)
+    return text
 
 
 async def _submit_kie_task(model: str, input_payload: dict) -> str:
@@ -304,12 +303,7 @@ async def _seedream_mannequin_from_image_url_with_retries(image_url: str) -> byt
 
 
 async def _seedream_mannequin_from_text_with_retries(pose_prompt: str, pose_type: str) -> bytes:
-    text = TEXT_MANNEQUIN_PROMPT_TEMPLATE.format(
-        pose_type=pose_type,
-        pose_prompt=pose_prompt.strip(),
-    )
-    if len(text) > 10000:
-        raise RuntimeError("Pose description exceeds the maximum prompt length (10000 characters).")
+    text = _compose_text_mannequin_seeddream_prompt(pose_prompt, pose_type)
     payload = {
         "prompt": text,
         "aspect_ratio": settings.POSE_MANNEQUIN_SEEDREAM_ASPECT,
