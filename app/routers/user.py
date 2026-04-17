@@ -177,7 +177,7 @@ async def change_email(
         purpose="change_email",
         extra={"user_id": current_user["user_id"]},
     )
-    background_tasks.add_task(send_otp_email, to_email=body.new_email, otp=otp, purpose="register")
+    background_tasks.add_task(send_otp_email, to_email=body.new_email, otp=otp, purpose="change_email")
 
     return {
         "success": True,
@@ -216,7 +216,7 @@ async def change_email_resend_otp(
         purpose="change_email",
         extra={"user_id": current_user["user_id"]},
     )
-    background_tasks.add_task(send_otp_email, to_email=body.new_email, otp=otp, purpose="register")
+    background_tasks.add_task(send_otp_email, to_email=body.new_email, otp=otp, purpose="change_email")
 
     return {"success": True, "message": f"OTP resent to {body.new_email}."}
 

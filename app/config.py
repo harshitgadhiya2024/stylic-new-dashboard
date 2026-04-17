@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 587
     SMTP_EMAIL: str = ""
     SMTP_PASSWORD: str = ""
+    # Resend (preferred mail provider; falls back to SMTP when unset)
+    RESEND_API_KEY: str = ""
+    RESEND_FROM_EMAIL: str = ""
 
     # Cloudflare R2 (S3-compatible API — see cloudflare-r2-guide.md)
     R2_ACCOUNT_ID: str = ""
