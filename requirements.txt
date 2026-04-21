@@ -22,8 +22,9 @@ firebase-admin
 # ── Cloudflare R2 (S3-compatible API, async via aioboto3) ─────────────────────
 aioboto3
 
-# ── HTTP client (async) ───────────────────────────────────────────────────
+# ── HTTP client (async + sync) ────────────────────────────────────────────
 httpx
+requests
 
 # ── Email (async SMTP) ────────────────────────────────────────────────────
 aiosmtplib
@@ -33,8 +34,15 @@ pyotp
 qrcode[pil]
 
 # ── AI Image Generation ───────────────────────────────────────────────────
+# google-genai  → Vertex nano-banana-2 & nano-banana-pro providers
 google-genai
 Pillow
+
+# ── Agentic photoshoot pipeline (LangGraph multi-agent orchestration) ─────
+# The provider fallback chain (kie_nb2 → vertex_nb2 → vertex_nbpro →
+# evolink_nb2) is implemented as a LangGraph StateGraph in
+# app/services/photoshoot_service.py.
+langgraph
 
 # ── Photoshoot / Image processing ─────────────────────────────────────────
 numpy

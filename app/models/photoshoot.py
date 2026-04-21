@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import AliasChoices, BaseModel, Field, ConfigDict, field_validator
 from typing import Optional, List, Literal
 from datetime import datetime
 
@@ -125,8 +125,14 @@ class CreatePhotoshootRequest(BaseModel):
     skin_tone:                    str
     age:                          str
     age_group:                    str
-    weight:                       Optional[str]  = "regular"
-    height:                       Optional[str]  = "regular"
+    weight: Optional[str] = Field(
+        default="regular",
+        validation_alias=AliasChoices("weight", "body_weight"),
+    )
+    height: Optional[str] = Field(
+        default="regular",
+        validation_alias=AliasChoices("height", "body_height"),
+    )
     upper_garment_type:           Optional[str]  = ""
     upper_garment_specification:  Optional[str]  = ""
     lower_garment_type:           Optional[str]  = ""

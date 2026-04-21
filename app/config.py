@@ -107,6 +107,19 @@ class Settings(BaseSettings):
     KIE_REQUEST_RETRIES: int = 3
     KIE_HTTP_TIMEOUT: int = 300
 
+    # Multi-provider photoshoot generation pipeline (see pipeline.py architecture).
+    # KIE is shared with SEEDDREAM_API_KEY; Vertex uses GOOGLE_CLOUD_API_KEY; Evolink uses EVOLINK_API_KEY.
+    KIE_API_KEY: str = ""
+    GOOGLE_CLOUD_API_KEY: str = ""
+    EVOLINK_API_KEY: str = ""
+    # Generation tuning (aspect/resolution for KIE nano-banana-2 & Vertex models)
+    PHOTOSHOOT_GEN_ASPECT_RATIO: str = "9:16"
+    PHOTOSHOOT_GEN_RESOLUTION: str = "4K"
+    # Per-image wall clock timeout for one generation attempt (seconds).
+    PHOTOSHOOT_GEN_PER_IMAGE_TIMEOUT_S: float = 600.0
+    # KIE status polling interval for generation tasks (seconds).
+    PHOTOSHOOT_KIE_POLL_INTERVAL_S: float = 5.0
+
     # Redis / Celery queue
     REDIS_URL: str = "redis://localhost:6379/0"
 

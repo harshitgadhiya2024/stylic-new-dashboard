@@ -11,6 +11,7 @@ from app.database import (
     get_users_collection,
     get_credit_history_collection,
     get_backgrounds_collection,
+    get_model_faces_collection,
 )
 from app.dependencies import get_current_user
 from app.models.photoshoot import (
@@ -645,6 +646,8 @@ async def get_all_photoshoots(
     summary="Get Photoshoot Detail",
     description=(
         "Returns full details of a single photoshoot by photoshoot_id. "
+        "Resolves ``background_image_url`` and ``model_face_image_url`` from Mongo using "
+        "``input_parameter.background_id`` and ``input_parameter.model_id``. "
         "Only the authenticated user's own photoshoot is accessible. "
         "Secured — user_id is taken from the auth token."
     ),
@@ -667,7 +670,37 @@ async def get_photoshoot_detail(
             detail=f"Photoshoot '{photoshoot_id}' not found.",
         )
 
-    return photoshoot
+    ip = photoshoot.get("input_parameter") or {}
+    bg_id = (ip.get("background_id") or "").strip()
+    model_id = (ip.get("model_id") or "").strip()
+
+    background_image_url = None
+    model_face_image_url = None
+
+    bg_col = get_backgrounds_collection()
+    mf_col = get_model_faces_collection()
+
+    if bg_id:
+        bg_doc = await bg_col.find_one(
+            {"background_id": bg_id},
+            {"_id": 0, "background_url": 1},
+        )
+        if bg_doc and bg_doc.get("background_url"):
+            background_image_url = bg_doc["background_url"]
+
+    if model_id:
+        mf_doc = await mf_col.find_one(
+            {"model_id": model_id},
+            {"_id": 0, "face_url": 1},
+        )
+        if mf_doc and mf_doc.get("face_url"):
+            model_face_image_url = mf_doc["face_url"]
+
+    return {
+        **photoshoot,
+        "background_image_url": background_image_url,
+        "model_face_image_url": model_face_image_url,
+    }
 
 
 @router.patch(
