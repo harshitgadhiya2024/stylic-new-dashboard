@@ -202,18 +202,6 @@ async def _run_modal_upscale(image_bytes: bytes, image_id: str) -> dict[str, byt
         return await cls().enhance.remote.aio(image_bytes, filename)
 
 
-def _callback_url() -> str:
-    """Compute the public webhook URL; returns "" when webhooks are disabled."""
-    base = (settings.PUBLIC_BASE_URL or "").strip().rstrip("/")
-    path = (settings.KIE_WEBHOOK_PATH or "").strip()
-    secret = (settings.KIE_WEBHOOK_SECRET or "").strip()
-    if not base or not path or not secret:
-        return ""
-    if not path.startswith("/"):
-        path = "/" + path
-    return f"{base}{path}"
-
-
 async def _kie_create_upscale_task(
     *, source_image_url: str, upscale_factor: int, photoshoot_id: str, image_id: str,
 ) -> str:
@@ -228,16 +216,12 @@ async def _kie_create_upscale_task(
             "image_url": source_image_url,
             "upscale_factor": str(upscale_factor),
         },
-    }
-    cb = _callback_url()
-    if cb:
-        body["callBackUrl"] = cb
-        # Round-trip identifiers so the webhook handler can re-associate results.
-        body["metadata"] = {
+        "metadata": {
             "photoshoot_id": photoshoot_id,
             "image_id": image_id,
             "purpose": "upscale",
-        }
+        },
+    }
 
     max_attempts = int(getattr(settings, "KIE_REQUEST_RETRIES", 3) or 3)
     last_exc: Exception | None = None
@@ -293,78 +277,64 @@ async def _kie_poll_once(task_id: str) -> tuple[str, Optional[str]]:
 
 async def _await_upscale_result(task_id: str, image_id: str) -> str:
     """
-    Wait for KIE to finish, preferring webhooks + safety poll.
+    Poll KIE recordInfo until the upscale task finishes.
 
-    Strategy:
-      - If PUBLIC_BASE_URL is set: block on Redis BLPOP for up to
-        KIE_UPSCALE_SAFETY_POLL_INTERVAL_S seconds. On each timeout, do a
-        single recordInfo poll. Total wall-clock capped by KIE_UPSCALE_MAX_WAIT_S.
-      - If webhooks disabled: pure poll loop at SEEDDREAM_RETRY_DELAY cadence,
-        bounded by SEEDDREAM_MAX_RETRIES.
+    Bounded by:
+      - ``KIE_UPSCALE_MAX_WAIT_S`` (wall-clock ceiling; default 900s).
+      - ``SEEDDREAM_MAX_RETRIES`` * ``SEEDDREAM_RETRY_DELAY`` (poll ceiling).
 
-    Returns the result URL.
+    Uses ``PHOTOSHOOT_KIE_POLL_INTERVAL_S`` (default 2s) as the poll cadence
+    when set, falling back to ``SEEDDREAM_RETRY_DELAY`` for legacy compatibility.
+
+    Returns the result URL on success; raises ``RuntimeError`` on explicit
+    failure or ``TimeoutError`` on deadline exceeded.
     """
-    from app.services import kie_task_registry
-
-    has_webhook = bool(_callback_url())
     deadline = time.monotonic() + float(settings.KIE_UPSCALE_MAX_WAIT_S or 900)
-    safety_interval = float(settings.KIE_UPSCALE_SAFETY_POLL_INTERVAL_S or 30)
+    interval = float(
+        getattr(settings, "PHOTOSHOOT_KIE_POLL_INTERVAL_S", 0)
+        or settings.SEEDDREAM_RETRY_DELAY
+        or 3
+    )
+    max_iters = int(settings.SEEDDREAM_MAX_RETRIES or 300)
 
-    if has_webhook:
-        # Hybrid: BLPOP + periodic safety poll.
-        while time.monotonic() < deadline:
-            remaining = deadline - time.monotonic()
-            wait_slot = min(safety_interval, max(1.0, remaining))
-            payload = await kie_task_registry.wait_for_async(task_id, wait_slot)
-            if payload:
-                state = (payload.get("state") or "").lower()
-                if state == "success" and payload.get("result_url"):
-                    logger.info(
-                        "[kie-upscale] result via WEBHOOK task_id=%s image_id=%s",
-                        task_id, image_id,
-                    )
-                    return str(payload["result_url"])
-                if state == "fail":
-                    raise RuntimeError(
-                        f"KIE upscale failed (webhook): {payload.get('raw')}"
-                    )
-            # BLPOP timed out — safety-check via direct poll (catches dropped callbacks).
-            try:
-                state, url = await _kie_poll_once(task_id)
-                if state == "success" and url:
-                    logger.info(
-                        "[kie-upscale] result via SAFETY-POLL task_id=%s image_id=%s",
-                        task_id, image_id,
-                    )
-                    return url
-                if state == "fail":
-                    raise RuntimeError("KIE upscale task failed (safety poll).")
-            except Exception as exc:
-                logger.warning(
-                    "[kie-upscale] safety poll error task_id=%s: %s", task_id, exc,
-                )
-        raise TimeoutError(
-            f"KIE upscale task {task_id} did not finish within {settings.KIE_UPSCALE_MAX_WAIT_S}s"
-        )
-
-    # Webhook disabled — legacy poll loop.
-    interval = float(settings.SEEDDREAM_RETRY_DELAY or 3)
-    max_iters = int(settings.SEEDDREAM_MAX_RETRIES or 40)
-    for _ in range(max_iters):
+    consecutive_errors = 0
+    for i in range(max_iters):
         if time.monotonic() >= deadline:
-            break
+            raise TimeoutError(
+                f"KIE upscale task {task_id} exceeded {settings.KIE_UPSCALE_MAX_WAIT_S}s"
+            )
         try:
             state, url = await _kie_poll_once(task_id)
+            consecutive_errors = 0
         except Exception as exc:
-            logger.warning("[kie-upscale] poll error task_id=%s: %s", task_id, exc)
+            consecutive_errors += 1
+            logger.warning(
+                "[kie-upscale] poll error task_id=%s attempt=%d err=%s",
+                task_id, consecutive_errors, exc,
+            )
+            # Bail out if KIE is hard-failing so we don't spin forever.
+            if consecutive_errors >= 10:
+                raise RuntimeError(
+                    f"KIE recordInfo failed {consecutive_errors}x for task_id={task_id}: {exc}"
+                )
             await asyncio.sleep(interval)
             continue
+
         if state == "success" and url:
+            logger.info(
+                "[kie-upscale] result via POLL task_id=%s image_id=%s poll=%d",
+                task_id, image_id, i + 1,
+            )
             return url
         if state == "fail":
-            raise RuntimeError("KIE upscale task failed.")
+            raise RuntimeError(f"KIE upscale task failed: task_id={task_id}")
+        # Still pending / processing — keep polling.
         await asyncio.sleep(interval)
-    raise TimeoutError(f"KIE upscale timed out after {max_iters} polls.")
+
+    raise TimeoutError(
+        f"KIE upscale task {task_id} did not finish in {max_iters} polls "
+        f"({max_iters * interval:.0f}s)"
+    )
 
 
 async def _stream_download(url: str, image_id: str) -> bytes:
@@ -404,21 +374,18 @@ async def _run_kie_upscale(
     source_image_url: str, image_id: str, seeddream_url: str, photoshoot_id: str = "",
 ) -> dict[str, bytes]:
     """
-    Submit -> wait (webhook+safety-poll, or pure poll) -> stream download ->
-    parallel resize+encode. Returns {8k,4k,2k,1k: bytes}.
+    Submit -> poll recordInfo -> stream download -> parallel resize+encode.
+    Returns ``{8k, 4k, 2k, 1k: bytes}``.
     """
     if not source_image_url:
         raise ValueError("source_image_url is required for KIE upscale.")
     if not (settings.SEEDDREAM_API_KEY or "").strip():
         raise ValueError("SEEDDREAM_API_KEY is missing for KIE upscale.")
 
-    from app.services import kie_task_registry
-
     t_submit = time.monotonic()
     logger.info(
-        "[kie-upscale] Submit image_id=%s model=%s factor=%s webhook=%s",
+        "[kie-upscale] Submit image_id=%s model=%s factor=%s",
         image_id, settings.KIE_UPSCALE_MODEL, settings.KIE_UPSCALE_FACTOR,
-        "on" if _callback_url() else "off",
     )
 
     task_id = await _kie_create_upscale_task(
@@ -427,13 +394,6 @@ async def _run_kie_upscale(
         photoshoot_id=photoshoot_id,
         image_id=image_id,
     )
-
-    # Register in Redis so the webhook handler (running in FastAPI process)
-    # can push the completion signal back to this worker.
-    if _callback_url():
-        await asyncio.to_thread(
-            kie_task_registry.register_sync, task_id, photoshoot_id, image_id,
-        )
 
     result_url = await _await_upscale_result(task_id, image_id)
     logger.info(

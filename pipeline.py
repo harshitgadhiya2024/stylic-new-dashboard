@@ -354,10 +354,40 @@ ABSOLUTE PRIORITIES (must be satisfied before aesthetics):
    eye shape, skin tone, lip shape, hair color and hairline. Zero drift.
 2) Reproduce the garment EXACTLY from the garment reference — fabric weave,
    prints, seams, stitching, trims, buttons, zippers, hardware, color.
-3) Copy mannequin posture exactly (hand position, weight shift, head tilt,
-   limb angles). Ignore the mannequin's face/skin/clothes/background.
+3) Copy the mannequin's POSTURE and FRAMING exactly (see dedicated section
+   below). This is non-negotiable.
 4) Integrate the subject into the background with matching perspective, light
    direction, color spill, and physical contact shadows.
+
+POSE & POSTURE (MANDATORY — the mannequin reference is a POSTURE TEMPLATE,
+match it exactly):
+- Copy the mannequin's body posture 1:1: overall stance, weight distribution,
+  which leg bears weight, hip angle, shoulder line, spine curvature, chest
+  direction, and head tilt.
+- Copy LEG position exactly: same leg bent / straight, same foot placement
+  and spacing, same knee angle, same ankle rotation.
+- Copy HAND and ARM position exactly: same arm angle at shoulder and elbow,
+  same wrist rotation, same finger position (open / fist / pinch / pointing /
+  touching garment / on hip), same left-vs-right asymmetry. If one hand is
+  raised and the other is down, mirror that exactly — do NOT substitute a
+  generic or 'more flattering' model pose.
+- Copy the overall body orientation (facing camera / 3-quarter / profile /
+  back) exactly as shown in the mannequin.
+- Ignore the mannequin's face, skin, clothing, proportions, background —
+  ONLY its posture and framing transfer.
+- Do NOT invent a new pose. Do NOT 'improve' the pose. Do NOT default to
+  a catalogue contrapposto unless the mannequin shows that exact stance.
+
+FRAMING & CROP (MANDATORY — match the mannequin reference):
+- If the mannequin shows the FULL body (head to feet), the output MUST be
+  full-body with both feet fully inside the frame and FOOTWEAR ON
+  (shoes are required — bare feet are rejected).
+- If the mannequin shows only the UPPER body (head to waist/torso), the
+  output MUST be an upper-body crop with the same crop line — no feet,
+  no legs, no footwear rendered.
+- Do NOT change the crop relative to the mannequin. Do NOT zoom out to add
+  missing feet, and do NOT zoom in to hide feet. The mannequin's framing IS
+  the output's framing.
 
 REALISM / SKIN / TEXTURE — pursue imperfection, not polish:
 - Skin shows real pores, peach fuzz, micro-freckles, slight T-zone shine,
@@ -413,6 +443,13 @@ Garment details: {garment}
 STRICT: single photorealistic human subject only. No text, watermarks, logos,
 duplicates, extra limbs or warped hands. No HDR crunch, no CGI sheen, no
 plastic skin, no AI-smooth background, no perfect symmetry.
+
+FINAL REMINDER (highest weight):
+1) POSTURE: the mannequin reference defines body pose, hand position, leg
+   position — copy it EXACTLY, do not substitute a generic model pose.
+2) FRAMING: the mannequin reference defines the crop — full-body mannequin
+   → full-body output with footwear ON; upper-body mannequin → upper-body
+   output with no feet and no footwear. No mixing.
 Pose variation index: {pose_index + 1}.
 """.strip()
 

@@ -120,16 +120,8 @@ class Settings(BaseSettings):
     KIE_VARIANT_FORMAT: str = "png_fast"       # "png_fast" | "png" | "webp_lossless" | "jpeg"
     # Only used when KIE_VARIANT_FORMAT=jpeg (kept for backward compat).
     KIE_VARIANT_JPEG_QUALITY: int = 95
-    # Safety net when we use webhooks (KIE sometimes drops callbacks).
-    KIE_UPSCALE_SAFETY_POLL_INTERVAL_S: float = 30.0
     # Hard wall-clock ceiling for a single upscale job (including wait + download).
     KIE_UPSCALE_MAX_WAIT_S: float = 900.0      # 15 min
-    # Webhook callback — public URL + shared secret. When set, upscale submits
-    # include callBackUrl=PUBLIC_BASE_URL/webhooks/kie/upscale and the job waits
-    # on Redis instead of polling.
-    PUBLIC_BASE_URL: str = ""                  # e.g. https://api.stylic.ai
-    KIE_WEBHOOK_SECRET: str = ""               # shared secret header check
-    KIE_WEBHOOK_PATH: str = "/webhooks/kie/upscale"
 
     # Multi-provider photoshoot generation pipeline (see pipeline.py architecture).
     # KIE is shared with SEEDDREAM_API_KEY; Vertex uses GOOGLE_CLOUD_API_KEY; Evolink uses EVOLINK_API_KEY.

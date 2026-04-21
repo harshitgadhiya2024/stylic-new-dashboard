@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import auth, user, model_face, background, photoshoot, poses, branding_template, storage, webhooks
+from app.routers import auth, user, model_face, background, photoshoot, poses, branding_template, storage
 from app.firebase_config import get_firebase_app
 from app.config import settings
 from app.database import create_indexes
@@ -61,7 +61,6 @@ app.include_router(photoshoot.router)
 app.include_router(poses.router)
 app.include_router(branding_template.router)
 app.include_router(storage.router)
-app.include_router(webhooks.router)
 
 
 @app.get("/", tags=["Root"])

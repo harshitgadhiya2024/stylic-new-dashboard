@@ -297,24 +297,39 @@ def _body_description(req: dict) -> str:
 
 
 def _footwear_rule(pose: PoseRuntime) -> str:
-    """Pose-aware footwear instruction used by every nano-banana prompt.
+    """Pose-aware framing + footwear rule driven by the mannequin image.
 
-    Full-body poses MUST include footwear (so the feet are never bare / cut
-    off mid-ankle); upper-body / half-body framings must NOT render footwear
-    because the feet aren't in frame.
+    The framing of the OUTPUT must match the framing shown in the mannequin
+    reference exactly:
+      * mannequin shows full body  → generate full body with footwear.
+      * mannequin shows upper body → generate upper body only, no feet, no shoes.
+
+    These two cases are written as hard, non-negotiable rules because the
+    model otherwise tends to "split the difference" (e.g. half-body crop even
+    when the mannequin shows the full body, or hallucinate shoes in a
+    head-to-waist crop).
     """
     if pose.is_upper_body:
         return (
-            "Framing: upper-body only (head to waist / torso). "
-            "Do NOT render footwear — feet must be out of frame. "
-            "Do not add shoes, sandals, heels or any leg/feet elements."
+            "FRAMING (MANDATORY, matches mannequin reference): UPPER-BODY ONLY. "
+            "The mannequin reference shows the subject from head to waist/"
+            "torso, so the output MUST show the same crop — head to waist, "
+            "feet and legs entirely out of frame. "
+            "Do NOT render footwear, do NOT render shoes, sandals, heels, or "
+            "any leg/feet elements. Any hint of footwear is a hard rejection."
         )
     return (
-        "Framing: full-body (head to feet). Footwear is REQUIRED — render "
-        "realistic, well-fitting shoes that match the outfit style (neutral "
-        "studio-appropriate footwear if none is specified). Feet must be "
-        "fully visible with natural contact shadows; no bare feet and no "
-        "cropped ankles."
+        "FRAMING (MANDATORY, matches mannequin reference): FULL-BODY, head "
+        "to feet. The mannequin reference shows the complete body, so the "
+        "output MUST show the complete body with both feet fully inside the "
+        "frame — no cropping at the ankles, knees, or thighs. "
+        "FOOTWEAR IS MANDATORY: render realistic, well-fitting shoes that "
+        "match the outfit style (default to neutral studio-appropriate "
+        "footwear if none is specified — closed-toe leather shoes, clean "
+        "sneakers, or minimal heels depending on outfit formality). "
+        "Both feet visible, properly laced/styled, with natural contact "
+        "shadows on the ground. Bare feet, missing shoes, or ankle-cropped "
+        "framing are hard rejections."
     )
 
 
@@ -349,12 +364,46 @@ def _core_prompt(pose: PoseRuntime, req: dict) -> str:
         "2) Reproduce the garment EXACTLY from the garment reference — fabric "
         "   weave, prints, seams, stitching, trims, buttons, zippers, "
         "   hardware, color. No reinterpretation.\n"
-        "3) Copy mannequin posture exactly (hand position, weight shift, head "
-        "   tilt, limb angles). Ignore the mannequin's face, skin, clothes, "
-        "   and background — only its POSTURE transfers.\n"
+        "3) Copy the mannequin's POSTURE and FRAMING exactly (see dedicated "
+        "   section below). This is non-negotiable.\n"
         "4) Integrate the subject into the background with correct "
         "   perspective, matching light direction, color-cast spill, and "
         "   physical contact shadows.\n\n"
+
+        # === 2b. POSTURE MIMICRY — dedicated non-negotiable block =============
+        "POSE & POSTURE (MANDATORY — the mannequin reference is a POSTURE "
+        "TEMPLATE, match it exactly):\n"
+        "- Copy the mannequin's body posture 1:1: overall stance, weight "
+        "  distribution, which leg bears weight, hip angle, shoulder line, "
+        "  spine curvature, chest direction, and head tilt.\n"
+        "- Copy LEG position exactly: same leg bent / straight, same foot "
+        "  placement and spacing, same knee angle, same ankle rotation.\n"
+        "- Copy HAND and ARM position exactly: same arm angle at shoulder "
+        "  and elbow, same wrist rotation, same finger position (open, "
+        "  fist, pinch, pointing, touching garment, on hip, etc.), same "
+        "  left-vs-right asymmetry. If one hand is raised and the other is "
+        "  down, mirror that exactly — do NOT substitute a 'more flattering' "
+        "  generic model pose.\n"
+        "- Copy the overall body orientation (facing camera / 3-quarter / "
+        "  profile / back) exactly as shown in the mannequin.\n"
+        "- Ignore the mannequin's face, skin tone, clothing, proportions, "
+        "  and background — ONLY its posture and framing transfer.\n"
+        "- Do NOT invent a new pose. Do NOT 'improve' the pose. Do NOT "
+        "  default to a catalogue contrapposto unless the mannequin shows "
+        "  that exact stance.\n\n"
+
+        # === 2c. FRAMING / CROP — mandatory match to mannequin =================
+        "FRAMING & CROP (MANDATORY — match the mannequin reference):\n"
+        "- If the mannequin reference shows the FULL body (head to feet), "
+        "  the output MUST be a full-body image, head to feet, with both "
+        "  feet fully inside the frame and FOOTWEAR ON (shoes are required; "
+        "  bare feet are rejected).\n"
+        "- If the mannequin reference shows only the UPPER body (head to "
+        "  waist/torso), the output MUST be an upper-body crop with the "
+        "  exact same crop line — no feet, no legs, no footwear rendered.\n"
+        "- Do NOT change the crop relative to the mannequin. Do NOT "
+        "  zoom out to add missing feet, and do NOT zoom in to hide feet. "
+        "  The mannequin's framing IS the output's framing.\n\n"
 
         # === 3. REALISM LADDER — micro-textures, anti-AI markers ==============
         "REALISM / SKIN / TEXTURE — pursue imperfection, not polish:\n"
@@ -436,7 +485,17 @@ def _core_prompt(pose: PoseRuntime, req: dict) -> str:
         "text, no watermarks, no logos, no UI overlays, no duplicates, no "
         "extra limbs or fingers, no warped hands. No HDR crunch. No CGI "
         "sheen. No plastic skin. No AI-smooth background. No perfect teeth. "
-        "No catalogue-style frontal centering.\n"
+        "No catalogue-style frontal centering.\n\n"
+
+        # === 10. FINAL REINFORCEMENT — last thing the model reads ============
+        "FINAL REMINDER (highest weight):\n"
+        "1) POSTURE: the mannequin reference defines body pose, hand "
+        "   position, leg position — copy it EXACTLY, do not substitute a "
+        "   generic model pose.\n"
+        "2) FRAMING: the mannequin reference defines the crop — "
+        "   full-body mannequin → full-body output with footwear ON; "
+        "   upper-body mannequin → upper-body output with no feet and no "
+        "   footwear. No mixing.\n"
         f"Pose variation index: {pose.index}."
     )
 
@@ -549,11 +608,15 @@ def _evolink_compact_prompt(
     ornaments = (req.get("ornaments") or "none").strip() or "none"
 
     if pose.is_upper_body:
-        footwear = "Framing: upper-body (head-to-waist); NO footwear, feet out of frame."
+        footwear = (
+            "FRAMING: UPPER-BODY only (head-to-waist), matching mannequin crop. "
+            "NO feet, NO legs, NO footwear rendered."
+        )
     else:
         footwear = (
-            "Framing: full-body (head-to-feet); footwear REQUIRED — realistic "
-            "shoes matching outfit, natural contact shadow, no bare feet."
+            "FRAMING: FULL-BODY (head-to-feet), matching mannequin crop. "
+            "FOOTWEAR MANDATORY — realistic shoes matching outfit, both feet "
+            "fully in frame with contact shadow, NO bare feet, NO ankle crop."
         )
 
     # Budget-conscious compact prompt. Evolink cap is ~2000 chars; we
@@ -562,33 +625,37 @@ def _evolink_compact_prompt(
     # realism prose (which degrades gracefully) rather than user data
     # (which would silently drop critical garment/pose info).
     prompt = (
-        # --- Camera + intent (compact) ---
+        # --- Camera + intent ---
         "Candid editorial fashion photo, real in-camera frame, full-frame "
-        "mirrorless + fast prime (24mm f/2.8 env / 85mm f/1.8 portrait). "
-        "Handheld, imperfect framing, off-axis — NOT CG, NOT AI-smooth, NOT "
-        "centered advert. Single subject. "
+        "mirrorless + fast prime (24mm f/2.8 or 85mm f/1.8). Handheld, "
+        "off-axis, NOT CG, NOT AI-smooth. Single subject. "
         f"Images: {legend}. "
-        # --- Priority lock ---
-        "HARD: (1) EXACT face identity from face ref; (2) garment fabric/"
-        "weave/print/seams/trims/hardware/color EXACT from "
-        f"{garment_src} ref; (3) copy mannequin posture only (ignore its "
-        "face/skin/clothes/bg); (4) integrate subject with matching "
-        "perspective, light direction, color spill, contact shadows. "
-        # --- USER INPUTS (placed early so safety-cap can't truncate them) ---
+        # --- Priority lock (posture + framing are highest weight) ---
+        "HARD: (1) EXACT face identity from face ref; "
+        "(2) garment fabric/weave/print/seams/trims/hardware/color EXACT "
+        f"from {garment_src} ref; "
+        "(3) COPY MANNEQUIN POSE 1:1 — same stance, weight shift, leg "
+        "position (which leg bent/straight, foot placement), hand+arm "
+        "position (shoulder/elbow/wrist angles, finger position), head "
+        "tilt, body orientation. Do NOT substitute a generic model pose. "
+        "Ignore mannequin face/skin/clothes/bg. "
+        "(4) MATCH MANNEQUIN CROP: full-body mannequin→full-body output "
+        "with shoes ON; upper-body mannequin→upper-body output, no feet. "
+        "(5) integrate with matching perspective, light direction, color "
+        "spill, contact shadows. "
+        # --- USER INPUTS (placed early so tail-truncation can't touch them) ---
         f"Body: {body} Garment: {garment}. Pose: {pose_text} {footwear} "
         f"Background: {bg_type}. Ornaments: {ornaments}. "
-        # --- Realism / light physics (condensed, tail-safe to truncate) ---
-        "Skin: real pores, peach fuzz, T-zone shine, SSS, faint nose redness — "
-        "matte-satin, NEVER plastic. Hair: flyaways, asymmetric parting. "
-        "Fabric: visible weave, thread ends, joint wrinkles. Light: mixed "
-        "motivated sources, global illumination, directional key with falloff, "
-        "environment color spill onto skin/garment, tight AO under jaw/collar/"
-        "folds, consistent color temp subject↔bg, layered contact shadow, "
-        "atmospheric haze. Fine sensor grain, slight CA on hi-contrast edges, "
-        "creamy optical bokeh, sharp eye focus, natural grading. "
-        # --- Exclusions ---
-        "One photorealistic human, correct anatomy/hands, no text/watermark/"
-        f"logo, no duplicates, no symmetry. Variation: {pose.index}."
+        # --- Condensed realism/light (tail-safe to truncate) ---
+        "Skin: pores, peach fuzz, T-zone shine, matte-satin, NEVER plastic. "
+        "Hair: flyaways. Fabric: visible weave, joint wrinkles. Light: mixed "
+        "sources, directional key, environment color spill, tight AO, "
+        "contact shadow. Fine grain, creamy bokeh, sharp eye focus, "
+        "natural grading. One photorealistic human, correct hands/anatomy, "
+        "no text/watermark/logo. "
+        # --- Final highest-weight reminder ---
+        "FINAL: mannequin = POSE template AND CROP template — match both "
+        f"exactly. Variation: {pose.index}."
     )
 
     # Hard cap — guarantee we never hit Evolink's 2000-char limit.
