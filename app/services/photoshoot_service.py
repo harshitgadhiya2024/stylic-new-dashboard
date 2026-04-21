@@ -255,85 +255,203 @@ async def resolve_poses(req: dict, poses_col=None) -> List[dict]:
 # Prompt builder (adapted from pipeline.py)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Prompt builders — MIRROR of ``new_pipeline.py`` (nano-banana-2 / nano-banana-pro
+# Vertex reference pipeline).
+#
+# The text and structure below MUST stay bit-identical to ``new_pipeline.py``
+# so that KIE nb2, Vertex nb2, Vertex nb-pro and Evolink all receive the same
+# instruction set.  Dynamic variables (weight / height / gender / garment
+# fields) are sourced from the ``req`` dict the same way as the rest of the
+# service; no new inputs are introduced.
+# ---------------------------------------------------------------------------
+
+def _gender_from_req(req: dict) -> str:
+    """Return ``male`` | ``female`` (defaults to ``female`` — same default
+    as ``new_pipeline.py`` when the variable is left empty)."""
+    g = (req.get("gender") or "").strip().lower()
+    return "male" if g == "male" else "female"
+
+
+def _body_description(req: dict) -> str:
+    """Gender-aware body description — bit-identical to ``new_pipeline.py``.
+
+    Inputs come from ``req``:
+      * ``gender`` → ``male`` / ``female``
+      * ``weight`` / ``body_weight`` → ``slim`` / ``regular`` / ``fat``
+      * ``height`` / ``body_height`` → ``short`` / ``regular`` / ``tall``
+
+    Unknown/empty values fall back to ``regular`` (weight) and ``regular``
+    (height), matching the reference pipeline.
+    """
+    g = _gender_from_req(req)
+    w = normalize_body_weight(raw_weight_from_req(req))
+    h = normalize_body_height(raw_height_from_req(req))
+
+    if g == "male":
+        if w == "fat":
+            body = "a heavier, fuller male build with natural belly volume and broader torso"
+        elif w == "slim":
+            body = "a slim, lean male build with narrow waist"
+        else:
+            body = "a muscular, athletic male build with defined shoulders and chest"
+    else:
+        if w == "fat":
+            body = "a fuller, curvier female build with natural body volume"
+        elif w == "slim":
+            body = "a slim, slender female build with delicate frame"
+        else:
+            body = "a regular, healthy female build with natural proportions"
+
+    if h == "tall":
+        stature = "tall stature (approx 160-170 cm)"
+    elif h == "short":
+        stature = "short stature (approx 140-150 cm)"
+    else:
+        stature = "average stature (approx 150-160 cm)"
+
+    return f"{body}, {stature}"
+
+
 def _garment_description(req: dict) -> str:
-    ug = (req.get("upper_garment_type") or "").strip()
-    us = (req.get("upper_garment_specification") or "").strip()
-    lg = (req.get("lower_garment_type") or "").strip()
-    ls = (req.get("lower_garment_specification") or "").strip()
-    op = (req.get("one_piece_garment_type") or "").strip()
-    os_ = (req.get("one_piece_garment_specification") or "").strip()
-    fitting = (req.get("fitting") or "regular fit").strip()
+    """Garment description — bit-identical to ``new_pipeline.py``.
+
+    Adds the saree (Gujarati Seedha Pallu) and 3-piece (kurta + bottom +
+    dupatta) styling hints when those one-piece types are detected, so
+    nano-banana-pro / nano-banana-2 drape the outfit correctly.
+    """
+    upper_garment_type = (req.get("upper_garment_type") or "").strip()
+    upper_garment_specification = (req.get("upper_garment_specification") or "").strip()
+    lower_garment_type = (req.get("lower_garment_type") or "").strip()
+    lower_garment_specification = (req.get("lower_garment_specification") or "").strip()
+    one_piece_garment_type = (req.get("one_piece_garment_type") or "").strip()
+    one_piece_garment_specification = (req.get("one_piece_garment_specification") or "").strip()
+    fitting = (req.get("fitting") or "").strip()
 
     parts: List[str] = []
-    if op:
+    if one_piece_garment_type:
+        otype = one_piece_garment_type.lower()
         parts.append(
-            f"A one-piece garment: {op}"
-            + (f" — {os_}" if os_ else "")
-            + ". Reproduce fabric, weave, texture, prints, embroidery, buttons, zippers, "
-              "seams, waistband and every small detail EXACTLY as in the front garment reference image."
+            f"A one-piece garment: {one_piece_garment_type} — {one_piece_garment_specification}. "
+            f"Reproduce fabric, weave, texture, prints, embroidery, buttons, zippers, seams, "
+            f"waistband and every small detail EXACTLY as in the front garment reference image."
         )
+        if "saree" in otype:
+            parts.append(
+                "Drape the saree in authentic Gujarati (Seedha Pallu) style: pallu brought over "
+                "the right shoulder and spread across the front. Include a matching blouse and "
+                "petticoat color-coordinated with the saree if not explicitly provided."
+            )
+        elif "three" in otype or "3-piece" in otype or "3 piece" in otype:
+            parts.append(
+                "Style as a traditional 3-piece Indian set (kurta/kameez + bottom + dupatta). "
+                "Drape the dupatta in Gujarati style across the front/shoulder. If any piece is "
+                "missing from the reference, add a matching piece that complements the main garment."
+            )
     else:
-        if ug:
+        if upper_garment_type:
             parts.append(
-                f"Upper garment: {ug}"
-                + (f" — {us}" if us else "")
-                + ". Match fabric, texture, color, print, buttons, collar, cuffs, stitching EXACTLY from refs."
+                f"Upper garment: {upper_garment_type} — {upper_garment_specification}. "
+                f"Match fabric, texture, color, print, buttons, collar, cuffs, stitching and "
+                f"every detail EXACTLY from the front (and back, when applicable) garment reference."
             )
-        if lg:
+        if lower_garment_type:
             parts.append(
-                f"Lower garment: {lg}"
-                + (f" — {ls}" if ls else "")
-                + ". If no lower-garment image is provided, generate a matching one."
+                f"Lower garment: {lower_garment_type} — {lower_garment_specification}. "
+                f"If no lower-garment image is provided, generate one that realistically matches "
+                f"the upper garment's style, color palette and formality."
             )
+
     if fitting:
         parts.append(f"Overall fitting: {fitting}.")
     return " ".join(parts)
 
 
-def _body_description(req: dict) -> str:
-    weight = normalize_body_weight(raw_weight_from_req(req))
-    height = normalize_body_height(raw_height_from_req(req))
-    return f"{body_weight_instruction_long(weight)} {body_height_instruction_long(height)}"
-
-
 def _core_prompt(pose: PoseRuntime, req: dict) -> str:
+    """Full studio-fashion prompt — bit-identical to ``_build_prompt`` in
+    ``new_pipeline.py``.  Dynamic fields: ``body``, ``garment``,
+    ``garment_ref_note`` and ``pose.index``.
+    """
     body = _body_description(req)
     garment = _garment_description(req)
+
     garment_ref_note = (
         "Use the BACK garment reference image for the garment (this is a back pose)."
         if pose.is_back and req.get("back_garment_image")
         else "Use the FRONT garment reference image for the garment."
     )
-    # Footwear is mandatory ONLY when the mannequin reference is a full-body
-    # pose. For upper-body poses the feet are out of frame, so footwear must
-    # not be rendered (the model otherwise hallucinates shoes floating below
-    # the crop line).
-    if pose.is_upper_body:
-        footwear_rule = (
-            "Framing: upper-body only (head to waist). Feet out of frame; "
-            "do NOT render any footwear."
-        )
-    else:
-        footwear_rule = (
-            "Framing: full-body (head to feet). Footwear is MANDATORY — "
-            "render realistic shoes matching the outfit, both feet visible "
-            "with natural contact shadows; no bare feet, no ankle crop."
-        )
+
     return f"""
 You are generating a hyper-realistic studio fashion photograph shot on a full-frame DSLR
 with an 85mm prime lens at f/2.0. Output a single photorealistic image.
 
-PRIORITY:
-1) Preserve exact face identity from the face reference.
-2) Preserve garment fidelity exactly (fabric, prints, seams, trims, colors, hardware).
-3) Copy mannequin posture exactly (ignore mannequin face/skin/clothes/background).
-4) Blend naturally into the background with correct perspective, lighting, and contact shadows.
+=================== INPUT REFERENCES (in order) ===================
+1. MODEL FACE reference — the subject's face identity (highest priority).
+2. GARMENT reference(s) — front and/or back flat-lay of the garment to be worn.
+3. MANNEQUIN POSE reference — ONLY for body posture (ignore its face, skin, clothes, background).
+4. BACKGROUND reference — the environment the photo must look shot in.
 
-Body type: {body}
-Garment reference rule: {garment_ref_note}
-Garment details: {garment}
-{footwear_rule}
-Output: single subject, photorealistic only, no text/watermark/logo, no distortions.
+=================== STRICT PRIORITY ORDER ===================
+
+[PRIORITY 1 — FACE & SKIN IDENTITY LOCK]  (MOST IMPORTANT)
+- Preserve the model's face IDENTITY from the face reference with 100% fidelity:
+  eye shape/color, eyebrows, nose, lips, jawline, cheekbones, ears, hairline, face proportions.
+- DO NOT beautify, slim, reshape, age or de-age the face. Keep exact likeness.
+- Skin realism is mandatory and clearly visible at normal viewing distance:
+  visible micro-pores on face/neck/arms, fine baby hair (peach-fuzz) on cheeks/jaw/forehead,
+  subtle but noticeable natural veins on hands/forearms/neck where anatomically plausible,
+  realistic skin grain, mild tonal variation, natural lip texture, and soft under-eye texture.
+- Avoid beauty-smoothing completely. Skin must NOT look plastic, waxy, over-retouched,
+  airbrushed, or AI-smooth. Maintain physically plausible, high-frequency skin detail.
+- Body type: {body}. Keep proportions consistent with this body type throughout the image.
+
+[PRIORITY 2 — GARMENT FIDELITY]
+- {garment_ref_note}
+- {garment}
+- Replicate fabric weave, sheen, drape physics, wrinkles, stitching, buttons, zippers,
+  embroidery, prints, waistband, hems, cuffs, collar EXACTLY as in the reference.
+- No color shift, no pattern drift, no invented logos or extra details.
+- Footwear rule (strict): if the mannequin pose is full-body or feet are visible, footwear is
+  REQUIRED. Never output barefoot feet unless explicitly requested. Choose footwear that matches
+  the worn garment style, color harmony, and context (e.g., ethnic outfit -> matching
+  sandals/jutti; western casual -> coordinated shoes/heels/sneakers). Footwear must be realistic,
+  proportionate, and naturally integrated with pose, lighting, contact shadows, and perspective.
+
+[PRIORITY 3 — POSE / BODY POSTURE]
+- Copy the body posture from the MANNEQUIN POSE reference EXACTLY:
+  hand position, finger placement, arm angles, shoulder tilt, hip sway, leg stance,
+  foot placement, head tilt and overall silhouette must match the mannequin 1:1.
+- Use ONLY the mannequin for posture — its face/skin/clothes/background are irrelevant.
+
+[PRIORITY 4 — BACKGROUND & LIGHTING REALISM]
+- Place the subject INTO the background reference as if the photo was actually shot there
+  with a DSLR — NOT composited, NOT green-screened, NOT pasted.
+- Match camera geometry to the background: camera height, horizon line, vertical perspective,
+  and vanishing lines must align with room architecture/furniture.
+- Subject scale must be physically correct for the scene: no oversized or undersized person.
+  Keep head size, shoulder width, torso length, and leg length proportionate to nearby objects
+  (chairs, walls, display units, doors, floor tiles).
+- Match the background's ambient light direction, color temperature and intensity on the
+  subject's face, hair and garment (natural light, studio strobes, golden hour, etc. — infer
+  from the background).
+- Cast physically correct, soft contact shadows on the ground and environment.
+- Consistent shadow direction across face, body, garment and surroundings.
+- Feet must sit exactly on the same floor plane as the environment with proper contact depth.
+  If the floor is glossy, add subtle physically plausible reflection and matching occlusion.
+- Keep perspective-consistent body proportions from head to toe (no stretched legs/torso from
+  incorrect virtual camera angle).
+- Realistic rim light / hair light where the scene justifies it.
+- Natural depth of field: subject sharp, background with gentle bokeh.
+- Correct perspective, scale and horizon line matching the background.
+
+=================== HARD CONSTRAINTS ===================
+- Single subject, fully visible as implied by the mannequin pose framing.
+- Photorealistic only. No illustration, no 3D-render look, no over-saturation.
+- No text, no watermark, no logo overlays.
+- No extra limbs, fingers, or distortions.
+- Reject results where subject looks pasted, floating, or incorrectly scaled vs background.
+- Output resolution: high, print-quality.
+
 Pose variation index: {pose.index + 1}.
 """.strip()
 
@@ -721,39 +839,45 @@ def _vertex_generate_sync(
     front = req.get("front_garment_image") or ""
     back = req.get("back_garment_image") or ""
 
+    # Reference ordering mirrors ``_build_parts`` in ``new_pipeline.py``
+    # exactly so that nano-banana-2 / nano-banana-pro see the same
+    # multimodal layout: face → garment(use) → garment(context) →
+    # mannequin → background → prompt text.
     parts: List[Any] = []
 
     if mf:
-        parts.append(genai_types.Part.from_text(text="[REF] MODEL FACE (identity lock):"))
+        parts.append(genai_types.Part.from_text(text="[REF 1/4] MODEL FACE (identity lock):"))
         face_bytes, face_mime = _load_image_bytes_sync(mf)
         parts.append(genai_types.Part.from_bytes(data=face_bytes, mime_type=face_mime))
 
     if pose.is_back and back:
         d, m = _load_image_bytes_sync(back)
-        parts.append(genai_types.Part.from_text(text="[REF] GARMENT — BACK (use this):"))
+        parts.append(genai_types.Part.from_text(text="[REF 2/4] GARMENT — BACK view (use this):"))
         parts.append(genai_types.Part.from_bytes(data=d, mime_type=m))
         if front:
             d2, m2 = _load_image_bytes_sync(front)
-            parts.append(genai_types.Part.from_text(text="[REF] GARMENT — FRONT (context):"))
+            parts.append(genai_types.Part.from_text(text="[REF 2b] GARMENT — FRONT view (context only):"))
             parts.append(genai_types.Part.from_bytes(data=d2, mime_type=m2))
     else:
         if front:
             d, m = _load_image_bytes_sync(front)
-            parts.append(genai_types.Part.from_text(text="[REF] GARMENT — FRONT (use this):"))
+            parts.append(genai_types.Part.from_text(text="[REF 2/4] GARMENT — FRONT view (use this):"))
             parts.append(genai_types.Part.from_bytes(data=d, mime_type=m))
         if back:
             d2, m2 = _load_image_bytes_sync(back)
-            parts.append(genai_types.Part.from_text(text="[REF] GARMENT — BACK (context):"))
+            parts.append(genai_types.Part.from_text(text="[REF 2b] GARMENT — BACK view (context only):"))
             parts.append(genai_types.Part.from_bytes(data=d2, mime_type=m2))
 
     if pose.mannequin_url:
         d3, m3 = _load_image_bytes_sync(pose.mannequin_url)
-        parts.append(genai_types.Part.from_text(text="[REF] MANNEQUIN POSE — body posture only:"))
+        parts.append(genai_types.Part.from_text(
+            text="[REF 3/4] MANNEQUIN POSE — copy BODY POSTURE ONLY (ignore face/skin/clothes/bg):"
+        ))
         parts.append(genai_types.Part.from_bytes(data=d3, mime_type=m3))
 
     if bg:
         d4, m4 = _load_image_bytes_sync(bg)
-        parts.append(genai_types.Part.from_text(text="[REF] BACKGROUND:"))
+        parts.append(genai_types.Part.from_text(text="[REF 4/4] BACKGROUND — scene the photo is shot in:"))
         parts.append(genai_types.Part.from_bytes(data=d4, mime_type=m4))
 
     parts.append(genai_types.Part.from_text(text=_core_prompt(pose, req)))

@@ -262,7 +262,9 @@ WorkingDirectory=/opt/stylicai
 Environment="PATH=/opt/stylicai/.venv/bin"
 ExecStart=/opt/stylicai/.venv/bin/celery -A app.worker worker \
   -Q photoshoots \
-  --concurrency=1 \
+  --autoscale=10,5 \
+  --prefetch-multiplier=1 \
+  --max-tasks-per-child=100 \
   --loglevel=info
 Restart=always
 RestartSec=10
@@ -271,7 +273,13 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-**Why `--concurrency=1`?** The photoshoot task pipeline uses `asyncio.run()` per job; the codebase recommends a single worker process per machine for predictable GPU/API usage. For more parallelism, run **multiple droplets** each with `concurrency=1`, or use `--autoscale=3,1` only if you understand resource limits (see comments in `app/worker.py`).
+**Autoscale profile (`--autoscale=10,5`)**:
+- keeps at least **5** worker processes warm
+- scales up to **10** when `photoshoots` queue depth increases
+- `--prefetch-multiplier=1` avoids one worker reserving too many long-running jobs
+- `--max-tasks-per-child=100` recycles workers periodically to limit memory growth on image-heavy workloads
+
+If your droplet has limited CPU/RAM (e.g. 2vCPU/4GB), start lower (`--autoscale=6,2`) and increase after observing load.
 
 As **root**:
 
