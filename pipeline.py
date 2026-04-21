@@ -337,24 +337,82 @@ def _core_prompt(pose_index: int, is_back_pose: bool) -> str:
     body = _body_description()
     garment = _garment_description()
     garment_ref_note = (
-        "Use the BACK garment reference image for the garment (this is a back pose)."
+        "Use the BACK garment reference image (this is a back pose)."
         if is_back_pose
-        else "Use the FRONT garment reference image for the garment."
+        else "Use the FRONT garment reference image."
     )
     return f"""
-You are generating a hyper-realistic studio fashion photograph shot on a full-frame DSLR
-with an 85mm prime lens at f/2.0. Output a single photorealistic image.
+Generate ONE candid editorial fashion photograph — a real, handheld, in-camera
+exposure shot on a full-frame mirrorless body (Sony A7R V / Leica Q3) with a
+fast prime lens (24mm f/2.8 environmental or 85mm f/1.8 portrait, chosen to
+fit the framing). Render as if a skilled human photographer pressed the
+shutter in a real location — NOT a CG render, NOT a polished studio key-art,
+NOT AI-smooth, NOT symmetrically composed. Single photorealistic frame only.
 
-PRIORITY:
-1) Preserve exact face identity from the face reference.
-2) Preserve garment fidelity exactly (fabric, prints, seams, trims, colors, hardware).
-3) Copy mannequin posture exactly (ignore mannequin face/skin/clothes/background).
-4) Blend naturally into the background with correct perspective, lighting, and contact shadows.
+ABSOLUTE PRIORITIES (must be satisfied before aesthetics):
+1) Preserve exact face identity from the face reference — same bone structure,
+   eye shape, skin tone, lip shape, hair color and hairline. Zero drift.
+2) Reproduce the garment EXACTLY from the garment reference — fabric weave,
+   prints, seams, stitching, trims, buttons, zippers, hardware, color.
+3) Copy mannequin posture exactly (hand position, weight shift, head tilt,
+   limb angles). Ignore the mannequin's face/skin/clothes/background.
+4) Integrate the subject into the background with matching perspective, light
+   direction, color spill, and physical contact shadows.
 
-Body type: {body}
-Garment reference rule: {garment_ref_note}
+REALISM / SKIN / TEXTURE — pursue imperfection, not polish:
+- Skin shows real pores, peach fuzz, micro-freckles, slight T-zone shine,
+  subsurface scattering in ears/nostrils, faint redness near nose bridge and
+  cheekbones. Matte-satin finish, never plastic, never airbrushed.
+- Hair has stray flyaways, asymmetric parting, catch-light in individual
+  strands; avoid helmet-shaped 'AI hair'.
+- Lips show subtle texture, slight gloss variation; teeth (if visible) are
+  naturally uneven in tone.
+- Garment fabric shows weave, pile direction, thread ends, fabric memory
+  where the body bends; accessories show fingerprints, dust, micro-scratches.
+- Background surfaces have dust, small marks, material grain.
+
+LIGHTING — real physics, mixed sources:
+- Motivated mixed real-world lighting (window + bounce, or sun + shade, or
+  practical + fill). Directional key with visible falloff. No flat lighting.
+- Global illumination: color spill from walls/floor/garment onto skin;
+  tight ambient occlusion under jaw, collar, armpits, fabric folds.
+- Specular highlights follow skin oil map (forehead, nose tip, cupid's bow);
+  specular occlusion inside pores.
+- Color temperature consistent across subject and background.
+
+SUBJECT-BACKGROUND INTEGRATION (grounded, not cut-out):
+- Soft layered contact shadow with dark core and diffuse penumbra beneath
+  feet / lowest contact point; long cast shadow if key is directional.
+- Ambient occlusion at clothing-skin contact and subject-near-wall seams.
+- Background color bounces onto the side of the face, neck, garment.
+- Atmospheric haze / fine dust / humidity in the air for depth.
+- Depth of field: sharp on eyes, creamy optical bokeh on background
+  (cats-eye near edges, not uniformly round).
+- Accurate, slightly distorted reflections of the full environment on shiny
+  surfaces (eyes, jewelry, patent leather, glass).
+
+LENS & CAMERA REALISM (subtle, never exaggerated):
+- Fine film-grain-like sensor noise, denser in shadows.
+- Slight chromatic aberration at high-contrast edges.
+- Subtle lens flare only if a light source is in/near frame.
+- Handheld feel (not tripod-locked).
+- Natural color grading — no teal-and-orange crunch, no oversaturation.
+
+COMPOSITION — candid snapshot feel:
+- Handheld, imperfect framing; slight off-axis or subtle Dutch angle allowed;
+  eye-line NOT perfectly centered. Editorial / documentary snapshot, not
+  beauty-counter advert.
+- Natural pose weight distribution; correct physical contact (visible
+  pressure and fabric deformation at grip points, not floating).
+
+INPUTS:
+Body: {body}
+Garment rule: {garment_ref_note}
 Garment details: {garment}
-Output: single subject, photorealistic only, no text/watermark/logo, no distortions.
+
+STRICT: single photorealistic human subject only. No text, watermarks, logos,
+duplicates, extra limbs or warped hands. No HDR crunch, no CGI sheen, no
+plastic skin, no AI-smooth background, no perfect symmetry.
 Pose variation index: {pose_index + 1}.
 """.strip()
 

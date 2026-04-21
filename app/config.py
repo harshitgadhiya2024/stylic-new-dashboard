@@ -107,6 +107,30 @@ class Settings(BaseSettings):
     KIE_REQUEST_RETRIES: int = 3
     KIE_HTTP_TIMEOUT: int = 300
 
+    # --- Upscale pipeline tuning (added 2026-04) -------------------------------
+    # Output encoding for the 8k/4k/2k/1k variants. Default is PNG with a low
+    # compress_level, which is fully LOSSLESS (bit-identical pixels) and ~15-20x
+    # faster than the legacy PNG `optimize=True` path. Trade-off: files are
+    # ~30% larger on disk vs compress_level=6.
+    #
+    #   png_fast     — lossless PNG, compress_level=1 (~3-6s @ 8K, ~130 MB). DEFAULT.
+    #   png          — lossless PNG, compress_level=6 (~15-25s @ 8K, ~100 MB).
+    #   webp_lossless — lossless WebP (~4-8s @ 8K, ~40 MB). Same pixels, smaller.
+    #   jpeg         — LOSSY; only use if you explicitly accept JPEG artifacts.
+    KIE_VARIANT_FORMAT: str = "png_fast"       # "png_fast" | "png" | "webp_lossless" | "jpeg"
+    # Only used when KIE_VARIANT_FORMAT=jpeg (kept for backward compat).
+    KIE_VARIANT_JPEG_QUALITY: int = 95
+    # Safety net when we use webhooks (KIE sometimes drops callbacks).
+    KIE_UPSCALE_SAFETY_POLL_INTERVAL_S: float = 30.0
+    # Hard wall-clock ceiling for a single upscale job (including wait + download).
+    KIE_UPSCALE_MAX_WAIT_S: float = 900.0      # 15 min
+    # Webhook callback — public URL + shared secret. When set, upscale submits
+    # include callBackUrl=PUBLIC_BASE_URL/webhooks/kie/upscale and the job waits
+    # on Redis instead of polling.
+    PUBLIC_BASE_URL: str = ""                  # e.g. https://api.stylic.ai
+    KIE_WEBHOOK_SECRET: str = ""               # shared secret header check
+    KIE_WEBHOOK_PATH: str = "/webhooks/kie/upscale"
+
     # Multi-provider photoshoot generation pipeline (see pipeline.py architecture).
     # KIE is shared with SEEDDREAM_API_KEY; Vertex uses GOOGLE_CLOUD_API_KEY; Evolink uses EVOLINK_API_KEY.
     KIE_API_KEY: str = ""
@@ -117,8 +141,11 @@ class Settings(BaseSettings):
     PHOTOSHOOT_GEN_RESOLUTION: str = "4K"
     # Per-image wall clock timeout for one generation attempt (seconds).
     PHOTOSHOOT_GEN_PER_IMAGE_TIMEOUT_S: float = 600.0
-    # KIE status polling interval for generation tasks (seconds).
-    PHOTOSHOOT_KIE_POLL_INTERVAL_S: float = 5.0
+    # KIE status polling interval for Stage-1 generation tasks (seconds).
+    # Reduced from 5s to 2s because polls now share an event loop with heavy
+    # Stage-2 work; tighter interval catches completions sooner without
+    # materially increasing API load.
+    PHOTOSHOOT_KIE_POLL_INTERVAL_S: float = 2.0
 
     # Redis / Celery queue
     REDIS_URL: str = "redis://localhost:6379/0"

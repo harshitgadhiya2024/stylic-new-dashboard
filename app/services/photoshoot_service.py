@@ -195,12 +195,24 @@ class PipelineContext:
 # ---------------------------------------------------------------------------
 
 async def _fetch_pose_data(pose_ids: List[str], poses_col=None) -> List[dict]:
-    """Return ``[{"image_url": ..., "pose_prompt": ...}, ...]`` per pose_id."""
+    """
+    Return ``[{"image_url": ..., "pose_prompt": ...}, ...]`` per pose_id, in
+    the same order as ``pose_ids``. Uses a single ``$in`` query instead of
+    N round-trips to Mongo (was ~500ms, now ~30ms for 7 poses).
+    """
     logger.info("[poses] Fetching %d pose doc(s) from DB", len(pose_ids))
     col = poses_col if poses_col is not None else get_poses_collection()
+
+    cursor = col.find({"pose_id": {"$in": list(pose_ids)}})
+    by_id: dict[str, dict] = {}
+    async for doc in cursor:
+        pid = doc.get("pose_id")
+        if pid:
+            by_id[str(pid)] = doc
+
     results: List[dict] = []
     for pid in pose_ids:
-        doc = await col.find_one({"pose_id": pid})
+        doc = by_id.get(str(pid))
         if doc:
             logger.info("[poses] Found pose_id=%s image_url=%s", pid, bool(doc.get("image_url")))
             results.append({
@@ -310,9 +322,9 @@ def _core_prompt(pose: PoseRuntime, req: dict) -> str:
     body = _body_description(req)
     garment = _garment_description(req)
     garment_ref_note = (
-        "Use the BACK garment reference image for the garment (this is a back pose)."
+        "Use the BACK garment reference image (this is a back pose)."
         if pose.is_back and req.get("back_garment_image")
-        else "Use the FRONT garment reference image for the garment."
+        else "Use the FRONT garment reference image."
     )
     pose_text = (pose.pose_prompt or "").strip() or "Natural relaxed full-body fashion model pose."
     bg_type = (req.get("background_type") or "").strip().lower() or "general"
@@ -320,20 +332,111 @@ def _core_prompt(pose: PoseRuntime, req: dict) -> str:
     footwear = _footwear_rule(pose)
 
     return (
-        "You are generating a hyper-realistic studio fashion photograph shot on a full-frame DSLR\n"
-        "with an 85mm prime lens at f/2.0. Output a single photorealistic image.\n\n"
-        "PRIORITY:\n"
-        "1) Preserve exact face identity from the face reference.\n"
-        "2) Preserve garment fidelity exactly (fabric, prints, seams, trims, colors, hardware).\n"
-        "3) Copy mannequin posture exactly (ignore mannequin face/skin/clothes/background).\n"
-        "4) Blend naturally into the background with correct perspective, lighting, and contact shadows.\n\n"
-        f"Body type: {body}\n"
-        f"Garment reference rule: {garment_ref_note}\n"
+        # === 1. CAMERA / RENDER INTENT — concrete real-camera language ========
+        "Generate ONE candid editorial fashion photograph — a real, handheld, "
+        "in-camera exposure shot on a full-frame mirrorless body (Sony A7R V / "
+        "Leica Q3) with a fast prime lens (24mm f/2.8 environmental or 85mm "
+        "f/1.8 portrait, chosen to fit the framing). Render as if a skilled "
+        "human photographer pressed the shutter in a real location — NOT a "
+        "CG render, NOT a polished studio key-art, NOT AI-smooth, NOT "
+        "symmetrically composed. Single photorealistic frame only.\n\n"
+
+        # === 2. PRIORITY LOCK — unchanged hard constraints ====================
+        "ABSOLUTE PRIORITIES (in order, must be satisfied before aesthetics):\n"
+        "1) Preserve exact face identity from the face reference — same bone "
+        "   structure, eye shape, skin tone, lip shape, hair color and "
+        "   hairline. Zero drift.\n"
+        "2) Reproduce the garment EXACTLY from the garment reference — fabric "
+        "   weave, prints, seams, stitching, trims, buttons, zippers, "
+        "   hardware, color. No reinterpretation.\n"
+        "3) Copy mannequin posture exactly (hand position, weight shift, head "
+        "   tilt, limb angles). Ignore the mannequin's face, skin, clothes, "
+        "   and background — only its POSTURE transfers.\n"
+        "4) Integrate the subject into the background with correct "
+        "   perspective, matching light direction, color-cast spill, and "
+        "   physical contact shadows.\n\n"
+
+        # === 3. REALISM LADDER — micro-textures, anti-AI markers ==============
+        "REALISM / SKIN / TEXTURE — pursue imperfection, not polish:\n"
+        "- Skin shows real pores, peach fuzz, micro-freckles, slight sebum "
+        "  shine on T-zone, subsurface scattering in ears/nostrils, faint "
+        "  redness near nose bridge and cheekbones. Matte-satin finish, never "
+        "  plastic, never airbrushed, never uniform tone.\n"
+        "- Hair has stray flyaways around the hairline, natural asymmetry in "
+        "  parting, catch-light in individual strands — avoid helmet-shaped "
+        "  'AI hair'.\n"
+        "- Lips show subtle texture lines, slight gloss variation, micro-"
+        "  cracks; teeth (if visible) are naturally uneven in tone.\n"
+        "- Garment fabric shows weave, pile direction, thread ends, small "
+        "  wrinkles at joints and fabric memory where the body bends; "
+        "  accessories show fingerprints, dust, micro-scratches.\n"
+        "- Background surfaces have dust, small marks, material grain; no "
+        "  surface is perfectly clean or perfectly flat.\n\n"
+
+        # === 4. LIGHT PHYSICS ================================================
+        "LIGHTING — real physics, mixed sources:\n"
+        "- Use motivated, mixed real-world lighting (window + bounce, or sun "
+        "  + shade, or practical + fill). Add directional key with visible "
+        "  falloff; avoid flat even lighting.\n"
+        "- Global illumination: color spill from walls, floor, and the "
+        "  garment onto skin; ambient occlusion tight under the jaw, collar, "
+        "  armpits, and where fabric meets body.\n"
+        "- Specular highlights follow skin oil map (forehead, nose tip, "
+        "  cupid's bow, chin); specular occlusion damps highlights inside "
+        "  pores. Slight blown highlight allowed on one cheek or shoulder.\n"
+        "- Color temperature consistent across subject and background — "
+        "  whatever illuminates the background also illuminates the subject.\n\n"
+
+        # === 5. SUBJECT ↔ BACKGROUND BLENDING ================================
+        "SUBJECT-BACKGROUND INTEGRATION — this is how the model gets GROUNDED:\n"
+        "- Feet / lowest contact point casts a soft, layered contact shadow "
+        "  with a dark core and diffuse penumbra; additional long cast shadow "
+        "  if directional light is present.\n"
+        "- Ambient occlusion visible where clothing folds touch skin, where "
+        "  the subject is near a wall, and along the floor seam.\n"
+        "- Background color bounces onto the side of the face, neck, and "
+        "  garment nearest to it — no clean cut-out look.\n"
+        "- Atmospheric haze / humidity / fine dust suspended in the air for "
+        "  depth separation; slight volumetric light if a source is directional.\n"
+        "- Depth of field: sharp focus on the face/eyes, progressive falloff "
+        "  on hands and garment edges, strong creamy bokeh on background; "
+        "  bokeh shape is optical (cats-eye near edges), not uniformly round.\n"
+        "- Accurate, slightly distorted reflections of the full environment "
+        "  on any shiny surface (jewelry, eyes, patent leather, glass).\n\n"
+
+        # === 6. LENS / CAMERA ARTIFACTS ======================================
+        "LENS & CAMERA REALISM — subtle, never exaggerated:\n"
+        "- Fine film-grain-like sensor noise, denser in shadows.\n"
+        "- Slight chromatic aberration at high-contrast edges.\n"
+        "- A whisper of lens flare only if a light source is in/near frame.\n"
+        "- Barely perceptible motion feel (handheld, not tripod-locked).\n"
+        "- Color grading: natural skin tones, mid-contrast, no teal-and-"
+        "  orange over-grade, no Instagram filter, no oversaturation.\n\n"
+
+        # === 7. COMPOSITION / ANTI-SYMMETRY ==================================
+        "COMPOSITION — candid snapshot feel:\n"
+        "- Handheld, imperfect framing; slight off-axis or subtle Dutch angle "
+        "  acceptable; eye-line is NOT perfectly centered.\n"
+        "- Documentary / editorial snapshot aesthetic — think a 35mm street-"
+        "  fashion frame, not a beauty-counter advert.\n"
+        "- Natural pose weight distribution; correct physical contact where "
+        "  hands/arms touch body or garment (visible pressure and fabric "
+        "  deformation, not floating).\n\n"
+
+        # === 8. SUBJECT / WARDROBE / SCENE INPUTS ============================
+        f"Body: {body}\n"
+        f"Garment rule: {garment_ref_note}\n"
         f"Garment details: {garment}\n"
         f"Pose: {pose_text}\n"
         f"{footwear}\n"
-        f"Background type: {bg_type}. Ornaments: {ornaments}.\n"
-        "Output: single subject, photorealistic only, no text/watermark/logo, no distortions.\n"
+        f"Background type: {bg_type}. Ornaments: {ornaments}.\n\n"
+
+        # === 9. HARD EXCLUSIONS (phrased as affirmative opposites) ===========
+        "STRICT: output is a single photorealistic human subject only. No "
+        "text, no watermarks, no logos, no UI overlays, no duplicates, no "
+        "extra limbs or fingers, no warped hands. No HDR crunch. No CGI "
+        "sheen. No plastic skin. No AI-smooth background. No perfect teeth. "
+        "No catalogue-style frontal centering.\n"
         f"Pose variation index: {pose.index}."
     )
 
@@ -453,21 +556,39 @@ def _evolink_compact_prompt(
             "shoes matching outfit, natural contact shadow, no bare feet."
         )
 
+    # Budget-conscious compact prompt. Evolink cap is ~2000 chars; we
+    # hard-cap at 1990. User-supplied inputs (body/garment/pose/bg) come
+    # BEFORE the realism boilerplate so that any tail-truncation trims
+    # realism prose (which degrades gracefully) rather than user data
+    # (which would silently drop critical garment/pose info).
     prompt = (
-        "Hyper-real studio fashion photo, 85mm DSLR f/2.0, single photorealistic subject. "
+        # --- Camera + intent (compact) ---
+        "Candid editorial fashion photo, real in-camera frame, full-frame "
+        "mirrorless + fast prime (24mm f/2.8 env / 85mm f/1.8 portrait). "
+        "Handheld, imperfect framing, off-axis — NOT CG, NOT AI-smooth, NOT "
+        "centered advert. Single subject. "
         f"Images: {legend}. "
-        "Rules: (1) keep exact face identity from face ref; "
-        "(2) reproduce garment fabric/print/trims/colors EXACTLY from the "
-        f"{garment_src} garment ref; "
-        "(3) copy mannequin posture only (ignore mannequin face/skin/clothes/bg); "
-        "(4) blend into background with correct perspective, lighting, contact shadows. "
-        f"Body: {body} "
-        f"Garment: {garment}. "
-        f"Pose: {pose_text} "
-        f"{footwear} "
+        # --- Priority lock ---
+        "HARD: (1) EXACT face identity from face ref; (2) garment fabric/"
+        "weave/print/seams/trims/hardware/color EXACT from "
+        f"{garment_src} ref; (3) copy mannequin posture only (ignore its "
+        "face/skin/clothes/bg); (4) integrate subject with matching "
+        "perspective, light direction, color spill, contact shadows. "
+        # --- USER INPUTS (placed early so safety-cap can't truncate them) ---
+        f"Body: {body} Garment: {garment}. Pose: {pose_text} {footwear} "
         f"Background: {bg_type}. Ornaments: {ornaments}. "
-        "No text/watermark/logo, no distortions, single subject. "
-        f"Variation: {pose.index}."
+        # --- Realism / light physics (condensed, tail-safe to truncate) ---
+        "Skin: real pores, peach fuzz, T-zone shine, SSS, faint nose redness — "
+        "matte-satin, NEVER plastic. Hair: flyaways, asymmetric parting. "
+        "Fabric: visible weave, thread ends, joint wrinkles. Light: mixed "
+        "motivated sources, global illumination, directional key with falloff, "
+        "environment color spill onto skin/garment, tight AO under jaw/collar/"
+        "folds, consistent color temp subject↔bg, layered contact shadow, "
+        "atmospheric haze. Fine sensor grain, slight CA on hi-contrast edges, "
+        "creamy optical bokeh, sharp eye focus, natural grading. "
+        # --- Exclusions ---
+        "One photorealistic human, correct anatomy/hands, no text/watermark/"
+        f"logo, no duplicates, no symmetry. Variation: {pose.index}."
     )
 
     # Hard cap — guarantee we never hit Evolink's 2000-char limit.
@@ -516,14 +637,28 @@ async def _download_bytes(url: str, label: str = "") -> bytes:
 
 
 def _resize_image(original_bytes: bytes, max_dimension: int) -> bytes:
+    """
+    Resize + encode. Delegates to the shared encoder in modal_enhance_service
+    so pre-upscale variants (here) and post-upscale variants use the exact
+    same lossless format (default: png_fast).
+    """
+    # Imported lazily to avoid a circular import at module load.
+    from app.services.modal_enhance_service import (
+        _encode_variant, _normalized_format,
+    )
+
+    fmt = _normalized_format()
+    jpeg_q = int(settings.KIE_VARIANT_JPEG_QUALITY or 95)
+
     img = Image.open(io.BytesIO(original_bytes)).convert("RGB")
     w, h = img.size
     scale = max_dimension / max(w, h)
     if scale < 1.0:
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
+        new_size = (int(w * scale), int(h * scale))
+    else:
+        new_size = (w, h)
+
+    return _encode_variant(img, new_size, fmt, jpeg_q)
 
 
 # ---------------------------------------------------------------------------
@@ -824,18 +959,25 @@ async def _materialize_and_upscale(pose: PoseRuntime, ctx: PipelineContext) -> N
         else:
             raise RuntimeError(f"[{pose.label}] no generated image available")
 
-        # 2) Resize 4K → 2K / 1K
+        # 2) Re-encode 4K (from generator's PNG to target format) + resize to 2K/1K,
+        #    all three in parallel in a thread pool so the event loop stays free.
         loop = asyncio.get_running_loop()
-        bytes_2k, bytes_1k = await asyncio.gather(
+        bytes_4k_enc, bytes_2k, bytes_1k = await asyncio.gather(
+            loop.run_in_executor(None, _resize_image, bytes_4k, 4096),
             loop.run_in_executor(None, _resize_image, bytes_4k, 2048),
             loop.run_in_executor(None, _resize_image, bytes_4k, 1024),
         )
 
-        # 3) Upload 4K/2K/1K to R2
+        # 3) Upload 4K/2K/1K to R2 (JPEG by default — see KIE_VARIANT_FORMAT)
+        from app.services.modal_enhance_service import (
+            variant_content_type, variant_extension,
+        )
+        ext = variant_extension()
+        ctype = variant_content_type()
         url_4k, url_2k, url_1k = await asyncio.gather(
-            upload_bytes_to_r2(bytes_4k, f"{prefix}_4k.png", "image/png"),
-            upload_bytes_to_r2(bytes_2k, f"{prefix}_2k.png", "image/png"),
-            upload_bytes_to_r2(bytes_1k, f"{prefix}_1k.png", "image/png"),
+            upload_bytes_to_r2(bytes_4k_enc, f"{prefix}_4k.{ext}", ctype),
+            upload_bytes_to_r2(bytes_2k,     f"{prefix}_2k.{ext}", ctype),
+            upload_bytes_to_r2(bytes_1k,     f"{prefix}_1k.{ext}", ctype),
         )
         effective_source_url = source_image_url or url_4k
 
