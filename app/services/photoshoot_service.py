@@ -393,16 +393,26 @@ with an 85mm prime lens at f/2.0. Output a single photorealistic image.
 
 =================== STRICT PRIORITY ORDER ===================
 
-[PRIORITY 1 — FACE & SKIN IDENTITY LOCK]  (MOST IMPORTANT)
+[PRIORITY 1 — FACE & SKIN IDENTITY LOCK + SKIN REALISM]  (MOST IMPORTANT)
 - Preserve the model's face IDENTITY from the face reference with 100% fidelity:
   eye shape/color, eyebrows, nose, lips, jawline, cheekbones, ears, hairline, face proportions.
 - DO NOT beautify, slim, reshape, age or de-age the face. Keep exact likeness.
-- Skin realism is mandatory and clearly visible at normal viewing distance:
-  visible micro-pores on face/neck/arms, fine baby hair (peach-fuzz) on cheeks/jaw/forehead,
-  subtle but noticeable natural veins on hands/forearms/neck where anatomically plausible,
-  realistic skin grain, mild tonal variation, natural lip texture, and soft under-eye texture.
-- Avoid beauty-smoothing completely. Skin must NOT look plastic, waxy, over-retouched,
-  airbrushed, or AI-smooth. Maintain physically plausible, high-frequency skin detail.
+- Physically based skin: render subsurface scattering (SSS) so light transmits subtly through
+  ears, nostrils, lip edges and thin skin; natural warm glow where light meets skin.
+- Readable micro-pores on face/neck/forearms/hands at 100% crop distance; fine peach-fuzz
+  (vellus hair) on cheeks/jaw/temples/forehead catching rim/backlight.
+- Micro-specular highlights from SCENE light on the oil-rich zones (nose bridge, nose tip,
+  forehead T-zone, cheekbones, cupid's bow, chin) — tiny, soft, not shiny or greasy.
+- Anatomy-plausible tendons on the backs of hands, subtle veins on forearms, hands and
+  temples/neck where the pose exposes them; natural knuckle creases and nail-bed variation.
+- Eye realism: sharp catchlights matching the scene light source, visible iris texture, red
+  caruncle near tear duct, faint lower-lid moisture line, tiny lash shadows on cheek.
+- Lip realism: vertical lip lines, slight asymmetry, matte-to-semi-gloss micro-variation;
+  no uniform lipstick sheen unless garment styling implies it.
+- Skin imperfections are mandatory and subtle: mild tonal variation, faint freckles/moles
+  where the reference shows them, soft under-eye texture, tiny redness at nostril base/ears.
+- ABSOLUTELY NO beauty-smoothing, plastic/waxy skin, airbrush, frequency-separation look,
+  porcelain glow, or AI "clean" skin. Keep physically plausible high-frequency detail.
 - Body type: {body}. Keep proportions consistent with this body type throughout the image.
 
 [PRIORITY 2 — GARMENT FIDELITY]
@@ -410,6 +420,8 @@ with an 85mm prime lens at f/2.0. Output a single photorealistic image.
 - {garment}
 - Replicate fabric weave, sheen, drape physics, wrinkles, stitching, buttons, zippers,
   embroidery, prints, waistband, hems, cuffs, collar EXACTLY as in the reference.
+- Fabric micro-texture must be visible: weave/knit direction, thread highlights, seam puckers,
+  subtle fuzz on wool/cotton, specular roll-off on silk/satin, light scatter through sheer fabric.
 - No color shift, no pattern drift, no invented logos or extra details.
 - Footwear rule (strict): if the mannequin pose is full-body or feet are visible, footwear is
   REQUIRED. Never output barefoot feet unless explicitly requested. Choose footwear that matches
@@ -423,32 +435,67 @@ with an 85mm prime lens at f/2.0. Output a single photorealistic image.
   foot placement, head tilt and overall silhouette must match the mannequin 1:1.
 - Use ONLY the mannequin for posture — its face/skin/clothes/background are irrelevant.
 
-[PRIORITY 4 — BACKGROUND & LIGHTING REALISM]
+[PRIORITY 4 — SCENE LIGHTING, SHADOWS, LENS & GROUNDING]
 - Place the subject INTO the background reference as if the photo was actually shot there
-  with a DSLR — NOT composited, NOT green-screened, NOT pasted.
+  with a DSLR — NOT composited, NOT green-screened, NOT pasted. No cutout edges, no halo,
+  no rim-outline around hair/shoulders, no floating subject.
 - Match camera geometry to the background: camera height, horizon line, vertical perspective,
   and vanishing lines must align with room architecture/furniture.
 - Subject scale must be physically correct for the scene: no oversized or undersized person.
   Keep head size, shoulder width, torso length, and leg length proportionate to nearby objects
   (chairs, walls, display units, doors, floor tiles).
-- Match the background's ambient light direction, color temperature and intensity on the
-  subject's face, hair and garment (natural light, studio strobes, golden hour, etc. — infer
-  from the background).
-- Cast physically correct, soft contact shadows on the ground and environment.
-- Consistent shadow direction across face, body, garment and surroundings.
-- Feet must sit exactly on the same floor plane as the environment with proper contact depth.
-  If the floor is glossy, add subtle physically plausible reflection and matching occlusion.
-- Keep perspective-consistent body proportions from head to toe (no stretched legs/torso from
-  incorrect virtual camera angle).
-- Realistic rim light / hair light where the scene justifies it.
-- Natural depth of field: subject sharp, background with gentle bokeh.
-- Correct perspective, scale and horizon line matching the background.
+
+- LIGHTING PHYSICS (mandatory):
+  * Infer the dominant light(s) (direction, softness, color temperature, intensity) from the
+    background reference and light the subject with the SAME light — including mixed sources
+    (e.g. warm tungsten + cool window skylight) and global illumination.
+  * Directional key + soft fill + subtle rim/hair light that wraps around the silhouette so the
+    subject sits INSIDE the scene; avoid flat, even, textureless "studio cutout" lighting.
+  * Bounce light from the floor/walls onto under-chin, jawline, inner arms and garment
+    under-folds, tinted by the bounce surface color.
+  * Micro-specular highlights on cheeks/nose/forehead/cupid's bow from the scene light — tiny,
+    placement-accurate, never plasticky shine.
+  * Match exposure and white balance to the background; skin, hair and garment must share the
+    same scene WB, not a separate "portrait look".
+
+- SHADOWS & AMBIENT OCCLUSION (mandatory):
+  * Layered, soft, physically plausible shadows: strong near contact points (feet on floor,
+    hand on hip, hair on shoulder) and softer/larger farther away.
+  * Ambient occlusion in neck folds, under-chin, under-arm, hair parting, garment folds,
+    between fingers — grounding the subject in the scene.
+  * Single consistent shadow direction across face, body, garment, hair and surroundings
+    that matches the scene light.
+  * When legs/feet are visible: feet planted on the actual floor plane with correct contact
+    shadow and micro-occlusion; no halo, no floating, no drifting shadow.
+  * If floor is glossy/reflective, add a subtle physically correct reflection of the subject
+    with proper fall-off and occlusion.
+
+- ATMOSPHERE & DEPTH:
+  * Add subtle atmospheric depth (very light haze/dust/humidity) consistent with the scene;
+    do not wash out contrast.
+  * Natural depth of field: subject tack-sharp at eyes/face, background with creamy 85mm f/2.0
+    bokeh; foreground objects may show gentle out-of-focus blur.
+
+- LENS REALISM:
+  * Fine, even film grain / sensor noise across the whole frame (skin AND background
+    must share the same grain).
+  * Very slight chromatic aberration at high-contrast edges.
+  * Optional subtle lens flare / veiling glare ONLY when a bright light source is in/near frame
+    and the scene justifies it — never invented.
+  * Natural color grading tied to the scene lighting: no oversaturation, no teal-orange
+    over-grade, no sterile clinical edit.
+  * Accurate, slightly distorted reflections of the full surrounding environment on glossy
+    surfaces (floor, mirrors, metal, lacquered wood, jewelry, eyewear).
 
 =================== HARD CONSTRAINTS ===================
 - Single subject, fully visible as implied by the mannequin pose framing.
-- Photorealistic only. No illustration, no 3D-render look, no over-saturation.
+- Photorealistic only. No illustration, no 3D-render look, no CGI sheen, no over-saturation.
 - No text, no watermark, no logo overlays.
 - No extra limbs, fingers, or distortions.
+- No plastic/waxy/airbrushed skin, no AI-clean complexion, no beauty-smoothing.
+- No cutout/halo/float: the subject must live INSIDE the scene's light, not on top of it.
+- Skin grain and background grain must match — never a clean subject on a grainy background
+  or vice-versa.
 - Reject results where subject looks pasted, floating, or incorrectly scaled vs background.
 - Output resolution: high, print-quality.
 
@@ -591,15 +638,28 @@ def _evolink_compact_prompt(
         "Hyper-realistic studio fashion photo, full-frame DSLR, 85mm f/2.0. "
         "Single photorealistic subject.\n"
         "PRIORITY: (1) EXACT face identity from face ref; "
-        "(2) garment fabric/print/seams/trims/hardware/color EXACT from ref; "
-        "(3) copy mannequin posture exactly — ignore its face/skin/clothes/bg; "
-        "(4) blend into background with correct perspective, lighting, contact shadows.\n"
+        "(2) garment fabric/print/seams/trims/color EXACT from ref; "
+        "(3) copy mannequin posture exactly (ignore its face/skin/clothes/bg); "
+        "(4) subject INSIDE scene light (no cutout/halo/float).\n"
+        "SKIN: SSS, visible pores, peach-fuzz on cheeks/jaw, micro-specular on "
+        "nose/cheeks/forehead, subtle veins/tendons on hands/forearms, sharp eye "
+        "catchlights, tiny lip lines. NO airbrush/plastic/AI-smooth skin.\n"
+        "LIGHT: match scene direction+WB+exposure; key+soft fill+rim/hair wrap; "
+        "bounce on under-chin/arms/garment; global illumination; mixed real sources "
+        "(no flat lighting).\n"
+        "SHADOWS: layered soft contact shadows + AO in neck/folds/fingers; single "
+        "consistent direction across face/body/garment/bg. Feet grounded on same "
+        "floor plane (no halo/float); glossy floor → subtle reflection.\n"
+        "LENS: creamy 85mm f/2.0 bokeh, fine film grain (subject+bg match), slight "
+        "chromatic aberration, subtle lens flare only if light source in frame, "
+        "light haze for depth, natural color grade (no oversaturation), "
+        "accurate slightly-distorted reflections on glossy surfaces.\n"
         f"Body: {body}.\n"
         f"{garment_ref_note}\n"
         f"Garment: {garment}.\n"
         f"{footwear_rule}\n"
-        "Output: single subject, photorealistic, no text/watermark/logo, no distortions. "
-        f"Variation: {pose.index + 1}."
+        "Output: single subject, photorealistic, no text/watermark/logo, no distortions, "
+        f"no cutout/halo/float. Variation: {pose.index + 1}."
     )
 
     if len(prompt) > 1990:
