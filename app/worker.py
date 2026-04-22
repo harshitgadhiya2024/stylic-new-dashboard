@@ -2,18 +2,41 @@
 Celery application — queue management for photoshoot jobs.
 
 Start the worker with autoscaling (recommended for production):
-    celery -A app.worker worker -Q photoshoots --autoscale=5,1 --loglevel=info
+
+    celery -A app.worker worker \\
+        -Q photoshoots \\
+        --autoscale=16,4 \\
+        --prefetch-multiplier=1 \\
+        --max-tasks-per-child=100 \\
+        --loglevel=info
 
     --autoscale=MAX,MIN
-      MIN=1  — always keep at least 1 worker process alive
-      MAX=5  — scale up to 5 parallel photoshoot jobs when queue is deep
+      MIN=4   — always keep 4 worker processes warm (fast job pickup)
+      MAX=16  — scale up to 16 parallel photoshoot jobs under load
 
-    Celery automatically adds worker processes as the queue fills up and
-    removes them when the queue drains, so users never wait unnecessarily
-    while also not wasting EC2 resources when idle.
+    Photoshoot tasks are I/O-bound (they spend >90% of wall time waiting for
+    KIE / Vertex / Evolink / Modal), so concurrency can far exceed CPU count.
 
-Start the worker with fixed concurrency (simpler, good for small instances):
-    celery -A app.worker worker -Q photoshoots --concurrency=3 --loglevel=info
+Recommended --autoscale profile by droplet size:
+
+    droplet         MAX,MIN        notes
+    ──────────     ─────────       ──────────────────────────────────────
+    2 vCPU/4 GB    8,2             safe entry-level production
+    4 vCPU/8 GB    16,4            recommended default
+    8 vCPU/16 GB   32,6            high-throughput
+
+Cross-worker rate limiting:
+
+    KIE.ai enforces a 20-req / 10-s account-level limit on createTask.
+    ``app.services.kie_rate_limiter`` implements a Redis sliding-window
+    limiter that every Celery worker (and the FastAPI process) consults
+    before POSTing /createTask.  Values are env-tunable:
+        KIE_RATE_LIMIT_REQUESTS=18
+        KIE_RATE_LIMIT_WINDOW_S=10
+    Vertex (nano-banana-2, nano-banana-pro) and Evolink have no published
+    account-wide limits, so they are bounded only by per-job semaphores
+    (``PHOTOSHOOT_VERTEX_*_CONCURRENCY`` / ``PHOTOSHOOT_EVOLINK_CONCURRENCY``)
+    — see app/config.py.
 
 For monitoring (optional):
     celery -A app.worker flower --port=5555 --basic_auth=admin:yourpassword

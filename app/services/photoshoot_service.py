@@ -100,11 +100,15 @@ class GenPolicy:
     retries: int
 
 
+# Per-photoshoot concurrency values are env-tunable (see app/config.py).
+# Max poses per photoshoot is 8, so values >8 are wasted; values <8 serialize
+# some poses within the same job.  Cross-job throttling for KIE is handled by
+# the Redis rate limiter in ``app.services.kie_rate_limiter``.
 GEN_POLICIES: List[GenPolicy] = [
-    GenPolicy(name="kie_nb2",       concurrency=10, retries=2),
-    GenPolicy(name="vertex_nb2",    concurrency=2,  retries=4),
-    GenPolicy(name="vertex_nbpro",  concurrency=2,  retries=4),
-    GenPolicy(name="evolink_nb2",   concurrency=10, retries=10),
+    GenPolicy(name="kie_nb2",       concurrency=settings.PHOTOSHOOT_KIE_CONCURRENCY,          retries=2),
+    GenPolicy(name="vertex_nb2",    concurrency=settings.PHOTOSHOOT_VERTEX_NB2_CONCURRENCY,   retries=4),
+    GenPolicy(name="vertex_nbpro",  concurrency=settings.PHOTOSHOOT_VERTEX_NBPRO_CONCURRENCY, retries=4),
+    GenPolicy(name="evolink_nb2",   concurrency=settings.PHOTOSHOOT_EVOLINK_CONCURRENCY,      retries=10),
 ]
 
 
@@ -753,6 +757,8 @@ def _kie_headers() -> dict[str, str]:
 
 
 def _kie_create_nb2_task_sync(prompt: str, image_urls: List[str]) -> str:
+    from app.services.kie_rate_limiter import acquire_kie_token_sync
+
     body = {
         "model": "nano-banana-2",
         "input": {
@@ -763,6 +769,9 @@ def _kie_create_nb2_task_sync(prompt: str, image_urls: List[str]) -> str:
             "output_format": "jpg",
         },
     }
+    # Account-wide rate limit: KIE allows 20 createTask requests / 10 s.  Block
+    # here until a slot is free (shared across every Celery worker via Redis).
+    acquire_kie_token_sync()
     r = requests.post(_KIE_CREATE_URL, headers=_kie_headers(), data=json.dumps(body), timeout=60)
     r.raise_for_status()
     data = r.json()

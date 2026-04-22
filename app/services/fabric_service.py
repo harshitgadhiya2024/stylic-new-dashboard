@@ -216,6 +216,10 @@ async def _submit_nano_banana_garment_task(prompt: str, image_url: str, log_labe
         "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
         "Content-Type":  "application/json",
     }
+    from app.services.kie_rate_limiter import acquire_kie_token_async
+
+    # Account-wide rate limit (shared across all Celery workers).
+    await acquire_kie_token_async()
     async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
         resp = await client.post(_CREATE_URL, headers=headers, content=payload)
         resp.raise_for_status()

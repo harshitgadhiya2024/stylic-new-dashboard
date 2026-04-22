@@ -262,7 +262,11 @@ async def _submit_seedream_lite_reference_img2img_task(image_url: str) -> str:
         "Content-Type":  "application/json",
     }
 
+    from app.services.kie_rate_limiter import acquire_kie_token_async
+
     try:
+        # Account-wide rate limit (shared across all Celery workers).
+        await acquire_kie_token_async()
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(_CREATE_URL, headers=headers, content=payload)
             resp.raise_for_status()

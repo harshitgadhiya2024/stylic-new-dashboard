@@ -262,7 +262,7 @@ WorkingDirectory=/opt/stylicai
 Environment="PATH=/opt/stylicai/.venv/bin"
 ExecStart=/opt/stylicai/.venv/bin/celery -A app.worker worker \
   -Q photoshoots \
-  --autoscale=10,5 \
+  --autoscale=16,4 \
   --prefetch-multiplier=1 \
   --max-tasks-per-child=100 \
   --loglevel=info
@@ -273,13 +273,63 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-**Autoscale profile (`--autoscale=10,5`)**:
-- keeps at least **5** worker processes warm
-- scales up to **10** when `photoshoots` queue depth increases
+**Autoscale profile (`--autoscale=16,4`)** — sized for a **4 vCPU / 8 GB** droplet:
+- keeps at least **4** worker processes warm (fast job pickup, no cold-start)
+- scales up to **16** parallel photoshoot jobs when the `photoshoots` queue fills
 - `--prefetch-multiplier=1` avoids one worker reserving too many long-running jobs
 - `--max-tasks-per-child=100` recycles workers periodically to limit memory growth on image-heavy workloads
 
-If your droplet has limited CPU/RAM (e.g. 2vCPU/4GB), start lower (`--autoscale=6,2`) and increase after observing load.
+Photoshoot tasks are I/O-bound (>90% of wall time is waiting on KIE / Vertex /
+Evolink / Modal), so concurrency can go much higher than CPU count:
+
+| Droplet | `--autoscale=MAX,MIN` |
+|---|---|
+| 2 vCPU / 4 GB | `8,2` |
+| 4 vCPU / 8 GB | `16,4` (recommended default) |
+| 8 vCPU / 16 GB | `32,6` |
+
+### 10.1 Provider rate limits (cross-worker)
+
+Because Celery can now run up to 16 jobs in parallel, each hitting KIE / Vertex
+/ Evolink, you MUST make sure none of them exceed the provider's account-wide
+limit.  The repo now ships an account-wide KIE rate limiter
+(`app/services/kie_rate_limiter.py`) that uses Redis as a shared
+sliding-window counter — every worker on every droplet consults it before
+POSTing `/createTask`.
+
+**Default tuning (see `app/config.py`):**
+
+```bash
+# KIE.ai — account-wide limit: 20 createTask / 10 s
+KIE_RATE_LIMIT_ENABLED=true
+KIE_RATE_LIMIT_REQUESTS=18        # safety margin below 20
+KIE_RATE_LIMIT_WINDOW_S=10
+KIE_RATE_LIMIT_MAX_WAIT_S=30      # max sleep per caller before giving up
+
+# Per-job semaphores (max poses per photoshoot is 8 → values >8 are wasted)
+PHOTOSHOOT_KIE_CONCURRENCY=8
+PHOTOSHOOT_VERTEX_NB2_CONCURRENCY=8
+PHOTOSHOOT_VERTEX_NBPRO_CONCURRENCY=8
+PHOTOSHOOT_EVOLINK_CONCURRENCY=8
+```
+
+**Behaviour under load** (16 Celery workers × 8 poses = up to 128 concurrent
+KIE createTask intents):
+
+1. The limiter admits 18 `createTask` calls in the first 10 s.
+2. Remaining calls sleep in the Redis bucket until slots age out.
+3. Each worker logs `[kie-rate] bucket full — sleeping 1.2s (budget_left=28s)`
+   so you can see saturation in real time.
+4. If Redis is temporarily unreachable the limiter falls back to an
+   in-process counter (safe, but only valid on single-droplet deployments).
+
+**Vertex (nano-banana-2 / nano-banana-pro):** no published account-wide limit.
+Bounded only by `PHOTOSHOOT_VERTEX_*_CONCURRENCY` per job.  Google softly
+throttles with `RESOURCE_EXHAUSTED`, which the Stage-1 retry loop already
+handles with exponential backoff.
+
+**Evolink:** no published limit; you requested maximum throughput, so we
+dispatch up to 8 poses in parallel per job with 10 retries each.
 
 As **root**:
 
