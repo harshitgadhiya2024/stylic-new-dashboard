@@ -628,6 +628,10 @@ Required GitHub repo secrets:
 | `VULTR_USER`     | `deploy` |
 | `VULTR_SSH_KEY`  | Private key (PEM) matching the key installed in §2 |
 
+ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/stylicai_deploy
+Add ~/.ssh/stylicai_deploy.pub to server user deploy in ~/.ssh/authorized_keys
+Put contents of ~/.ssh/stylicai_deploy (private key) into DEPLOY_SSH_KEY
+
 The deploy step runs on the box:
 
 ```bash
