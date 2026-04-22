@@ -31,7 +31,6 @@ This guide targets an **Ubuntu 22.04 LTS** **Vultr Cloud Compute** instance (VPS
 13. [Certbot (SSL) — both sub-domains](#13-certbot-ssl--both-sub-domains)
 14. [Firewall (Vultr portal + UFW)](#14-firewall-vultr-portal--ufw)
 15. [Throughput tuning — KIE rate limiter](#15-throughput-tuning--kie-rate-limiter)
-15A. [Application security hardening (launch checklist)](#15a-application-security-hardening-launch-checklist)
 16. [CI/CD — GitHub Actions](#16-cicd--github-actions)
 17. [Operations cheat sheet](#17-operations-cheat-sheet)
 18. [Troubleshooting](#18-troubleshooting)
@@ -293,26 +292,6 @@ Fill in the real values. Mandatory keys:
 | `KIE_RATE_LIMIT_429_SLEEP_S=5` | Cool-down when a 429 slips through. |
 | `FLOWER_BASIC_AUTH`         | `user:strong_password` — credentials for flower.stylic.ai. |
 
-### 8.1 Production security keys (added in the security hardening pass)
-
-These keys are read by `app/config.py` and drive the application-tier security middleware (`app/middleware/*`), rate limiter (`app/rate_limit.py`), and exception handlers (`app/error_handlers.py`). **All are backend-only — no frontend code needs to change.**
-
-| Key                           | Production value | Purpose |
-|-------------------------------|------------------|---------|
-| `ENVIRONMENT`                 | `production`     | Flips the app into strict mode: refuses wildcard CORS, disables `/docs`, emits HSTS, hides the `/queue/*` endpoints unless `ADMIN_API_KEY` is present. |
-| `CORS_ORIGINS`                | `https://app.stylic.ai,https://stylic.ai` | Comma-separated browser origins allowed to call the API. **Must be explicit** in production (no `*`). |
-| `TRUSTED_HOSTS`               | `api.stylic.ai`  | Comma-separated allowed `Host` header values. Defends against Host header poisoning / cache-key attacks. |
-| `MAX_REQUEST_BODY_MB`         | `20`             | Hard cap enforced inside the app (in addition to `client_max_body_size` in Nginx). Protects Celery workers and Gunicorn from OOM / slow-post. |
-| `ADMIN_API_KEY`               | 48+ random chars | Shared secret for the ops-only `/queue/*` endpoints. Clients send it as `X-Admin-Key: <value>`. When empty in production, those endpoints return 404 (hidden). Generate with `python3 -c 'import secrets; print(secrets.token_urlsafe(48))'`. |
-| `ENABLE_DOCS_IN_PRODUCTION`   | `false`          | Keeps Swagger `/docs`, `/redoc`, `/openapi.json` disabled in prod. Flip to `true` only if the docs are fronted by an auth-protecting gateway. |
-| `JWT_ISSUER` / `JWT_AUDIENCE` | empty on day 1, then `stylic-ai` / `stylic-ai-app` | Leave empty until every active session has rotated (~`REFRESH_TOKEN_EXPIRE_DAYS` after the deploy). Then set both to bind tokens to this service — defense-in-depth against token-confusion attacks. |
-| `RATE_LIMIT_ENABLED`          | `true`           | Master switch for the slowapi HTTP rate limiter. Uses the same Redis as Celery. |
-| `RATE_LIMIT_DEFAULT`          | `120/minute`     | Applied to every route that doesn't override. |
-| `RATE_LIMIT_AUTH`             | `10/minute`      | Tighter limit on login / register / forgot-password / OTP endpoints. |
-| `RATE_LIMIT_GOOGLE`           | `20/minute`      | Google Sign-In. |
-
-> The rate limiter keys off the **real client IP** via `X-Forwarded-For`, which works because the app trusts the Nginx reverse proxy configured in §12. If you ever expose the app without Nginx in front, revisit `app/rate_limit.py`.
-
 Lock it down:
 
 ```bash
@@ -345,8 +324,6 @@ ExecStart=/opt/stylicai/venv/bin/gunicorn main:app \
     --timeout 120 \
     --graceful-timeout 30 \
     --keep-alive 5 \
-    --forwarded-allow-ips 127.0.0.1 \
-    --proxy-allow-from 127.0.0.1 \
     --access-logfile /var/log/stylicai/api.access.log \
     --error-logfile  /var/log/stylicai/api.error.log
 
@@ -421,8 +398,6 @@ Key settings (also documented in `app/worker.py`):
 * `--prefetch-multiplier=1` → no task hoarding.
 * `--max-tasks-per-child=50` → periodic flush of library-level memory leaks.
 
-> The Gunicorn `--forwarded-allow-ips 127.0.0.1` option tells Uvicorn to trust `X-Forwarded-For` and `X-Forwarded-Proto` **only** from Nginx on the same host. Without it, `app/rate_limit.py` would bucket every request under the proxy's loopback IP and security headers wouldn't know requests are HTTPS. Do **not** widen this to `*` unless you're behind a single, trusted edge (e.g. Cloudflare with Authenticated Origin Pulls).
-
 ---
 
 ## 11. Flower on flower.stylic.ai (systemd)
@@ -493,51 +468,16 @@ upstream stylicai_api {
     keepalive 64;
 }
 
-# Edge-level IP rate limit (in addition to the app-level slowapi limiter).
-# 30 req/s with a 60-burst window absorbs bursts from legit clients while
-# making brute-force credential stuffing expensive. Tune per your traffic.
-limit_req_zone $binary_remote_addr zone=stylicai_api:10m rate=30r/s;
-limit_conn_zone $binary_remote_addr zone=stylicai_conn:10m;
-
 server {
     listen 80;
     server_name api.stylic.ai;
 
-    # MUST match MAX_REQUEST_BODY_MB in .env (slightly higher so the app
-    # tier's JSON error fires instead of Nginx's plain-text 413).
-    client_max_body_size 22m;
-    client_body_timeout  30s;
-    client_header_timeout 10s;
-    send_timeout 60s;
-
-    # Hide Nginx version in Server header.
-    server_tokens off;
+    client_max_body_size 25m;
 
     access_log /var/log/nginx/stylicai-api.access.log;
     error_log  /var/log/nginx/stylicai-api.error.log warn;
 
-    # Block the ops-only endpoints at the edge too, as defense-in-depth.
-    # The app ALSO enforces this via ADMIN_API_KEY; allowlist your ops
-    # CIDR here so ops traffic never even reaches the app from the
-    # open internet.
-    location /queue/ {
-        # Replace 203.0.113.0/24 with your office / VPN / CI egress CIDR.
-        allow 127.0.0.1;
-        # allow 203.0.113.0/24;
-        deny all;
-
-        proxy_pass http://stylicai_api;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
     location / {
-        limit_req  zone=stylicai_api burst=60 nodelay;
-        limit_conn stylicai_conn 40;
-
         proxy_pass http://stylicai_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -548,14 +488,9 @@ server {
         proxy_connect_timeout 30s;
         proxy_send_timeout   300s;
         proxy_read_timeout   300s;
-
-        # Don't buffer large AI responses — stream them straight through.
-        proxy_buffering off;
     }
 }
 ```
-
-> Keep `client_max_body_size` (Nginx) ≥ `MAX_REQUEST_BODY_MB` (app) by ~2 MiB. If they're equal and a client sends *exactly* the cap plus multipart overhead, Nginx returns a plain 413 before the app can format the JSON error body. The 22m / 20 MiB split gives the app the chance to respond cleanly.
 
 ### 12.2 Flower — `/etc/nginx/sites-available/stylicai-flower`
 
@@ -678,113 +613,6 @@ If the 429 count is 0 for 24 hours, raise `KIE_RATE_LIMIT_MAX` to `14`, then `18
 ```env
 KIE_RATE_LIMIT_ENABLED=false
 ```
-
----
-
-## 15A. Application security hardening (launch checklist)
-
-The app ships with a production security stack implemented entirely in the backend (no frontend changes required). This section is the operator runbook for verifying it in production.
-
-### 15A.1 What's active when `ENVIRONMENT=production`
-
-| Layer                            | Where                                       | What it does |
-|----------------------------------|---------------------------------------------|--------------|
-| CORS allowlist (strict)          | `main.py` + `CORS_ORIGINS`                  | Only the configured origins get CORS headers; wildcard is rejected. |
-| `TrustedHostMiddleware`          | `main.py` + `TRUSTED_HOSTS`                 | Rejects unknown `Host` headers (Host header poisoning / cache attacks). |
-| `SecurityHeadersMiddleware`      | `app/middleware/security_headers.py`        | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, COOP/CORP. Strips `Server` banner. |
-| `RequestContextMiddleware`       | `app/middleware/request_context.py`         | Sets `X-Request-ID` on every response; structured access log line per request. |
-| `BodySizeLimitMiddleware`        | `app/middleware/body_size_limit.py`         | 413 for bodies over `MAX_REQUEST_BODY_MB`. |
-| `AdminKeyGuardMiddleware`        | `app/middleware/admin_guard.py`             | `/queue/*` returns 404 unless `X-Admin-Key` matches. |
-| slowapi Redis-backed rate limit  | `app/rate_limit.py` + `RATE_LIMIT_*`        | 120/min default, 10/min auth, 20/min Google. Shared across workers via Redis. |
-| JWT claims hardening             | `app/services/jwt_service.py`               | Adds `iat`/`nbf`; algorithm pinned; optional `iss`/`aud` binding. |
-| Sanitized error handler          | `app/error_handlers.py`                     | No tracebacks leaked to clients; 500s return `{"detail": "Internal server error."}` with `X-Request-ID`. |
-| `/docs`, `/redoc`, `/openapi.json` disabled | `main.py`                        | Controlled by `ENABLE_DOCS_IN_PRODUCTION`. |
-
-### 15A.2 Post-deploy smoke tests
-
-Run these from **outside** the server (any laptop) once DNS + TLS are live:
-
-```bash
-# 1. Security headers land on every response.
-curl -sI https://api.stylic.ai/health | grep -iE \
-    'strict-transport-security|x-content-type-options|x-frame-options|referrer-policy|content-security-policy|x-request-id'
-
-# 2. /docs is disabled in prod.
-curl -s -o /dev/null -w '%{http_code}\n' https://api.stylic.ai/docs
-# Expect: 404
-
-# 3. CORS is allowlist, not wildcard.
-curl -sI -H 'Origin: https://evil.example' https://api.stylic.ai/health | grep -i access-control
-# Expect: NO `access-control-allow-origin` header (request was rejected).
-curl -sI -H 'Origin: https://app.stylic.ai' https://api.stylic.ai/health | grep -i access-control
-# Expect: access-control-allow-origin: https://app.stylic.ai
-
-# 4. /queue/* is hidden without X-Admin-Key.
-curl -s -o /dev/null -w '%{http_code}\n' https://api.stylic.ai/queue/status
-# Expect: 404
-curl -s -H "X-Admin-Key: $ADMIN_API_KEY" https://api.stylic.ai/queue/status
-# Expect: JSON queue status.
-
-# 5. Request ID propagation.
-curl -sI https://api.stylic.ai/health | grep -i x-request-id
-# Expect: X-Request-ID: <hex string>
-
-# 6. Rate limit kicks in on auth endpoints (11th request within a minute returns 429).
-for i in $(seq 1 12); do
-  curl -s -o /dev/null -w '%{http_code} ' \
-    -X POST https://api.stylic.ai/api/v1/auth/login \
-    -H 'Content-Type: application/json' \
-    -d '{"email":"nobody@example.com","password":"invalid"}'
-done; echo
-# Expect: ten 401s then 429s.
-
-# 7. Body size cap.
-head -c 25m </dev/urandom > /tmp/big.bin
-curl -s -o /dev/null -w '%{http_code}\n' -X POST \
-    -H 'Content-Type: application/octet-stream' \
-    --data-binary @/tmp/big.bin \
-    https://api.stylic.ai/api/v1/auth/login
-# Expect: 413
-```
-
-### 15A.3 Calling `/queue/*` in production
-
-Never expose these to a browser. From an ops workstation that's on the Nginx `allow` CIDR (§12.1):
-
-```bash
-curl -H "X-Admin-Key: $ADMIN_API_KEY" https://api.stylic.ai/queue/status
-curl -H "X-Admin-Key: $ADMIN_API_KEY" https://api.stylic.ai/queue/task/<task_id>
-```
-
-If Nginx's IP allowlist blocks you, SSH-tunnel instead:
-
-```bash
-ssh -L 8000:127.0.0.1:8000 deploy@api.stylic.ai
-curl -H "X-Admin-Key: $ADMIN_API_KEY" http://127.0.0.1:8000/queue/status
-```
-
-### 15A.4 Rotating the admin key
-
-1. Generate a new one:
-   `python3 -c 'import secrets; print(secrets.token_urlsafe(48))'`
-2. Edit `/opt/stylicai/.env`, set `ADMIN_API_KEY=<new>`.
-3. `sudo systemctl restart stylicai-api`.
-4. Distribute the new key to ops via your secrets store (1Password / Vault).
-
-### 15A.5 Turning on strict JWT claims (later, after refresh cycle)
-
-After the full refresh-token lifetime has elapsed since deploy (180 days with the default `REFRESH_TOKEN_EXPIRE_DAYS=180`, or shorter if you force-logout everyone), turn on issuer/audience binding:
-
-```env
-JWT_ISSUER=stylic-ai
-JWT_AUDIENCE=stylic-ai-app
-```
-
-`sudo systemctl restart stylicai-api`. Any still-in-the-wild tokens without the claim will 401 and clients will silently re-login via the refresh flow.
-
-### 15A.6 What the frontend still needs to know (one-line summary)
-
-**Nothing.** All changes are server-side. Clients may occasionally see HTTP 429 under abuse and should surface a `"Try again in a moment."` message. The `X-Request-ID` response header is optional to log but extremely useful for bug reports.
 
 ---
 

@@ -1,16 +1,7 @@
-from typing import List
-
-from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # ── Runtime environment ───────────────────────────────────────────────
-    # One of: "development" | "staging" | "production".
-    # Controls CORS defaults, /docs exposure, error verbosity, HSTS, cookie
-    # Secure flag, and rate limiter enforcement.
-    ENVIRONMENT: str = "development"
-
     # MongoDB
     MONGO_URI: str = "mongodb://localhost:27017"
     MONGO_DB_NAME: str = "stylicai"
@@ -20,11 +11,6 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    # Optional iss/aud binding. Leave empty to keep existing tokens valid;
-    # once every client has refreshed, set these in production for stricter
-    # token validation (defense-in-depth against token confusion attacks).
-    JWT_ISSUER: str = ""
-    JWT_AUDIENCE: str = ""
 
     # SMTP (Hostinger)
     SMTP_SERVER: str = "smtp.hostinger.com"
@@ -176,81 +162,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
     DEBUG: bool = True
 
-    # ── HTTP security ─────────────────────────────────────────────────────
-    # Comma-separated list of allowed browser origins. In production you
-    # MUST set this explicitly (e.g. "https://app.stylic.ai,https://stylic.ai").
-    # Empty string in production falls back to a deny-all list.
-    CORS_ORIGINS: str = "*"
-    # Comma-separated list of Host header values allowed to reach the app
-    # (defends against Host header poisoning and cache attacks). Empty /
-    # "*" disables the check. Example: "api.stylic.ai,stylic.ai".
-    TRUSTED_HOSTS: str = "*"
-    # Hard ceiling on request body size (MiB). Protects workers from OOM /
-    # slow-post DoS. Tune upward only if you intentionally accept larger
-    # uploads at the app tier (usually you'd do this at the reverse proxy).
-    MAX_REQUEST_BODY_MB: int = 20
-    # Shared secret for ops-only endpoints (/queue/*). Clients send it in
-    # the `X-Admin-Key` header. If empty, those endpoints are disabled in
-    # production and open in development.
-    ADMIN_API_KEY: str = ""
-    # Expose /docs, /redoc, /openapi.json even in production. Leave False
-    # unless you have an external gateway protecting them.
-    ENABLE_DOCS_IN_PRODUCTION: bool = False
-
-    # ── Generic HTTP rate limiting (slowapi, Redis-backed) ────────────────
-    # These apply *in addition* to KIE_RATE_LIMIT_* which protects the
-    # outbound KIE API. Limits here protect *our* API from abuse.
-    RATE_LIMIT_ENABLED: bool = True
-    # Default limit applied to every route that doesn't override it.
-    RATE_LIMIT_DEFAULT: str = "120/minute"
-    # Stricter limit for auth endpoints (login / register / forgot-password
-    # / resend-otp). Per-IP; per-email lockout is handled separately.
-    RATE_LIMIT_AUTH: str = "10/minute"
-    # Limit for the Google Sign-In endpoint (Firebase verification is
-    # relatively cheap, but still don't let anyone flood it).
-    RATE_LIMIT_GOOGLE: str = "20/minute"
-
-    # `extra="ignore"` lets the .env carry ops-only variables that aren't
-    # consumed by the app itself (e.g. FLOWER_BASIC_AUTH, which is read
-    # by the stylicai-flower.service systemd unit). Without this,
-    # pydantic-settings raises `extra_forbidden` on startup.
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-        "extra": "ignore",
-        "case_sensitive": False,
-    }
-
-    # ── Derived helpers ──────────────────────────────────────────────────
-    @property
-    def is_production(self) -> bool:
-        return self.ENVIRONMENT.lower() == "production"
-
-    @property
-    def cors_origins_list(self) -> List[str]:
-        raw = (self.CORS_ORIGINS or "").strip()
-        if not raw:
-            return []
-        if raw == "*":
-            # Wildcard is only safe in dev and without credentials. In prod
-            # we treat "*" as "not configured" and deny everything.
-            return ["*"] if not self.is_production else []
-        return [o.strip() for o in raw.split(",") if o.strip()]
-
-    @property
-    def trusted_hosts_list(self) -> List[str]:
-        raw = (self.TRUSTED_HOSTS or "").strip()
-        if not raw or raw == "*":
-            return ["*"]
-        return [h.strip() for h in raw.split(",") if h.strip()]
-
-    @field_validator("ENVIRONMENT")
-    @classmethod
-    def _normalize_env(cls, v: str) -> str:
-        v = (v or "development").strip().lower()
-        if v not in {"development", "staging", "production"}:
-            v = "development"
-        return v
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
 settings = Settings()

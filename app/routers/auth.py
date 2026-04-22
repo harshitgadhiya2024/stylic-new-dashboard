@@ -1,10 +1,9 @@
 import uuid
 from datetime import datetime, timezone
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from firebase_admin import auth as firebase_auth
 
 from app.config import settings
-from app.rate_limit import limiter
 from app.constants.free_plan import FREE_ROLE_MAPPING_DICT, build_free_plan_mapping_dict
 from app.database import get_users_collection
 from app.firebase_config import get_firebase_app
@@ -113,8 +112,7 @@ def _new_user_doc(
     summary="Register – Step 1: Send OTP",
     description="Validate email & password, then send a 6-digit OTP to the provided email.",
 )
-@limiter.limit(settings.RATE_LIMIT_AUTH)
-async def register(request: Request, body: RegisterRequest, background_tasks: BackgroundTasks):
+async def register(body: RegisterRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
 
     if await col.find_one({"email": body.email}):
@@ -152,8 +150,7 @@ async def register(request: Request, body: RegisterRequest, background_tasks: Ba
     response_model=TokenResponse,
     summary="Register – Step 2: Verify OTP & Create Account",
 )
-@limiter.limit(settings.RATE_LIMIT_AUTH)
-async def register_verify_otp(request: Request, body: VerifyOTPRequest):
+async def register_verify_otp(body: VerifyOTPRequest):
     record = await verify_otp(email=body.email, otp=body.otp, purpose="register")
 
     hashed_password = record.get("hashed_password", "")
@@ -184,8 +181,7 @@ async def register_verify_otp(request: Request, body: VerifyOTPRequest):
     response_model=MessageResponse,
     summary="Register – Resend OTP",
 )
-@limiter.limit(settings.RATE_LIMIT_AUTH)
-async def register_resend_otp(request: Request, body: ResendOTPRequest, background_tasks: BackgroundTasks):
+async def register_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
     if await col.find_one({"email": body.email}):
         raise HTTPException(
@@ -229,8 +225,7 @@ async def register_resend_otp(request: Request, body: ResendOTPRequest, backgrou
     summary="Login – Step 1: Validate Credentials & Send OTP",
     description="Validate email & password, then send a 6-digit OTP to the provided email.",
 )
-@limiter.limit(settings.RATE_LIMIT_AUTH)
-async def login(request: Request, body: LoginRequest, background_tasks: BackgroundTasks):
+async def login(body: LoginRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
     user = await col.find_one({"email": body.email, "is_active": True})
 
@@ -267,8 +262,7 @@ async def login(request: Request, body: LoginRequest, background_tasks: Backgrou
     response_model=TokenResponse,
     summary="Login – Step 2: Verify OTP",
 )
-@limiter.limit(settings.RATE_LIMIT_AUTH)
-async def login_verify_otp(request: Request, body: VerifyOTPRequest):
+async def login_verify_otp(body: VerifyOTPRequest):
     await verify_otp(email=body.email, otp=body.otp, purpose="login")
 
     col = get_users_collection()
@@ -285,8 +279,7 @@ async def login_verify_otp(request: Request, body: VerifyOTPRequest):
     response_model=MessageResponse,
     summary="Login – Resend OTP",
 )
-@limiter.limit(settings.RATE_LIMIT_AUTH)
-async def login_resend_otp(request: Request, body: ResendOTPRequest, background_tasks: BackgroundTasks):
+async def login_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
     if not await col.find_one({"email": body.email, "is_active": True}):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
@@ -307,8 +300,7 @@ async def login_resend_otp(request: Request, body: ResendOTPRequest, background_
     response_model=TokenResponse,
     summary="Refresh Access & Refresh Tokens",
 )
-@limiter.limit(settings.RATE_LIMIT_AUTH)
-async def refresh_token(request: Request, body: RefreshTokenRequest):
+async def refresh_token(body: RefreshTokenRequest):
     payload = decode_token(body.refresh_token, token_type="refresh")
     user_id = payload.get("sub")
 
@@ -329,8 +321,7 @@ async def refresh_token(request: Request, body: RefreshTokenRequest):
     response_model=MessageResponse,
     summary="Forgot Password – Step 1: Send OTP",
 )
-@limiter.limit(settings.RATE_LIMIT_AUTH)
-async def forgot_password(request: Request, body: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+async def forgot_password(body: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
     user = await col.find_one({"email": body.email, "is_active": True})
 
@@ -358,8 +349,7 @@ async def forgot_password(request: Request, body: ForgotPasswordRequest, backgro
     response_model=MessageResponse,
     summary="Forgot Password – Resend OTP",
 )
-@limiter.limit(settings.RATE_LIMIT_AUTH)
-async def forgot_password_resend_otp(request: Request, body: ResendOTPRequest, background_tasks: BackgroundTasks):
+async def forgot_password_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
     if not await col.find_one({"email": body.email, "is_active": True}):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email.")
@@ -376,8 +366,7 @@ async def forgot_password_resend_otp(request: Request, body: ResendOTPRequest, b
     response_model=MessageResponse,
     summary="Forgot Password – Step 2: Verify OTP",
 )
-@limiter.limit(settings.RATE_LIMIT_AUTH)
-async def forgot_password_verify_otp(request: Request, body: VerifyOTPRequest):
+async def forgot_password_verify_otp(body: VerifyOTPRequest):
     await verify_otp(email=body.email, otp=body.otp, purpose="forgot_password")
     return {"success": True, "message": "OTP verified. You may now reset your password."}
 
@@ -387,8 +376,7 @@ async def forgot_password_verify_otp(request: Request, body: VerifyOTPRequest):
     response_model=MessageResponse,
     summary="Forgot Password – Step 3: Reset Password",
 )
-@limiter.limit(settings.RATE_LIMIT_AUTH)
-async def forgot_password_reset(request: Request, body: ResetPasswordRequest):
+async def forgot_password_reset(body: ResetPasswordRequest):
     otp_record = await check_otp_verified(email=body.email, purpose="forgot_password")
     if not otp_record:
         raise HTTPException(
@@ -427,8 +415,7 @@ async def forgot_password_reset(request: Request, body: ResetPasswordRequest):
     summary="Google Sign-In / Sign-Up",
     description="Verify a Firebase ID token from Google sign-in, then login or auto-register the user.",
 )
-@limiter.limit(settings.RATE_LIMIT_GOOGLE)
-async def google_sign_in(request: Request, body: GoogleSignInRequest):
+async def google_sign_in(body: GoogleSignInRequest):
     try:
         get_firebase_app()
         decoded = firebase_auth.verify_id_token(body.id_token)
