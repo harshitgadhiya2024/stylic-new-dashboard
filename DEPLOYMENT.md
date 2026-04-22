@@ -260,11 +260,19 @@ User=deploy
 Group=deploy
 WorkingDirectory=/opt/stylicai
 Environment="PATH=/opt/stylicai/.venv/bin"
+
+# Make Celery workers preferred targets for the OOM killer so a runaway
+# worker is killed individually instead of taking down Gunicorn / Redis.
+# Higher score = more likely to be killed. Default is 0; 200 is a safe bump
+# for background-job processes.
+OOMScoreAdjust=200
+
 ExecStart=/opt/stylicai/.venv/bin/celery -A app.worker worker \
   -Q photoshoots \
-  --autoscale=16,4 \
+  --autoscale=6,2 \
   --prefetch-multiplier=1 \
-  --max-tasks-per-child=100 \
+  --max-tasks-per-child=50 \
+  --max-memory-per-child=900000 \
   --loglevel=info
 Restart=always
 RestartSec=10
@@ -273,20 +281,36 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-**Autoscale profile (`--autoscale=16,4`)** — sized for a **4 vCPU / 8 GB** droplet:
-- keeps at least **4** worker processes warm (fast job pickup, no cold-start)
-- scales up to **16** parallel photoshoot jobs when the `photoshoots` queue fills
-- `--prefetch-multiplier=1` avoids one worker reserving too many long-running jobs
-- `--max-tasks-per-child=100` recycles workers periodically to limit memory growth on image-heavy workloads
+**Autoscale profile (`--autoscale=6,2`)** — sized for a **4 vCPU / 8 GB** droplet:
+- keeps at least **2** worker processes warm (fast job pickup, no cold-start)
+- scales up to **6** parallel photoshoot jobs when the `photoshoots` queue fills
+- `--prefetch-multiplier=1` — one in-flight task per worker (no task hoarding)
+- `--max-tasks-per-child=50` — recycle after 50 tasks to fight PIL allocator fragmentation
+- `--max-memory-per-child=900000` — **kB**, ≈900 MB; worker self-recycles AFTER a
+  task if its RSS crosses this cap. Prevents kernel OOM-killer (which sends
+  SIGKILL and cascades a `WorkerLostError` on every sibling)
 
-Photoshoot tasks are I/O-bound (>90% of wall time is waiting on KIE / Vertex /
-Evolink / Modal), so concurrency can go much higher than CPU count:
+**Why not autoscale higher?**  This workload is NOT purely I/O-bound.  Each
+photoshoot task streams up to 8 × 8K PNG bitmaps in memory during Stage-2
+(upscale → encode → upload).  Per-task peak RSS ≈ 700 MB – 1.3 GB.  Running
+too many workers in parallel exhausts the 8 GB of droplet RAM and triggers
+the kernel OOM killer — which is exactly the error seen in this incident:
 
-| Droplet | `--autoscale=MAX,MIN` |
-|---|---|
-| 2 vCPU / 4 GB | `8,2` |
-| 4 vCPU / 8 GB | `16,4` (recommended default) |
-| 8 vCPU / 16 GB | `32,6` |
+```
+systemd[1]: stylicai-celery.service: A process of this unit has been killed by the OOM killer.
+ForkPoolWorker-4 ... exited with 'signal 9 (SIGKILL)'
+WorkerLostError('Worker exited prematurely: signal 9 (SIGKILL)')
+```
+
+| Droplet | `--autoscale=MAX,MIN` | `--max-memory-per-child` (kB) |
+|---|---|---|
+| 2 vCPU / 4 GB  | `3,1`  | `900000` |
+| 4 vCPU / 8 GB  | `6,2`  | `900000` (recommended) |
+| 8 vCPU / 16 GB | `12,4` | `900000` |
+| 16 vCPU / 32 GB| `20,6` | `1100000` |
+
+Budget math (4 vCPU / 8 GB): 6 × 0.9 GB ≈ 5.4 GB for Celery + 1 GB Gunicorn +
+0.3 GB Redis + 1 GB kernel/buffers ≈ 7.7 GB — fits with headroom.
 
 ### 10.1 Provider rate limits (cross-worker)
 

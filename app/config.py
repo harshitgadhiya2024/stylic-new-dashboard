@@ -160,7 +160,7 @@ class Settings(BaseSettings):
     #
     # Set KIE_RATE_LIMIT_ENABLED=false to disable (e.g. for local dev).
     KIE_RATE_LIMIT_ENABLED:    bool  = True
-    KIE_RATE_LIMIT_REQUESTS:   int   = 16      # max create-task calls
+    KIE_RATE_LIMIT_REQUESTS:   int   = 10      # max create-task calls
     KIE_RATE_LIMIT_WINDOW_S:   float = 10.0    # per window (seconds)
     KIE_RATE_LIMIT_KEY:        str   = "stylicai:kie:ratelimit:createTask"
     # Max seconds a caller will wait for a KIE token before giving up & retrying.

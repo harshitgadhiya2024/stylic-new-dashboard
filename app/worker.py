@@ -5,25 +5,34 @@ Start the worker with autoscaling (recommended for production):
 
     celery -A app.worker worker \\
         -Q photoshoots \\
-        --autoscale=16,4 \\
+        --autoscale=6,2 \\
         --prefetch-multiplier=1 \\
-        --max-tasks-per-child=100 \\
+        --max-tasks-per-child=50 \\
+        --max-memory-per-child=900000 \\
         --loglevel=info
 
     --autoscale=MAX,MIN
-      MIN=4   — always keep 4 worker processes warm (fast job pickup)
-      MAX=16  — scale up to 16 parallel photoshoot jobs under load
+      MIN=2   — always keep 2 worker processes warm (fast job pickup)
+      MAX=6   — scale up to 6 parallel photoshoot jobs under load
 
-    Photoshoot tasks are I/O-bound (they spend >90% of wall time waiting for
-    KIE / Vertex / Evolink / Modal), so concurrency can far exceed CPU count.
+    --max-memory-per-child=900000  (kB, ≈900 MB per process)
+      Worker recycles itself AFTER a task if RSS crosses the cap.  Prevents
+      the kernel OOM killer from sending SIGKILL (which cascades a
+      WorkerLostError on every sibling).
 
-Recommended --autoscale profile by droplet size:
+    Each photoshoot task streams up to 8 × 8K PNG bitmaps during Stage-2
+    (upscale → encode → upload), so per-task peak RSS is ~700 MB – 1.3 GB.
+    This is NOT a pure I/O-bound workload — concurrency must be sized to
+    RAM, not just CPU count.
 
-    droplet         MAX,MIN        notes
-    ──────────     ─────────       ──────────────────────────────────────
-    2 vCPU/4 GB    8,2             safe entry-level production
-    4 vCPU/8 GB    16,4            recommended default
-    8 vCPU/16 GB   32,6            high-throughput
+Recommended profile by droplet size:
+
+    droplet         MAX,MIN   --max-memory-per-child (kB)
+    ──────────      ───────   ────────────────────────────
+    2 vCPU/4 GB     3,1       900000
+    4 vCPU/8 GB     6,2       900000   (recommended default)
+    8 vCPU/16 GB    12,4      900000
+    16 vCPU/32 GB   20,6      1100000
 
 Cross-worker rate limiting:
 
