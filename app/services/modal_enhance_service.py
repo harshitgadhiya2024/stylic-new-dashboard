@@ -223,14 +223,10 @@ async def _kie_create_upscale_task(
         },
     }
 
-    from app.services.kie_rate_limiter import acquire_kie_token_async
-
     max_attempts = int(getattr(settings, "KIE_REQUEST_RETRIES", 3) or 3)
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
-            # Account-wide rate limit (shared across all Celery workers).
-            await acquire_kie_token_async()
             async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
                 r = await client.post(_KIE_CREATE_URL, headers=headers, json=body)
                 r.raise_for_status()

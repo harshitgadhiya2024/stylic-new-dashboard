@@ -139,33 +139,6 @@ class Settings(BaseSettings):
     # materially increasing API load.
     PHOTOSHOOT_KIE_POLL_INTERVAL_S: float = 2.0
 
-    # --- Provider concurrency tuning (Stage-1 generation) ---------------------
-    # Per-photoshoot semaphore size for each generator provider.  Max poses per
-    # photoshoot is 8, so going above 8 is wasted — we dispatch all 8 poses in
-    # parallel and fall through providers on failure.
-    #
-    # These are PER-JOB limits.  If Celery runs N jobs in parallel, the real
-    # concurrent requests hitting a provider = N × value-below.  Use the
-    # account-level rate limiter below (KIE) for cross-job throttling.
-    PHOTOSHOOT_KIE_CONCURRENCY:          int = 8
-    PHOTOSHOOT_VERTEX_NB2_CONCURRENCY:   int = 8
-    PHOTOSHOOT_VERTEX_NBPRO_CONCURRENCY: int = 8
-    PHOTOSHOOT_EVOLINK_CONCURRENCY:      int = 8
-
-    # --- KIE account-wide rate limit (shared across ALL Celery workers) ------
-    # KIE.ai enforces "20 new generation requests per 10 seconds" PER ACCOUNT.
-    # We keep a small safety margin below that cap.  The limiter is a Redis
-    # sliding-window counter — every Celery worker on every machine consults
-    # it before POSTing /createTask, so bursts are globally serialized.
-    #
-    # Set KIE_RATE_LIMIT_ENABLED=false to disable (e.g. for local dev).
-    KIE_RATE_LIMIT_ENABLED:    bool  = True
-    KIE_RATE_LIMIT_REQUESTS:   int   = 10      # max create-task calls
-    KIE_RATE_LIMIT_WINDOW_S:   float = 10.0    # per window (seconds)
-    KIE_RATE_LIMIT_KEY:        str   = "stylicai:kie:ratelimit:createTask"
-    # Max seconds a caller will wait for a KIE token before giving up & retrying.
-    KIE_RATE_LIMIT_MAX_WAIT_S: float = 30.0
-
     # Redis / Celery queue
     REDIS_URL: str = "redis://localhost:6379/0"
 

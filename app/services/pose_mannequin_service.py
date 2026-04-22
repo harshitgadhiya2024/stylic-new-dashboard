@@ -209,15 +209,11 @@ def _compose_text_mannequin_seeddream_prompt(pose_prompt: str, pose_type: str) -
 
 
 async def _submit_kie_task(model: str, input_payload: dict) -> str:
-    from app.services.kie_rate_limiter import acquire_kie_token_async
-
     body = json.dumps({"model": model, "input": input_payload})
     headers = {
         "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
         "Content-Type": "application/json",
     }
-    # Account-wide rate limit (shared across all Celery workers).
-    await acquire_kie_token_async()
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(_CREATE_URL, headers=headers, content=body)
         resp.raise_for_status()

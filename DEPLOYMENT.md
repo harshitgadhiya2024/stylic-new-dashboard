@@ -260,19 +260,11 @@ User=deploy
 Group=deploy
 WorkingDirectory=/opt/stylicai
 Environment="PATH=/opt/stylicai/.venv/bin"
-
-# Make Celery workers preferred targets for the OOM killer so a runaway
-# worker is killed individually instead of taking down Gunicorn / Redis.
-# Higher score = more likely to be killed. Default is 0; 200 is a safe bump
-# for background-job processes.
-OOMScoreAdjust=200
-
 ExecStart=/opt/stylicai/.venv/bin/celery -A app.worker worker \
   -Q photoshoots \
-  --autoscale=6,2 \
+  --autoscale=10,5 \
   --prefetch-multiplier=1 \
-  --max-tasks-per-child=50 \
-  --max-memory-per-child=900000 \
+  --max-tasks-per-child=100 \
   --loglevel=info
 Restart=always
 RestartSec=10
@@ -281,79 +273,13 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-**Autoscale profile (`--autoscale=6,2`)** — sized for a **4 vCPU / 8 GB** droplet:
-- keeps at least **2** worker processes warm (fast job pickup, no cold-start)
-- scales up to **6** parallel photoshoot jobs when the `photoshoots` queue fills
-- `--prefetch-multiplier=1` — one in-flight task per worker (no task hoarding)
-- `--max-tasks-per-child=50` — recycle after 50 tasks to fight PIL allocator fragmentation
-- `--max-memory-per-child=900000` — **kB**, ≈900 MB; worker self-recycles AFTER a
-  task if its RSS crosses this cap. Prevents kernel OOM-killer (which sends
-  SIGKILL and cascades a `WorkerLostError` on every sibling)
+**Autoscale profile (`--autoscale=10,5`)**:
+- keeps at least **5** worker processes warm
+- scales up to **10** when `photoshoots` queue depth increases
+- `--prefetch-multiplier=1` avoids one worker reserving too many long-running jobs
+- `--max-tasks-per-child=100` recycles workers periodically to limit memory growth on image-heavy workloads
 
-**Why not autoscale higher?**  This workload is NOT purely I/O-bound.  Each
-photoshoot task streams up to 8 × 8K PNG bitmaps in memory during Stage-2
-(upscale → encode → upload).  Per-task peak RSS ≈ 700 MB – 1.3 GB.  Running
-too many workers in parallel exhausts the 8 GB of droplet RAM and triggers
-the kernel OOM killer — which is exactly the error seen in this incident:
-
-```
-systemd[1]: stylicai-celery.service: A process of this unit has been killed by the OOM killer.
-ForkPoolWorker-4 ... exited with 'signal 9 (SIGKILL)'
-WorkerLostError('Worker exited prematurely: signal 9 (SIGKILL)')
-```
-
-| Droplet | `--autoscale=MAX,MIN` | `--max-memory-per-child` (kB) |
-|---|---|---|
-| 2 vCPU / 4 GB  | `3,1`  | `900000` |
-| 4 vCPU / 8 GB  | `6,2`  | `900000` (recommended) |
-| 8 vCPU / 16 GB | `12,4` | `900000` |
-| 16 vCPU / 32 GB| `20,6` | `1100000` |
-
-Budget math (4 vCPU / 8 GB): 6 × 0.9 GB ≈ 5.4 GB for Celery + 1 GB Gunicorn +
-0.3 GB Redis + 1 GB kernel/buffers ≈ 7.7 GB — fits with headroom.
-
-### 10.1 Provider rate limits (cross-worker)
-
-Because Celery can now run up to 16 jobs in parallel, each hitting KIE / Vertex
-/ Evolink, you MUST make sure none of them exceed the provider's account-wide
-limit.  The repo now ships an account-wide KIE rate limiter
-(`app/services/kie_rate_limiter.py`) that uses Redis as a shared
-sliding-window counter — every worker on every droplet consults it before
-POSTing `/createTask`.
-
-**Default tuning (see `app/config.py`):**
-
-```bash
-# KIE.ai — account-wide limit: 20 createTask / 10 s
-KIE_RATE_LIMIT_ENABLED=true
-KIE_RATE_LIMIT_REQUESTS=18        # safety margin below 20
-KIE_RATE_LIMIT_WINDOW_S=10
-KIE_RATE_LIMIT_MAX_WAIT_S=30      # max sleep per caller before giving up
-
-# Per-job semaphores (max poses per photoshoot is 8 → values >8 are wasted)
-PHOTOSHOOT_KIE_CONCURRENCY=8
-PHOTOSHOOT_VERTEX_NB2_CONCURRENCY=8
-PHOTOSHOOT_VERTEX_NBPRO_CONCURRENCY=8
-PHOTOSHOOT_EVOLINK_CONCURRENCY=8
-```
-
-**Behaviour under load** (16 Celery workers × 8 poses = up to 128 concurrent
-KIE createTask intents):
-
-1. The limiter admits 18 `createTask` calls in the first 10 s.
-2. Remaining calls sleep in the Redis bucket until slots age out.
-3. Each worker logs `[kie-rate] bucket full — sleeping 1.2s (budget_left=28s)`
-   so you can see saturation in real time.
-4. If Redis is temporarily unreachable the limiter falls back to an
-   in-process counter (safe, but only valid on single-droplet deployments).
-
-**Vertex (nano-banana-2 / nano-banana-pro):** no published account-wide limit.
-Bounded only by `PHOTOSHOOT_VERTEX_*_CONCURRENCY` per job.  Google softly
-throttles with `RESOURCE_EXHAUSTED`, which the Stage-1 retry loop already
-handles with exponential backoff.
-
-**Evolink:** no published limit; you requested maximum throughput, so we
-dispatch up to 8 poses in parallel per job with 10 retries each.
+If your droplet has limited CPU/RAM (e.g. 2vCPU/4GB), start lower (`--autoscale=6,2`) and increase after observing load.
 
 As **root**:
 
