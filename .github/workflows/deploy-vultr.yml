@@ -23,7 +23,14 @@ jobs:
             cd ${{ secrets.DEPLOY_PATH }}
             git fetch origin main
             git reset --hard origin/main
-            source .venv/bin/activate
+            if [ -f venv/bin/activate ]; then
+              source venv/bin/activate
+            elif [ -f .venv/bin/activate ]; then
+              source .venv/bin/activate
+            else
+              echo "No virtualenv found (expected venv or .venv)"
+              exit 1
+            fi
             pip install -r requirements.txt
             pip install -q flower || true
             sudo systemctl restart stylicai-api
