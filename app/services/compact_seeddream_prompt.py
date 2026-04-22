@@ -26,6 +26,38 @@ _COMPACT_SANITIZE_PATTERNS = [
 ]
 
 
+_CURVE_FOCUS_ONE_PIECE_KEYWORDS = (
+    "body shaper",
+    "full body",
+    "bodysuit shaper",
+    "thermal innerwear set",
+    "teddy lingerie",
+    "swimsuit",
+    "one-piece swimwear",
+    "bikini set",
+    "undergarments",
+)
+
+
+def _requires_curve_focus(req: dict) -> bool:
+    gender = (req.get("gender") or "").strip().lower()
+    weight = normalize_body_weight(raw_weight_from_req(req))
+    one_piece_type = (req.get("one_piece_garment_type") or "").strip().lower()
+    female_weight_rule = gender == "female" and weight in ("regular", "fat")
+    one_piece_rule = any(k in one_piece_type for k in _CURVE_FOCUS_ONE_PIECE_KEYWORDS)
+    return female_weight_rule or one_piece_rule
+
+
+def _curve_focus_instruction(req: dict) -> str:
+    if not _requires_curve_focus(req):
+        return ""
+    return (
+        "Keep upper-torso and lower-pelvic contours fuller and naturally rounded per body weight; "
+        "ensure transitions read like real skin and soft tissue, with believable garment tension and "
+        "compression (never padded, inflated, or synthetic)."
+    )
+
+
 def _sanitize_pose_compact(pose: str) -> str:
     result = pose
     for pat in _COMPACT_SANITIZE_PATTERNS:
@@ -242,7 +274,8 @@ def _build_compact_prompt(
         f"[P5 \u2014 BODY | WEIGHT & HEIGHT]\n"
         f"{req.get('gender','')}, {req.get('ethnicity','')}, age {req.get('age','')} ({req.get('age_group','')}), "
         f"skin: {req.get('skin_tone','')}.\n"
-        f"Weight: {w_desc}. Height: {h_desc}. Body must visibly reflect this build without overriding P1\u2013P4.\n"
+        f"Weight: {w_desc}. Height: {h_desc}. Body must visibly reflect this build without overriding P1\u2013P4. "
+        f"{_curve_focus_instruction(req)}\n"
         f"\n"
     )
     part_pose_text = f"[P3 \u2014 POSE | TEXT]\n{clean_pose}\n"
@@ -363,7 +396,8 @@ def _build_compact_prompt_optimized(
         f"[P4|BG IMG{bi} {bg_label}] In-scene light/blend; bounce; rim; no cutout; match exposure; no bg redraw. "
         f"Feet grounded when full body in frame; garment-matched shoes when feet visible.\n"
         f"[P5|BODY] {req.get('gender','')}, {req.get('ethnicity','')}, age {req.get('age','')} ({req.get('age_group','')}), "
-        f"skin {req.get('skin_tone','')}; weight {w_desc}; height {h_desc}.\n"
+        f"skin {req.get('skin_tone','')}; weight {w_desc}; height {h_desc}. "
+        f"{_curve_focus_instruction(req)}\n"
     )
     tail = (
         f"[STYLE] Full body/feet visible: garment-matched footwear required; ignore mannequin bare feet; no bare feet.{bag} Ornaments: {orn or 'none'}.\n"

@@ -273,6 +273,51 @@ def _gender_from_req(req: dict) -> str:
     return "male" if g == "male" else "female"
 
 
+_CURVE_FOCUS_ONE_PIECE_KEYWORDS = (
+    "body shaper",
+    "full body",
+    "bodysuit shaper",
+    "thermal innerwear set",
+    "teddy lingerie",
+    "swimsuit",
+    "one-piece swimwear",
+    "bikini set",
+    "undergarments",
+)
+
+
+def _requires_curve_focus(req: dict) -> bool:
+    """Return True when prompt should emphasize fuller upper/lower silhouette."""
+    gender = _gender_from_req(req)
+    weight = normalize_body_weight(raw_weight_from_req(req))
+    one_piece_type = (req.get("one_piece_garment_type") or "").strip().lower()
+
+    female_weight_rule = gender == "female" and weight in ("regular", "fat")
+    one_piece_rule = any(k in one_piece_type for k in _CURVE_FOCUS_ONE_PIECE_KEYWORDS)
+    return female_weight_rule or one_piece_rule
+
+
+def _curve_focus_instruction(req: dict) -> str:
+    """Safe body-shape instruction without explicit restricted anatomy words."""
+    if not _requires_curve_focus(req):
+        return ""
+    return (
+        "For body contouring, keep the upper-torso and lower-pelvic silhouette visibly fuller and "
+        "naturally rounded in proportion to body weight and garment tension. The contour transition "
+        "must read as real human skin-and-soft-tissue anatomy (not padded, not inflated, not synthetic), "
+        "with physically plausible fold, stretch, and compression behavior under the worn outfit."
+    )
+
+
+def _curve_focus_instruction_compact(req: dict) -> str:
+    if not _requires_curve_focus(req):
+        return ""
+    return (
+        "Body contour focus: fuller upper-torso and lower-pelvic curves with realistic skin-soft-tissue "
+        "transitions and garment compression (not padded or synthetic)."
+    )
+
+
 def _body_description(req: dict) -> str:
     """Gender-aware body description — bit-identical to ``new_pipeline.py``.
 
@@ -310,6 +355,9 @@ def _body_description(req: dict) -> str:
     else:
         stature = "average stature (approx 150-160 cm)"
 
+    curve_focus = _curve_focus_instruction(req)
+    if curve_focus:
+        return f"{body}, {stature}. {curve_focus}"
     return f"{body}, {stature}"
 
 
@@ -613,6 +661,7 @@ def _evolink_compact_prompt(
 
     body = _evolink_compact_body(req)
     garment = _evolink_compact_garment(req)
+    curve_focus = _curve_focus_instruction_compact(req)
     # Hard-trim user fields as a last line of defense. These limits are
     # generous enough that nothing useful is lost in normal operation.
     if len(body) > 120:
@@ -655,6 +704,7 @@ def _evolink_compact_prompt(
         "light haze for depth, natural color grade (no oversaturation), "
         "accurate slightly-distorted reflections on glossy surfaces.\n"
         f"Body: {body}.\n"
+        f"{curve_focus}\n"
         f"{garment_ref_note}\n"
         f"Garment: {garment}.\n"
         f"{footwear_rule}\n"
