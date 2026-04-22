@@ -1,549 +1,904 @@
-# Stylic AI — Production deployment (Ubuntu 22.04 droplet)
+# Stylic AI — Production deployment (Ubuntu 22.04 on Vultr)
 
-This guide targets an **Ubuntu 22.04** **DigitalOcean Droplet**, with first-time access via **`ssh root@DROPLET_PUBLIC_IP`** (SSH key only; no password setup on the default `ubuntu` user is required). It then adds a **`deploy`** user for the app and CI.
+This guide targets an **Ubuntu 22.04 LTS** **Vultr Cloud Compute** instance (VPS). The architecture is tuned for the photoshoot pipeline:
 
-The server runs:
+* Python 3.11 FastAPI app behind **Gunicorn + Uvicorn workers**
+* **Redis** (Celery broker + result backend + cross-worker **KIE rate limiter**)
+* **Celery** worker for the `photoshoots` queue (fixed concurrency + per-child memory cap — OOM-safe)
+* **Flower** on a dedicated sub-domain `flower.stylic.ai`
+* **Nginx** reverse proxy + **Certbot** (Let's Encrypt TLS) for both `api.stylic.ai` and `flower.stylic.ai`
+* **Swap + OOM-guard** so a runaway worker never takes down the box
+* CI/CD example using **GitHub Actions** + SSH deploy (see `.github/workflows/deploy-vultr.yml`)
 
-- Python app behind **Gunicorn + Uvicorn workers**
-- **Redis** (broker for Celery)
-- **Celery** worker for the `photoshoots` queue
-- **Flower** (optional Celery UI)
-- **Nginx** reverse proxy + **Certbot** (Let’s Encrypt TLS)
-- **CI/CD** example using **GitHub Actions** + SSH deploy
-
-Adjust paths, domain names, and user names to match your environment.
+**Vultr docs (reference):** [Deploy a new server](https://www.vultr.com/docs/deploy-a-new-server/) · [SSH keys](https://www.vultr.com/docs/how-to-use-ssh-keys/) · [Firewall](https://www.vultr.com/docs/vultr-firewall/)
 
 ---
 
 ## Table of contents
 
-1. [Assumptions](#1-assumptions)
-2. [DigitalOcean: SSH as root (key-only, no password)](#2-digitalocean-ssh-as-root-key-only-no-password)
-3. [Server baseline](#3-server-baseline)
+1. [Architecture & sizing](#1-architecture--sizing)
+2. [Vultr: create the instance & SSH](#2-vultr-create-the-instance--ssh)
+3. [Server baseline (swap, OOM guard, sysctls)](#3-server-baseline-swap-oom-guard-sysctls)
 4. [Deploy user & app directory](#4-deploy-user--app-directory)
 5. [System packages](#5-system-packages)
-6. [Redis](#6-redis)
+6. [Redis (broker + rate limiter backend)](#6-redis-broker--rate-limiter-backend)
 7. [Clone repository & Python venv](#7-clone-repository--python-venv)
-8. [Environment file](#8-environment-file)
+8. [Environment file (.env)](#8-environment-file-env)
 9. [Gunicorn (systemd)](#9-gunicorn-systemd)
-10. [Celery worker (systemd)](#10-celery-worker-systemd)
-11. [Flower (systemd)](#11-flower-systemd)
-12. [Nginx reverse proxy](#12-nginx-reverse-proxy)
-13. [Certbot (SSL)](#13-certbot-ssl)
-14. [Firewall](#14-firewall)
-15. [CI/CD — GitHub Actions](#15-cicd--github-actions)
-16. [Operations cheat sheet](#16-operations-cheat-sheet)
+10. [Celery worker (systemd, OOM-safe)](#10-celery-worker-systemd-oom-safe)
+11. [Flower on flower.stylic.ai (systemd)](#11-flower-on-flowerstylicai-systemd)
+12. [Nginx — api.stylic.ai & flower.stylic.ai](#12-nginx--apistylicai--flowerstylicai)
+13. [Certbot (SSL) — both sub-domains](#13-certbot-ssl--both-sub-domains)
+14. [Firewall (Vultr portal + UFW)](#14-firewall-vultr-portal--ufw)
+15. [Throughput tuning — KIE rate limiter](#15-throughput-tuning--kie-rate-limiter)
+15A. [Application security hardening (launch checklist)](#15a-application-security-hardening-launch-checklist)
+16. [CI/CD — GitHub Actions](#16-cicd--github-actions)
+17. [Operations cheat sheet](#17-operations-cheat-sheet)
+18. [Troubleshooting](#18-troubleshooting)
 
 ---
 
-## 1. Assumptions
+## 1. Architecture & sizing
 
-| Item | Example |
-|------|---------|
-| Provider | **DigitalOcean** Droplet (Ubuntu 22.04) |
-| First SSH | **`ssh root@DROPLET_PUBLIC_IP`** (SSH key from DO; see §2) |
-| OS | Ubuntu 22.04 LTS |
-| App user | `deploy` (non-root; created after bootstrap) |
-| App root | `/opt/stylicai` (repo clone) |
-| Public domain | `api.yourdomain.com` → droplet **A** record |
-| Python | 3.11 (recommended) or 3.10+ |
-| Process manager | `systemd` |
-| Repo | Git over HTTPS/SSH (private OK) |
+### 1.1 The flow — one photoshoot job
 
-You need **MongoDB** (Atlas or self-hosted), **Redis**, **Cloudflare R2** (or compatible), and API keys as described in `.env.example`.
-
----
-
-## 2. DigitalOcean: SSH as root (key-only, no password)
-
-On a new **DigitalOcean** droplet you typically log in with an **SSH key** only. The default `ubuntu` user often has **no password set**, so any command that runs **`sudo`** will ask for a password you never created—this is expected, not a bug.
-
-**Recommended path for this guide:** use **`root` over SSH** for the initial server setup (packages, `deploy` user, systemd, nginx, certbot). Your **SSH key** is the same one you added in the DO create-droplet flow; DigitalOcean allows **`ssh root@YOUR_DROPLET_PUBLIC_IP`** when that key is present (unless you have changed SSH config to disable root).
-
-```bash
-ssh root@YOUR_DROPLET_PUBLIC_IP
+```
+ FastAPI  ──Redis (broker)──►  Celery worker (photoshoots queue)
+                                    │
+                                    ▼  (fan-out 8 poses via asyncio.gather)
+                        ┌──── KIE rate limiter (Redis sliding window: 10/10s) ────┐
+                        │                                                          │
+                KIE nano-banana-2  →  Vertex nb-2  →  Vertex nb-pro  →  Evolink   │  (per-pose
+                                                                                   │   fallback chain)
+                        └─► Topaz upscale (KIE) ─► PIL 8K/4K/2K/1K encode ─► R2  ◄┘
 ```
 
-From here on, commands in **§3–§6** are written for a **root shell** (`#` prompt): use **`apt`** and **`systemctl`** **without** `sudo`. If you prefer a non-root admin user with `sudo`, prefix those commands with `sudo` and ensure that user has a password or passwordless-sudo configured.
+Everything photoshoot-related runs on **one Vultr instance**; MongoDB (Atlas) and Cloudflare R2 are external.
 
-**If `ssh root@…` is refused:** use the DigitalOcean control panel **Droplet → Access → Launch Droplet Console** (web-based terminal), log in as root from there, or reset access using DO’s **Recovery** / **Reset root password** docs, then return to this guide.
+### 1.2 Recommended Vultr plan — **High Performance / High Frequency, 2 vCPU × 16 GB RAM, 100 GB NVMe ($80/mo)**
 
-**Security (after bootstrap):** you may disable password login for root, rely on keys only, and optionally disable direct `root` SSH once `deploy` + `sudo` are configured the way you want. That is outside the scope of this minimal deploy walkthrough.
+| Plan ID                       | vCPU   | RAM    | NVMe   | Price/mo | Notes |
+|-------------------------------|--------|--------|--------|----------|-------|
+| `vhf-2c-16gb` (High Frequency)| 2      | **16** | 100 GB | **$80**  | **Recommended** — best single-thread perf for PIL 8K encoding. |
+| `voc-2c-16gb` (Cloud Compute) | 2      | 16     | 100 GB | $80      | Cheaper CPU but still fine; pick if VHF is sold out. |
+| `vhp-2c-8gb`                  | 2      | 8      | —      | $48      | Too little RAM once autoscale + 8K encodes land together. |
+
+> **Why not autoscale vCPU?** The expensive part (PIL encode + HTTP download) is memory-bound, not CPU-bound. Adding vCPUs without RAM makes OOM **more** likely, not less.
+
+### 1.3 Why this setup won't OOM
+
+| Risk | Mitigation |
+|------|------------|
+| Celery autoscale spawns extra children during a queue burst → 5 × 1.2 GB PIL buffers = 6 GB + base = crash | **Fixed `--concurrency=3`** (no autoscale) + **`--max-memory-per-child=1.5 GB`**. Celery recycles the child **after** the current task completes, so no job is lost. |
+| A slow leak in PIL / httpx / google-genai over hours | `--max-tasks-per-child=50` hard-recycles on a schedule. |
+| One hung provider hangs the child forever | `task_soft_time_limit=30 min`, `task_time_limit=35 min` in `app/worker.py`. |
+| KIE 429 cascades across workers | Redis sliding-window **KIE rate limiter** (§15) — every worker shares the same token pool. |
+| Kernel OOM-killer picks SSH or Redis | **Swap = 4 GB** (§3) + `oom_score_adj` pinned so Redis and sshd are always last to die. |
+
+### 1.4 Expected throughput
+
+With the default `KIE_RATE_LIMIT_MAX=10` / 10 s window and 8 poses per photoshoot, a sustained burst hits the KIE limiter first (not CPU, not RAM). Empirically:
+
+* **~7 photoshoots / minute** (steady state).
+* KIE nano-banana-2 handles the first ~80% of poses; Vertex/Evolink pick up the spillover for free.
+* Raise `KIE_RATE_LIMIT_MAX` to 18 once monitoring shows 429-rate stays at 0 — this pushes throughput to ~12 photoshoots/min.
 
 ---
 
-## 3. Server baseline
+## 2. Vultr: create the instance & SSH
 
-On the droplet, as **root**:
+1. Open [Vultr → Products → Cloud Compute](https://my.vultr.com/deploy/). Pick **Cloud Compute → High Frequency** (or Cloud Compute Regular if unavailable).
+2. **Location:** choose the region closest to your users (and to KIE's region if known; `Singapore`, `Frankfurt`, or `New York` are safe defaults).
+3. **Image:** Ubuntu **22.04 LTS x64**.
+4. **Plan:** `2 vCPU / 16 GB / 100 GB NVMe` (≈$80/mo — **recommended**).
+5. **Add SSH key** — paste your `~/.ssh/id_ed25519.pub`. This avoids password SSH entirely.
+6. (Optional) Enable **Backups** ($16/mo on $80 plan). Strongly recommended for prod.
+7. Hostname: `stylicai-prod`. Label: same.
+8. **Deploy.** Wait ~60s, note the **public IPv4** in the Vultr console.
+
+First login:
 
 ```bash
-apt update && apt upgrade -y
-timedatectl set-timezone UTC   # optional
+ssh root@INSTANCE_PUBLIC_IP
+```
+
+Create DNS A records at your DNS provider (Cloudflare, Route53, or Vultr DNS):
+
+```
+api.stylic.ai     A   INSTANCE_PUBLIC_IP
+flower.stylic.ai  A   INSTANCE_PUBLIC_IP
+```
+
+Wait for propagation (`dig +short api.stylic.ai` should return the IP).
+
+---
+
+## 3. Server baseline (swap, OOM guard, sysctls)
+
+All commands as `root` unless noted.
+
+### 3.1 Update + basics
+
+```bash
+apt update && apt -y upgrade
+timedatectl set-timezone UTC
+apt -y install curl wget git build-essential software-properties-common \
+    ufw htop btop jq unzip tmux ca-certificates
+```
+
+### 3.2 4 GB swap file (OOM safety net)
+
+```bash
+fallocate -l 4G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+# Touch swap only when RAM is really under pressure.
+sysctl -w vm.swappiness=10
+sysctl -w vm.vfs_cache_pressure=50
+cat > /etc/sysctl.d/99-stylicai.conf <<'EOF'
+vm.swappiness=10
+vm.vfs_cache_pressure=50
+net.core.somaxconn=1024
+net.ipv4.tcp_max_syn_backlog=2048
+fs.file-max=1000000
+EOF
+sysctl --system
+```
+
+### 3.3 Raise file descriptor limits
+
+```bash
+cat > /etc/security/limits.d/stylicai.conf <<'EOF'
+* soft nofile 65535
+* hard nofile 65535
+root soft nofile 65535
+root hard nofile 65535
+EOF
+```
+
+Log out and back in for limits to apply.
+
+### 3.4 OOM-killer pinning — keep Redis and sshd alive
+
+We tell the kernel to **never** pick `redis-server` or `sshd` first if memory pressure hits. The Celery worker is the one that should die (and auto-restart via systemd):
+
+```bash
+# Applied via systemd unit overrides (see §6 and §10). Sanity check:
+choom -p $(pidof sshd | awk '{print $1}')     # should be -1000 after §3.5
+```
+
+### 3.5 Low-priority sshd hardening
+
+```bash
+mkdir -p /etc/systemd/system/ssh.service.d
+cat > /etc/systemd/system/ssh.service.d/override.conf <<'EOF'
+[Service]
+OOMScoreAdjust=-1000
+EOF
+systemctl daemon-reload
+systemctl restart ssh
 ```
 
 ---
 
 ## 4. Deploy user & app directory
 
-Still as **root**:
-
 ```bash
-adduser deploy --disabled-password --gecos ""
-usermod -aG sudo deploy          # optional: allows deploy to run sudo later (e.g. CI restarts)
-mkdir -p /opt/stylicai
-chown deploy:deploy /opt/stylicai
-```
+adduser --disabled-password --gecos "" deploy
+usermod -aG sudo deploy
 
-Give **`deploy`** the same **public key** you use for root so you can SSH in as `deploy` (no password; key auth only):
-
-```bash
-install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
-nano /home/deploy/.ssh/authorized_keys   # paste one line: your laptop’s id_ed25519.pub / id_rsa.pub
+mkdir -p /home/deploy/.ssh
+cp ~/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
+chown -R deploy:deploy /home/deploy/.ssh
+chmod 700 /home/deploy/.ssh
 chmod 600 /home/deploy/.ssh/authorized_keys
-chown deploy:deploy /home/deploy/.ssh/authorized_keys
+
+mkdir -p /opt/stylicai /var/log/stylicai
+chown -R deploy:deploy /opt/stylicai /var/log/stylicai
 ```
 
-From your **laptop**, open a **new** terminal and verify:
+From now on, SSH in as `deploy`:
 
 ```bash
-ssh deploy@YOUR_DROPLET_PUBLIC_IP
-cd /opt/stylicai
+ssh deploy@INSTANCE_PUBLIC_IP
 ```
-
-Use this **`deploy`** session for **§7** (clone/venv) and editing app files. Use **`root`** (or `deploy` + `sudo` if configured) for **§9–§14** (systemd unit files, nginx, certbot, ufw).
 
 ---
 
 ## 5. System packages
 
-As **root**:
-
 ```bash
-apt install -y \
-  git curl build-essential \
-  nginx certbot python3-certbot-nginx \
-  redis-server \
-  python3.11 python3.11-venv python3.11-dev
+sudo apt -y install python3.11 python3.11-venv python3.11-dev \
+    python3-pip nginx redis-server certbot python3-certbot-nginx \
+    libjpeg-dev zlib1g-dev libpng-dev libwebp-dev
 ```
 
-If `python3.11` is not in default repos, use [deadsnakes](https://launchpad.net/~deadsnakes/+archive/ubuntu/ppa):
+Verify:
 
 ```bash
-add-apt-repository ppa:deadsnakes/ppa -y
-apt update
-apt install -y python3.11 python3.11-venv python3.11-dev
+python3.11 --version    # Python 3.11.x
+redis-cli ping          # PONG
+nginx -v                # nginx/1.18+
 ```
 
 ---
 
-## 6. Redis
+## 6. Redis (broker + rate limiter backend)
 
-As **root**:
+Redis is mission-critical — it is the Celery broker **and** the KIE rate limiter. Lock it down:
 
 ```bash
-systemctl enable redis-server
-systemctl start redis-server
-redis-cli ping   # expect PONG
+sudo sed -i 's/^# *maxmemory .*/maxmemory 512mb/' /etc/redis/redis.conf
+sudo sed -i 's/^# *maxmemory-policy .*/maxmemory-policy noeviction/' /etc/redis/redis.conf
+sudo sed -i 's/^bind .*/bind 127.0.0.1 ::1/'      /etc/redis/redis.conf
+sudo sed -i 's/^# *requirepass .*/requirepass CHANGE_ME_STRONG_PASSWORD/' /etc/redis/redis.conf
+
+# Pin Redis as low-priority for OOM killer (never kill it first).
+sudo mkdir -p /etc/systemd/system/redis-server.service.d
+sudo tee /etc/systemd/system/redis-server.service.d/override.conf >/dev/null <<'EOF'
+[Service]
+OOMScoreAdjust=-900
+LimitNOFILE=65535
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now redis-server
+sudo systemctl restart redis-server
+redis-cli -a CHANGE_ME_STRONG_PASSWORD ping    # PONG
 ```
 
-In production `.env`, set for example:
+> `maxmemory-policy noeviction` is **required** — Celery loses jobs if Redis evicts keys under pressure. The 512 MB cap is plenty (rate-limiter keys use <1 MB; job results <100 MB).
 
-```env
-REDIS_URL=redis://127.0.0.1:6379/0
-```
-
-If Redis listens only on localhost (default), do not expose port `6379` in the firewall.
+Update your `REDIS_URL` in `.env` (§8) to include the password:
+`redis://:CHANGE_ME_STRONG_PASSWORD@127.0.0.1:6379/0`
 
 ---
 
 ## 7. Clone repository & Python venv
 
-As **`deploy`** (SSH session from §4):
-
 ```bash
 cd /opt/stylicai
-git clone https://github.com/YOUR_ORG/Newstylicai.git .
-# or: git clone git@github.com:YOUR_ORG/Newstylicai.git .
-
-python3.11 -m venv .venv
-source .venv/bin/activate
+git clone https://github.com/<org>/Newstylicai.git .
+python3.11 -m venv venv
+source venv/bin/activate
 pip install --upgrade pip wheel
 pip install -r requirements.txt
-pip install flower   # Celery monitoring UI (not listed in requirements.txt by default)
 ```
-
-**Note:** For heavy image work, workers may need extra RAM; start with a **2 GB+** droplet for API + Celery on the same host, or split Celery onto another droplet using the same `REDIS_URL`.
 
 ---
 
-## 8. Environment file
-
-As **`deploy`**:
+## 8. Environment file (.env)
 
 ```bash
-cd /opt/stylicai
 cp .env.example .env
-nano .env   # fill MONGO_URI, JWT, R2_*, REDIS_URL, API keys, etc.
-chmod 600 .env
+nano .env
 ```
 
-Production recommendations:
+Fill in the real values. Mandatory keys:
 
-- `DEBUG=False`
-- `HOST=127.0.0.1` and `PORT=8000` (Gunicorn binds locally; Nginx talks to it)
-- Strong `JWT_SECRET_KEY`
-- Use **MongoDB Atlas** or a secured Mongo instance
+| Key                         | Notes |
+|-----------------------------|-------|
+| `MONGO_URI`, `MONGO_DB_NAME`| MongoDB Atlas. |
+| `JWT_SECRET_KEY`            | 64+ random chars. |
+| `R2_*`                      | Cloudflare R2 (see `cloudflare-r2-guide.md`). |
+| `KIE_API_KEY`               | kie.ai key. |
+| `GOOGLE_CLOUD_API_KEY`      | Vertex fallback. |
+| `EVOLINK_API_KEY`           | Evolink fallback. |
+| `REDIS_URL`                 | `redis://:PASSWORD@127.0.0.1:6379/0` |
+| `KIE_RATE_LIMIT_MAX=10`     | Start at 10; raise to 18 once 429 rate is confirmed 0. |
+| `KIE_RATE_LIMIT_WINDOW_S=10`| KIE's window. Do not change. |
+| `KIE_RATE_LIMIT_429_SLEEP_S=5` | Cool-down when a 429 slips through. |
+| `FLOWER_BASIC_AUTH`         | `user:strong_password` — credentials for flower.stylic.ai. |
+
+### 8.1 Production security keys (added in the security hardening pass)
+
+These keys are read by `app/config.py` and drive the application-tier security middleware (`app/middleware/*`), rate limiter (`app/rate_limit.py`), and exception handlers (`app/error_handlers.py`). **All are backend-only — no frontend code needs to change.**
+
+| Key                           | Production value | Purpose |
+|-------------------------------|------------------|---------|
+| `ENVIRONMENT`                 | `production`     | Flips the app into strict mode: refuses wildcard CORS, disables `/docs`, emits HSTS, hides the `/queue/*` endpoints unless `ADMIN_API_KEY` is present. |
+| `CORS_ORIGINS`                | `https://app.stylic.ai,https://stylic.ai` | Comma-separated browser origins allowed to call the API. **Must be explicit** in production (no `*`). |
+| `TRUSTED_HOSTS`               | `api.stylic.ai`  | Comma-separated allowed `Host` header values. Defends against Host header poisoning / cache-key attacks. |
+| `MAX_REQUEST_BODY_MB`         | `20`             | Hard cap enforced inside the app (in addition to `client_max_body_size` in Nginx). Protects Celery workers and Gunicorn from OOM / slow-post. |
+| `ADMIN_API_KEY`               | 48+ random chars | Shared secret for the ops-only `/queue/*` endpoints. Clients send it as `X-Admin-Key: <value>`. When empty in production, those endpoints return 404 (hidden). Generate with `python3 -c 'import secrets; print(secrets.token_urlsafe(48))'`. |
+| `ENABLE_DOCS_IN_PRODUCTION`   | `false`          | Keeps Swagger `/docs`, `/redoc`, `/openapi.json` disabled in prod. Flip to `true` only if the docs are fronted by an auth-protecting gateway. |
+| `JWT_ISSUER` / `JWT_AUDIENCE` | empty on day 1, then `stylic-ai` / `stylic-ai-app` | Leave empty until every active session has rotated (~`REFRESH_TOKEN_EXPIRE_DAYS` after the deploy). Then set both to bind tokens to this service — defense-in-depth against token-confusion attacks. |
+| `RATE_LIMIT_ENABLED`          | `true`           | Master switch for the slowapi HTTP rate limiter. Uses the same Redis as Celery. |
+| `RATE_LIMIT_DEFAULT`          | `120/minute`     | Applied to every route that doesn't override. |
+| `RATE_LIMIT_AUTH`             | `10/minute`      | Tighter limit on login / register / forgot-password / OTP endpoints. |
+| `RATE_LIMIT_GOOGLE`           | `20/minute`      | Google Sign-In. |
+
+> The rate limiter keys off the **real client IP** via `X-Forwarded-For`, which works because the app trusts the Nginx reverse proxy configured in §12. If you ever expose the app without Nginx in front, revisit `app/rate_limit.py`.
+
+Lock it down:
+
+```bash
+chmod 600 .env
+```
 
 ---
 
 ## 9. Gunicorn (systemd)
 
-Gunicorn loads **`main:app`** (FastAPI) using **Uvicorn workers** from the project root (`/opt/stylicai`).
+FastAPI is served by Gunicorn with Uvicorn workers. Memory footprint is small (~150 MB/worker × 3 workers = 450 MB).
 
-As **root** (create unit files under `/etc/systemd/system/`). On a root shell, omit `sudo`; otherwise use `sudo` before each command.
-
-Create `/etc/systemd/system/stylicai-api.service`:
-
-```ini
+```bash
+sudo tee /etc/systemd/system/stylicai-api.service >/dev/null <<'EOF'
 [Unit]
-Description=Stylic AI API (Gunicorn + Uvicorn)
+Description=Stylic AI FastAPI (Gunicorn + Uvicorn)
 After=network.target redis-server.service
+Requires=redis-server.service
 
 [Service]
 Type=notify
 User=deploy
 Group=deploy
 WorkingDirectory=/opt/stylicai
-Environment="PATH=/opt/stylicai/.venv/bin"
-ExecStart=/opt/stylicai/.venv/bin/gunicorn main:app \
-  -k uvicorn.workers.UvicornWorker \
-  -b 127.0.0.1:8000 \
-  -w 4 \
-  --timeout 120 \
-  --access-logfile - \
-  --error-logfile -
-Restart=always
+EnvironmentFile=/opt/stylicai/.env
+ExecStart=/opt/stylicai/venv/bin/gunicorn main:app \
+    --workers 3 \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --bind 127.0.0.1:8000 \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --keep-alive 5 \
+    --forwarded-allow-ips 127.0.0.1 \
+    --proxy-allow-from 127.0.0.1 \
+    --access-logfile /var/log/stylicai/api.access.log \
+    --error-logfile  /var/log/stylicai/api.error.log
+
+Restart=on-failure
 RestartSec=5
+OOMScoreAdjust=-100
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now stylicai-api
+sudo systemctl status stylicai-api --no-pager
 ```
-
-Enable and start (as **root**):
-
-```bash
-systemctl daemon-reload
-systemctl enable stylicai-api
-systemctl start stylicai-api
-systemctl status stylicai-api
-curl -sS http://127.0.0.1:8000/health
-```
-
-Tune `-w` (worker count) to CPU cores (often `2 * cores + 1` is a starting point; I/O-heavy APIs may use fewer).
 
 ---
 
-## 10. Celery worker (systemd)
+## 10. Celery worker (systemd, OOM-safe)
 
-The project uses **`app.worker:celery_app`** and queue **`photoshoots`** (see `app/worker.py`).
+This is the critical service. **Fixed concurrency + per-child memory cap** beats autoscale every time for memory-heavy workloads.
 
-Create `/etc/systemd/system/stylicai-celery.service`:
-
-```ini
+```bash
+sudo tee /etc/systemd/system/stylicai-celery.service >/dev/null <<'EOF'
 [Unit]
-Description=Stylic AI Celery worker (photoshoots queue)
+Description=Stylic AI Celery worker — photoshoots queue
 After=network.target redis-server.service
+Requires=redis-server.service
 
 [Service]
 Type=simple
 User=deploy
 Group=deploy
 WorkingDirectory=/opt/stylicai
-Environment="PATH=/opt/stylicai/.venv/bin"
-ExecStart=/opt/stylicai/.venv/bin/celery -A app.worker worker \
-  -Q photoshoots \
-  --autoscale=10,5 \
-  --prefetch-multiplier=1 \
-  --max-tasks-per-child=100 \
-  --loglevel=info
-Restart=always
+EnvironmentFile=/opt/stylicai/.env
+ExecStart=/opt/stylicai/venv/bin/celery -A app.worker worker \
+    -Q photoshoots \
+    --concurrency=3 \
+    --prefetch-multiplier=1 \
+    --max-tasks-per-child=50 \
+    --max-memory-per-child=1500000 \
+    --loglevel=info \
+    --logfile=/var/log/stylicai/celery.log
+
+# Send TERM first, then KILL after 90s — gives the in-flight task time to
+# flush the current pose to R2 before the process is killed.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+Restart=on-failure
 RestartSec=10
 
+# Let the kernel pick THIS service first if the box goes OOM — better to
+# lose one worker (systemd restarts it) than Redis or the API.
+OOMScoreAdjust=200
+LimitNOFILE=65535
+
 [Install]
 WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now stylicai-celery
+sudo systemctl status stylicai-celery --no-pager
+sudo tail -n 50 /var/log/stylicai/celery.log
 ```
 
-**Autoscale profile (`--autoscale=10,5`)**:
-- keeps at least **5** worker processes warm
-- scales up to **10** when `photoshoots` queue depth increases
-- `--prefetch-multiplier=1` avoids one worker reserving too many long-running jobs
-- `--max-tasks-per-child=100` recycles workers periodically to limit memory growth on image-heavy workloads
+Key settings (also documented in `app/worker.py`):
 
-If your droplet has limited CPU/RAM (e.g. 2vCPU/4GB), start lower (`--autoscale=6,2`) and increase after observing load.
+* `--concurrency=3` → 3 simultaneous photoshoots. On 16 GB: `3 × 1.5 GB = 4.5 GB`, leaves 11+ GB headroom for the OS, Redis, Nginx, and Gunicorn.
+* `--max-memory-per-child=1500000` KB (1.5 GB) → Celery recycles the child **after** the current task completes. No job is lost.
+* `--prefetch-multiplier=1` → no task hoarding.
+* `--max-tasks-per-child=50` → periodic flush of library-level memory leaks.
 
-As **root**:
-
-```bash
-systemctl daemon-reload
-systemctl enable stylicai-celery
-systemctl start stylicai-celery
-systemctl status stylicai-celery
-```
+> The Gunicorn `--forwarded-allow-ips 127.0.0.1` option tells Uvicorn to trust `X-Forwarded-For` and `X-Forwarded-Proto` **only** from Nginx on the same host. Without it, `app/rate_limit.py` would bucket every request under the proxy's loopback IP and security headers wouldn't know requests are HTTPS. Do **not** widen this to `*` unless you're behind a single, trusted edge (e.g. Cloudflare with Authenticated Origin Pulls).
 
 ---
 
-## 11. Flower (systemd)
+## 11. Flower on flower.stylic.ai (systemd)
 
-Flower should **not** be public without authentication. Options:
+Flower has its own sub-domain; no URL-prefix, no static-asset headaches.
 
-- **A)** Bind to `127.0.0.1` and use SSH port forwarding for admins.
-- **B)** Bind to `127.0.0.1` and proxy via Nginx with HTTP basic auth (below).
+### 11.1 Install Flower into the venv
 
-Create `/etc/systemd/system/stylicai-flower.service`:
+```bash
+source /opt/stylicai/venv/bin/activate
+pip install flower==2.0.1
+deactivate
+```
 
-```ini
+### 11.2 Set `FLOWER_BASIC_AUTH` in `.env`
+
+```env
+FLOWER_BASIC_AUTH=admin:REPLACE_WITH_STRONG_PASSWORD
+```
+
+### 11.3 systemd unit
+
+```bash
+sudo tee /etc/systemd/system/stylicai-flower.service >/dev/null <<'EOF'
 [Unit]
-Description=Stylic AI Celery Flower
+Description=Stylic AI Celery Flower UI
 After=network.target redis-server.service stylicai-celery.service
+Requires=redis-server.service
 
 [Service]
 Type=simple
 User=deploy
 Group=deploy
 WorkingDirectory=/opt/stylicai
-Environment="PATH=/opt/stylicai/.venv/bin"
-ExecStart=/opt/stylicai/.venv/bin/celery -A app.worker flower \
-  --address=127.0.0.1 \
-  --port=5555 \
-  --basic_auth=CHANGE_ME_USER:CHANGE_ME_STRONG_PASSWORD
-Restart=always
+EnvironmentFile=/opt/stylicai/.env
+ExecStart=/opt/stylicai/venv/bin/celery -A app.worker flower \
+    --address=127.0.0.1 \
+    --port=5555 \
+    --persistent=True \
+    --db=/opt/stylicai/flower.db \
+    --max_tasks=10000 \
+    --basic_auth=${FLOWER_BASIC_AUTH}
+
+Restart=on-failure
 RestartSec=5
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now stylicai-flower
+sudo systemctl status stylicai-flower --no-pager
 ```
 
-As **root**:
-
-```bash
-systemctl daemon-reload
-systemctl enable stylicai-flower
-systemctl start stylicai-flower
-```
-
-**Security:** Replace basic auth credentials; prefer SSH tunnel or VPN for production if possible.
+Flower is now on `127.0.0.1:5555`. Nginx (§12) publishes it on `https://flower.stylic.ai`.
 
 ---
 
-## 12. Nginx reverse proxy
+## 12. Nginx — api.stylic.ai & flower.stylic.ai
 
-As **root**, create `/etc/nginx/sites-available/stylicai`:
+### 12.1 API — `/etc/nginx/sites-available/stylicai-api`
 
 ```nginx
-# Upstream FastAPI (Gunicorn)
 upstream stylicai_api {
-    server 127.0.0.1:8000 fail_timeout=0;
+    server 127.0.0.1:8000;
+    keepalive 64;
 }
 
-# HTTP — Certbot will add HTTPS + redirects
+# Edge-level IP rate limit (in addition to the app-level slowapi limiter).
+# 30 req/s with a 60-burst window absorbs bursts from legit clients while
+# making brute-force credential stuffing expensive. Tune per your traffic.
+limit_req_zone $binary_remote_addr zone=stylicai_api:10m rate=30r/s;
+limit_conn_zone $binary_remote_addr zone=stylicai_conn:10m;
+
 server {
     listen 80;
-    listen [::]:80;
-    server_name api.yourdomain.com;
+    server_name api.stylic.ai;
 
-    # Let’s Encrypt HTTP-01
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-    }
+    # MUST match MAX_REQUEST_BODY_MB in .env (slightly higher so the app
+    # tier's JSON error fires instead of Nginx's plain-text 413).
+    client_max_body_size 22m;
+    client_body_timeout  30s;
+    client_header_timeout 10s;
+    send_timeout 60s;
 
-    location / {
+    # Hide Nginx version in Server header.
+    server_tokens off;
+
+    access_log /var/log/nginx/stylicai-api.access.log;
+    error_log  /var/log/nginx/stylicai-api.error.log warn;
+
+    # Block the ops-only endpoints at the edge too, as defense-in-depth.
+    # The app ALSO enforces this via ADMIN_API_KEY; allowlist your ops
+    # CIDR here so ops traffic never even reaches the app from the
+    # open internet.
+    location /queue/ {
+        # Replace 203.0.113.0/24 with your office / VPN / CI egress CIDR.
+        allow 127.0.0.1;
+        # allow 203.0.113.0/24;
+        deny all;
+
         proxy_pass http://stylicai_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_connect_timeout 75s;
-        client_max_body_size 50M;
+    }
+
+    location / {
+        limit_req  zone=stylicai_api burst=60 nodelay;
+        limit_conn stylicai_conn 40;
+
+        proxy_pass http://stylicai_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 30s;
+        proxy_send_timeout   300s;
+        proxy_read_timeout   300s;
+
+        # Don't buffer large AI responses — stream them straight through.
+        proxy_buffering off;
     }
 }
 ```
 
-Enable site and test (as **root**):
+> Keep `client_max_body_size` (Nginx) ≥ `MAX_REQUEST_BODY_MB` (app) by ~2 MiB. If they're equal and a client sends *exactly* the cap plus multipart overhead, Nginx returns a plain 413 before the app can format the JSON error body. The 22m / 20 MiB split gives the app the chance to respond cleanly.
 
-```bash
-ln -sf /etc/nginx/sites-available/stylicai /etc/nginx/sites-enabled/
-nginx -t
-systemctl reload nginx
+### 12.2 Flower — `/etc/nginx/sites-available/stylicai-flower`
+
+```nginx
+server {
+    listen 80;
+    server_name flower.stylic.ai;
+
+    access_log /var/log/nginx/stylicai-flower.access.log;
+    error_log  /var/log/nginx/stylicai-flower.error.log warn;
+
+    location / {
+        proxy_pass http://127.0.0.1:5555;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # WebSocket for live task updates
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600s;
+    }
+}
 ```
 
-Optional **Flower** behind Nginx (same server, path prefix — Flower may need `--url_prefix`; check `celery flower --help` for your Celery version). Simpler approach: **SSH tunnel**:
+### 12.3 Enable + reload
 
 ```bash
-ssh -L 5555:127.0.0.1:5555 deploy@YOUR_DROPLET_PUBLIC_IP
-# open http://127.0.0.1:5555 on your laptop
+sudo ln -sf /etc/nginx/sites-available/stylicai-api    /etc/nginx/sites-enabled/stylicai-api
+sudo ln -sf /etc/nginx/sites-available/stylicai-flower /etc/nginx/sites-enabled/stylicai-flower
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx
 ```
 
 ---
 
-## 13. Certbot (SSL)
-
-Ensure DNS **A** record for `api.yourdomain.com` points to the droplet, then as **root**:
+## 13. Certbot (SSL) — both sub-domains
 
 ```bash
-certbot --nginx -d api.yourdomain.com
+sudo certbot --nginx \
+    -d api.stylic.ai \
+    -d flower.stylic.ai \
+    --redirect \
+    --agree-tos \
+    -m ops@stylic.ai \
+    --no-eff-email
+
+# Verify renewal
+sudo certbot renew --dry-run
 ```
 
-Follow prompts (email, agree to terms). Certbot will install a snippet under `/etc/letsencrypt/` and adjust the Nginx server block for **HTTPS** and redirect HTTP → HTTPS.
+Certbot adds `listen 443 ssl`, the ACME challenge blocks, and the 80 → 443 redirect to both server blocks automatically.
 
-Auto-renewal is installed as a timer; verify:
+---
+
+## 14. Firewall (Vultr portal + UFW)
+
+### 14.1 UFW (host-level)
 
 ```bash
-certbot renew --dry-run
+sudo ufw allow OpenSSH
+sudo ufw allow 'Nginx Full'
+sudo ufw --force enable
+sudo ufw status verbose
 ```
 
-After Certbot edits Nginx, confirm:
+### 14.2 Vultr Firewall (network-level)
+
+In the Vultr portal → **Products → Firewall**:
+
+1. Create a group `stylicai-prod`.
+2. Rules:
+
+   | Protocol | Port  | Source        | Notes |
+   |----------|-------|---------------|-------|
+   | TCP      | 22    | `YOUR_IP/32`  | SSH (restrict to your office/VPN IP). |
+   | TCP      | 80    | `0.0.0.0/0`   | HTTP → redirects to 443. |
+   | TCP      | 443   | `0.0.0.0/0`   | HTTPS (api + flower). |
+
+3. Attach the firewall group to your instance (**Instance → Settings → Firewall**).
+
+Redis (6379) is bound to `127.0.0.1` only — never expose it to the internet.
+
+---
+
+## 15. Throughput tuning — KIE rate limiter
+
+The limiter (`app/services/kie_rate_limiter.py`) uses Redis-backed sliding-window counters so **every worker on every box sharing the same Redis** enforces the same account-wide cap.
+
+### 15.1 Start conservative
+
+```env
+KIE_RATE_LIMIT_MAX=10        # submissions per window
+KIE_RATE_LIMIT_WINDOW_S=10   # KIE's window; don't touch
+KIE_RATE_LIMIT_429_SLEEP_S=5 # cool-down when a 429 slips through
+KIE_RATE_LIMIT_MAX_WAIT_S=60 # caller falls through to Vertex after 60s wait
+```
+
+With `MAX=10`, a short burst of 4 simultaneous photoshoots (32 poses) saturates KIE for ~30 s, then Vertex/Evolink absorb the tail — zero 429s observed in staging.
+
+### 15.2 Scale up safely
+
+Watch:
 
 ```bash
-nginx -t && systemctl reload nginx
-curl -sS https://api.yourdomain.com/health
+# Live count of submit-tokens used in the current window:
+redis-cli -a PW keys 'kie:createTask:*'
+redis-cli -a PW get 'kie:createTask:<bucket>'
+
+# 429 occurrences in the last hour:
+sudo journalctl -u stylicai-celery --since '1 hour ago' | grep -c '429'
+```
+
+If the 429 count is 0 for 24 hours, raise `KIE_RATE_LIMIT_MAX` to `14`, then `18`. Do **not** cross `18` — KIE's real cap is 20 and you need headroom for poll-traffic clock skew.
+
+### 15.3 Disable for local dev
+
+```env
+KIE_RATE_LIMIT_ENABLED=false
 ```
 
 ---
 
-## 14. Firewall
+## 15A. Application security hardening (launch checklist)
 
-With **UFW**, as **root**:
+The app ships with a production security stack implemented entirely in the backend (no frontend changes required). This section is the operator runbook for verifying it in production.
 
-```bash
-ufw allow OpenSSH
-ufw allow 'Nginx Full'
-ufw enable
-ufw status
-```
+### 15A.1 What's active when `ENVIRONMENT=production`
 
-Do **not** open `8000` or `5555` publicly if they bind to `127.0.0.1` only.
+| Layer                            | Where                                       | What it does |
+|----------------------------------|---------------------------------------------|--------------|
+| CORS allowlist (strict)          | `main.py` + `CORS_ORIGINS`                  | Only the configured origins get CORS headers; wildcard is rejected. |
+| `TrustedHostMiddleware`          | `main.py` + `TRUSTED_HOSTS`                 | Rejects unknown `Host` headers (Host header poisoning / cache attacks). |
+| `SecurityHeadersMiddleware`      | `app/middleware/security_headers.py`        | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, COOP/CORP. Strips `Server` banner. |
+| `RequestContextMiddleware`       | `app/middleware/request_context.py`         | Sets `X-Request-ID` on every response; structured access log line per request. |
+| `BodySizeLimitMiddleware`        | `app/middleware/body_size_limit.py`         | 413 for bodies over `MAX_REQUEST_BODY_MB`. |
+| `AdminKeyGuardMiddleware`        | `app/middleware/admin_guard.py`             | `/queue/*` returns 404 unless `X-Admin-Key` matches. |
+| slowapi Redis-backed rate limit  | `app/rate_limit.py` + `RATE_LIMIT_*`        | 120/min default, 10/min auth, 20/min Google. Shared across workers via Redis. |
+| JWT claims hardening             | `app/services/jwt_service.py`               | Adds `iat`/`nbf`; algorithm pinned; optional `iss`/`aud` binding. |
+| Sanitized error handler          | `app/error_handlers.py`                     | No tracebacks leaked to clients; 500s return `{"detail": "Internal server error."}` with `X-Request-ID`. |
+| `/docs`, `/redoc`, `/openapi.json` disabled | `main.py`                        | Controlled by `ENABLE_DOCS_IN_PRODUCTION`. |
 
----
+### 15A.2 Post-deploy smoke tests
 
-## 15. CI/CD — GitHub Actions
-
-Goal: on push to `main`, SSH into the droplet, `git pull`, restart **systemd** units.
-
-### 15.1 On the droplet (once)
-
-1. Create SSH key **used only for deploy** (on your laptop or as a GitHub deploy key with read-only repo access):
-
-   ```bash
-   ssh-keygen -t ed25519 -f ~/.ssh/github_deploy_stylicai -N ""
-   ```
-
-2. Add **public** key to `deploy` user on droplet: `~/.ssh/authorized_keys`.
-
-3. On the droplet, as **root**, allow `deploy` to restart services without a password (narrow sudoers):
-
-   ```bash
-   visudo -f /etc/sudoers.d/stylicai-deploy
-   ```
-
-   Add (single line):
-
-   ```
-   deploy ALL=(root) NOPASSWD: /bin/systemctl restart stylicai-api, /bin/systemctl restart stylicai-celery, /bin/systemctl restart stylicai-flower
-   ```
-
-### 15.2 GitHub repository secrets
-
-In **GitHub → Settings → Secrets and variables → Actions**, add:
-
-| Secret | Example |
-|--------|---------|
-| `DEPLOY_HOST` | `203.0.113.50` or `api.yourdomain.com` |
-| `DEPLOY_USER` | `deploy` |
-| `DEPLOY_SSH_KEY` | **Private** key PEM (full multiline) |
-| `DEPLOY_PATH` | `/opt/stylicai` |
-
-### 15.3 Workflow file
-
-The repo includes `.github/workflows/deploy-droplet.yml`. Adjust the branch name if yours is not `main`. Example inline:
-
-```yaml
-name: Deploy to Ubuntu droplet
-
-on:
-  push:
-    branches: [main]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script_stop: true
-          script: |
-            set -euo pipefail
-            cd ${{ secrets.DEPLOY_PATH }}
-            git fetch origin main
-            git reset --hard origin/main
-            source .venv/bin/activate
-            pip install -r requirements.txt
-            pip install -q flower || true
-            sudo systemctl restart stylicai-api
-            sudo systemctl restart stylicai-celery
-            sudo systemctl restart stylicai-flower
-```
-
-**Notes:**
-
-- `git reset --hard origin/main` matches a **single-branch** deploy server; adjust if you use tags/releases.
-- Add `pip install -r requirements.txt` only when dependencies change to speed deploys, or keep as-is for simplicity.
-- For **zero-downtime** rolling deploys, use two releases directories + symlink swap (blue/green); this workflow is intentionally simple.
-
----
-
-## 16. Operations cheat sheet
-
-As **root** (omit `sudo`); as **`deploy`** with sudo rights, prefix with `sudo`:
+Run these from **outside** the server (any laptop) once DNS + TLS are live:
 
 ```bash
-# Logs
-journalctl -u stylicai-api -f
-journalctl -u stylicai-celery -f
-journalctl -u stylicai-flower -f
+# 1. Security headers land on every response.
+curl -sI https://api.stylic.ai/health | grep -iE \
+    'strict-transport-security|x-content-type-options|x-frame-options|referrer-policy|content-security-policy|x-request-id'
 
-# Restart after code or .env change
-systemctl restart stylicai-api stylicai-celery stylicai-flower
+# 2. /docs is disabled in prod.
+curl -s -o /dev/null -w '%{http_code}\n' https://api.stylic.ai/docs
+# Expect: 404
 
-# Nginx
-nginx -t && systemctl reload nginx
+# 3. CORS is allowlist, not wildcard.
+curl -sI -H 'Origin: https://evil.example' https://api.stylic.ai/health | grep -i access-control
+# Expect: NO `access-control-allow-origin` header (request was rejected).
+curl -sI -H 'Origin: https://app.stylic.ai' https://api.stylic.ai/health | grep -i access-control
+# Expect: access-control-allow-origin: https://app.stylic.ai
+
+# 4. /queue/* is hidden without X-Admin-Key.
+curl -s -o /dev/null -w '%{http_code}\n' https://api.stylic.ai/queue/status
+# Expect: 404
+curl -s -H "X-Admin-Key: $ADMIN_API_KEY" https://api.stylic.ai/queue/status
+# Expect: JSON queue status.
+
+# 5. Request ID propagation.
+curl -sI https://api.stylic.ai/health | grep -i x-request-id
+# Expect: X-Request-ID: <hex string>
+
+# 6. Rate limit kicks in on auth endpoints (11th request within a minute returns 429).
+for i in $(seq 1 12); do
+  curl -s -o /dev/null -w '%{http_code} ' \
+    -X POST https://api.stylic.ai/api/v1/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"email":"nobody@example.com","password":"invalid"}'
+done; echo
+# Expect: ten 401s then 429s.
+
+# 7. Body size cap.
+head -c 25m </dev/urandom > /tmp/big.bin
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+    -H 'Content-Type: application/octet-stream' \
+    --data-binary @/tmp/big.bin \
+    https://api.stylic.ai/api/v1/auth/login
+# Expect: 413
 ```
 
-**Environment reload:** Gunicorn/Celery do not hot-reload `.env`; always `systemctl restart` after changing secrets.
+### 15A.3 Calling `/queue/*` in production
 
-**Modal / GPU:** If you use Modal for upscaling, ensure `modal` CLI token or secrets on the **Celery** host are configured for the `deploy` user as documented by Modal.
+Never expose these to a browser. From an ops workstation that's on the Nginx `allow` CIDR (§12.1):
+
+```bash
+curl -H "X-Admin-Key: $ADMIN_API_KEY" https://api.stylic.ai/queue/status
+curl -H "X-Admin-Key: $ADMIN_API_KEY" https://api.stylic.ai/queue/task/<task_id>
+```
+
+If Nginx's IP allowlist blocks you, SSH-tunnel instead:
+
+```bash
+ssh -L 8000:127.0.0.1:8000 deploy@api.stylic.ai
+curl -H "X-Admin-Key: $ADMIN_API_KEY" http://127.0.0.1:8000/queue/status
+```
+
+### 15A.4 Rotating the admin key
+
+1. Generate a new one:
+   `python3 -c 'import secrets; print(secrets.token_urlsafe(48))'`
+2. Edit `/opt/stylicai/.env`, set `ADMIN_API_KEY=<new>`.
+3. `sudo systemctl restart stylicai-api`.
+4. Distribute the new key to ops via your secrets store (1Password / Vault).
+
+### 15A.5 Turning on strict JWT claims (later, after refresh cycle)
+
+After the full refresh-token lifetime has elapsed since deploy (180 days with the default `REFRESH_TOKEN_EXPIRE_DAYS=180`, or shorter if you force-logout everyone), turn on issuer/audience binding:
+
+```env
+JWT_ISSUER=stylic-ai
+JWT_AUDIENCE=stylic-ai-app
+```
+
+`sudo systemctl restart stylicai-api`. Any still-in-the-wild tokens without the claim will 401 and clients will silently re-login via the refresh flow.
+
+### 15A.6 What the frontend still needs to know (one-line summary)
+
+**Nothing.** All changes are server-side. Clients may occasionally see HTTP 429 under abuse and should surface a `"Try again in a moment."` message. The `X-Request-ID` response header is optional to log but extremely useful for bug reports.
 
 ---
 
-## Checklist
+## 16. CI/CD — GitHub Actions
 
-- [ ] `ssh root@DROPLET_PUBLIC_IP` works (DO SSH key)
-- [ ] `ssh deploy@DROPLET_PUBLIC_IP` works (`authorized_keys` for `deploy`)
-- [ ] DNS A record → droplet
-- [ ] `.env` complete and `DEBUG=False`
-- [ ] Redis running, `REDIS_URL` correct
-- [ ] `stylicai-api` healthy (`/health` via Nginx HTTPS)
-- [ ] `stylicai-celery` running, photoshoot jobs complete
-- [ ] Flower secured or tunneled only
-- [ ] UFW enabled, SSH + 80/443 only
-- [ ] Certbot dry-run OK
-- [ ] GitHub Actions secrets set, workflow push tested
+Workflow: `.github/workflows/deploy-vultr.yml`.
+
+Required GitHub repo secrets:
+
+| Secret           | Value |
+|------------------|-------|
+| `VULTR_HOST`     | Instance public IPv4 |
+| `VULTR_USER`     | `deploy` |
+| `VULTR_SSH_KEY`  | Private key (PEM) matching the key installed in §2 |
+
+The deploy step runs on the box:
+
+```bash
+cd /opt/stylicai
+git fetch --all --prune
+git reset --hard origin/main
+source venv/bin/activate
+pip install -r requirements.txt
+sudo systemctl restart stylicai-api
+sudo systemctl restart stylicai-celery
+sudo systemctl restart stylicai-flower
+sudo systemctl reload nginx
+```
 
 ---
 
-*Document version: April 2026 · Ubuntu 22.04 · DigitalOcean · root SSH bootstrap · Stylic AI backend (`main.py`, `app.worker` Celery app).*
+## 17. Operations cheat sheet
+
+```bash
+# ── Service status ──────────────────────────────────────────────────────────
+sudo systemctl status stylicai-api stylicai-celery stylicai-flower redis-server
+
+# ── Logs (live) ─────────────────────────────────────────────────────────────
+sudo journalctl -u stylicai-api     -f
+sudo journalctl -u stylicai-celery  -f
+tail -f /var/log/stylicai/celery.log
+tail -f /var/log/stylicai/api.error.log
+
+# ── Restart after .env or code change ───────────────────────────────────────
+sudo systemctl restart stylicai-api
+sudo systemctl restart stylicai-celery
+sudo systemctl restart stylicai-flower
+
+# ── Queue inspection ────────────────────────────────────────────────────────
+redis-cli -a PW llen photoshoots          # pending jobs
+redis-cli -a PW keys 'kie:createTask:*'   # active rate-limiter buckets
+
+# ── Memory / OOM ────────────────────────────────────────────────────────────
+free -h
+ps -eo pid,rss,cmd --sort=-rss | head -n 10
+dmesg -T | grep -i 'killed process'       # OOM-killer history
+sudo journalctl -u stylicai-celery | grep -i 'max memory\|recycling'
+
+# ── Flower ──────────────────────────────────────────────────────────────────
+# Browse https://flower.stylic.ai (HTTP basic auth from FLOWER_BASIC_AUTH)
+
+# ── Force-rotate all worker children (e.g. to pick up new model weights) ────
+sudo systemctl restart stylicai-celery
+```
+
+---
+
+## 18. Troubleshooting
+
+### 18.1 "Worker exited prematurely: signal 9 (SIGKILL)"
+
+Celery child was OOM-killed. Check:
+
+```bash
+sudo journalctl -k | grep -i 'out of memory'
+sudo journalctl -u stylicai-celery | grep -iE 'memory|killed'
+```
+
+Mitigations (usually already applied):
+
+1. Confirm `--max-memory-per-child=1500000` is in the systemd unit.
+2. Confirm swap is on: `swapon --show`.
+3. Temporarily lower `--concurrency` from 3 → 2 if the box is smaller than recommended.
+
+### 18.2 `429 Too Many Requests` from KIE in logs
+
+The limiter is a **gate**, not a guarantee — if another client shares your KIE account you can still trip 429. Actions:
+
+1. Lower `KIE_RATE_LIMIT_MAX` by 2 (e.g. 10 → 8).
+2. Confirm Redis is reachable from both workers: `redis-cli -a PW ping`.
+3. `journalctl -u stylicai-celery | grep kie-rl` — should show `token acquired after N attempts` entries, not `redis unavailable`.
+
+### 18.3 Flower shows no tasks / stuck spinner
+
+```bash
+sudo systemctl restart stylicai-flower
+```
+
+If still blank, confirm Celery is producing events: `celery -A app.worker events` (should show a live stream).
+
+### 18.4 "502 Bad Gateway" on api.stylic.ai
+
+```bash
+sudo systemctl status stylicai-api
+tail -n 100 /var/log/stylicai/api.error.log
+```
+
+Usually a bad `.env` value or a missing dependency after deploy — fix and `sudo systemctl restart stylicai-api`.
+
+### 18.5 DNS not resolving after setup
+
+```bash
+dig +short api.stylic.ai
+dig +short flower.stylic.ai
+```
+
+If these don't return the Vultr IP, fix the A records at your DNS provider and wait for TTL (usually 60–300 s).

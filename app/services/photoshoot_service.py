@@ -753,6 +753,17 @@ def _kie_headers() -> dict[str, str]:
 
 
 def _kie_create_nb2_task_sync(prompt: str, image_urls: List[str]) -> str:
+    """Submit one KIE createTask, rate-limited globally across all workers.
+
+    Every call first acquires a token from the Redis sliding-window limiter
+    (``KIE_RATE_LIMIT_MAX`` / ``KIE_RATE_LIMIT_WINDOW_S``). If KIE responds
+    with HTTP 429 anyway (clock skew, another client sharing the account),
+    we cool down for ``KIE_RATE_LIMIT_429_SLEEP_S`` seconds and retry ONCE
+    before propagating the error so the outer provider-fallback loop can
+    move on to Vertex.
+    """
+    from app.services import kie_rate_limiter
+
     body = {
         "model": "nano-banana-2",
         "input": {
@@ -763,15 +774,55 @@ def _kie_create_nb2_task_sync(prompt: str, image_urls: List[str]) -> str:
             "output_format": "jpg",
         },
     }
-    r = requests.post(_KIE_CREATE_URL, headers=_kie_headers(), data=json.dumps(body), timeout=60)
-    r.raise_for_status()
-    data = r.json()
-    if data.get("code") != 200:
-        raise RuntimeError(f"KIE createTask failed: {data}")
-    task_id = (data.get("data") or {}).get("taskId")
-    if not task_id:
-        raise RuntimeError(f"KIE createTask missing taskId: {data}")
-    return str(task_id)
+
+    last_exc: Optional[BaseException] = None
+    for attempt in (1, 2):
+        # Block until a global submit-token is available.
+        kie_rate_limiter.acquire(label="kie")
+        try:
+            r = requests.post(
+                _KIE_CREATE_URL,
+                headers=_kie_headers(),
+                data=json.dumps(body),
+                timeout=60,
+            )
+        except requests.RequestException as exc:
+            # Network hiccup — treat as transient and let outer retry handle it.
+            raise RuntimeError(f"KIE createTask network error: {exc!r}") from exc
+
+        # Explicit 429 from the CDN/edge layer.
+        if r.status_code == 429:
+            last_exc = requests.HTTPError(
+                f"KIE createTask 429 (attempt {attempt}/2)", response=r,
+            )
+            kie_rate_limiter.on_rate_limited(label="kie")
+            continue
+
+        # Any other HTTP failure — bubble up so the provider-fallback kicks in.
+        r.raise_for_status()
+
+        data = r.json() or {}
+        code = data.get("code")
+        # KIE sometimes returns 200 + rate-limit code in the body; treat the
+        # same as an HTTP 429 so we cool down before retrying.
+        msg = str(data.get("msg") or data.get("message") or "").lower()
+        if code in (429, 1011, 1012) or "rate" in msg and "limit" in msg:
+            last_exc = RuntimeError(f"KIE createTask rate-limited: {data}")
+            kie_rate_limiter.on_rate_limited(label="kie")
+            continue
+
+        if code != 200:
+            raise RuntimeError(f"KIE createTask failed: {data}")
+
+        task_id = (data.get("data") or {}).get("taskId")
+        if not task_id:
+            raise RuntimeError(f"KIE createTask missing taskId: {data}")
+        return str(task_id)
+
+    # Both attempts were rate-limited — let the outer retry/fallback loop
+    # move on to the next provider (Vertex) without burning more KIE budget.
+    assert last_exc is not None
+    raise last_exc
 
 
 def _kie_poll_sync(task_id: str, timeout_s: float) -> str:

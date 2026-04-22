@@ -1,7 +1,7 @@
-# Deploy to Ubuntu 22.04 droplet — see DEPLOYMENT.md §15
+# Deploy to Ubuntu 22.04 on Vultr — see DEPLOYMENT.md §15
 # Required secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PATH
 
-name: Deploy to Ubuntu droplet
+name: Deploy to Vultr (Ubuntu 22.04)
 
 on:
   push:

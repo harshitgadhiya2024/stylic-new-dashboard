@@ -40,6 +40,7 @@ adding_data_db.py
 .venv/
 env/
 ENV/
+stylic-ai-d1ee0-firebase-adminsdk-fbsvc-e12cb71f8d.json
 
 # IDE
 .vscode/
