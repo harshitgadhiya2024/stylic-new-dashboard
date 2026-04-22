@@ -157,6 +157,9 @@ class Settings(BaseSettings):
     # Redis / Celery queue
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # Flower dashboard basic auth (format: user:password)
+    FLOWER_BASIC_AUTH: str = ""
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
