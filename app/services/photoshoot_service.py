@@ -28,7 +28,7 @@ Each ``gen_*`` node kicks off two things concurrently for every pending pose:
     finished output_image into Mongo and deducts credits on success.
 
 The ``finalize`` node waits for any in-flight Stage-2 tasks and marks the
-photoshoot document ``completed`` / ``partial`` / ``failed``.
+photoshoot document ``completed`` / ``failed``.
 
 KIE upscale logic is preserved exactly (``enhance_and_upload`` in
 ``app.services.modal_enhance_service`` is invoked unchanged).
@@ -1416,8 +1416,6 @@ async def _node_finalize(state: PipelineState) -> PipelineState:
     failed = len(ctx.poses) - ok
     if failed == 0:
         final_status = "completed"
-    elif ok > 0:
-        final_status = "partial"
     else:
         final_status = "failed"
 

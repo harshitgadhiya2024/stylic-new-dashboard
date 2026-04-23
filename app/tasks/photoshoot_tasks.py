@@ -11,7 +11,7 @@ pending poses with its own concurrency + retry policy.  As soon as any pose
 finishes generation, a stage-2 task (R2 upload + KIE upscale + Mongo writes)
 is fired for that pose immediately; the overall pipeline does NOT block the
 other poses.  ``finalize`` awaits any remaining stage-2 tasks and marks the
-photoshoot document ``completed`` / ``partial`` / ``failed``.
+photoshoot document ``completed`` / ``failed``.
 
 Celery's role here is:
 

@@ -19,6 +19,7 @@ from app.models.photoshoot import (
     CreateMultiplePhotoshootsRequest,
     UpscalePhotoshootRequest,
     RegeneratePhotoshootRequest,
+    RegenerateFailedPhotoshootRequest,
     DeletePhotoshootsRequest,
     ResizePhotoshootRequest,
     BrandingPhotoshootRequest,
@@ -123,7 +124,7 @@ async def create_photoshoot(
         "total_credit":              total_credit,
         "is_credit_deducted":        False,
         "is_completed":              False,
-        "status":                    "processing",
+        "status":                    "queue",
         "error":                     None,
         "regeneration_type":         body.regeneration_type or "",
         "regenerate_photoshoot_id":  body.regenerate_photoshoot_id or "",
@@ -151,7 +152,7 @@ async def create_photoshoot(
         "task_id":        task.id,
         "total_poses":    total_poses,
         "total_credit":   total_credit,
-        "status":         "processing",
+        "status":         "queue",
     }
 
 
@@ -263,7 +264,7 @@ async def create_multiple_photoshoots(
             "total_credit":              total_credit,
             "is_credit_deducted":      False,
             "is_completed":              False,
-            "status":                    "processing",
+            "status":                    "queue",
             "error":                     None,
             "regeneration_type":         row_req.regeneration_type or "",
             "regenerate_photoshoot_id":  row_req.regenerate_photoshoot_id or "",
@@ -289,7 +290,7 @@ async def create_multiple_photoshoots(
             "task_id":        task.id,
             "total_poses":    total_poses,
             "total_credit":   total_credit,
-            "status":         "processing",
+            "status":         "queue",
         })
 
     return {
@@ -571,7 +572,7 @@ async def regenerate_photoshoot(
         "total_credit":             total_credit,
         "is_credit_deducted":       False,
         "is_completed":             False,
-        "status":                   "processing",
+        "status":                   "queue",
         "error":                    None,
         "regeneration_type":        "regenerate",
         "regenerate_photoshoot_id": body.photoshoot_id,
@@ -595,7 +596,125 @@ async def regenerate_photoshoot(
         "regeneration_type":        "regenerate",
         "total_poses":              total_poses,
         "total_credit":             total_credit,
-        "status":                   "processing",
+        "status":                   "queue",
+    }
+
+
+@router.post(
+    "/regenerate-failed",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Regenerate Failed Photoshoot",
+    description=(
+        "Creates a new photoshoot run using the failed photoshoot's original input_parameter. "
+        "Sets regeneration_type='regenerate' and regenerate_photoshoot_id to failed_photoshoot_id. "
+        "Input: failed_photoshoot_id."
+    ),
+)
+async def regenerate_failed_photoshoot(
+    body: RegenerateFailedPhotoshootRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    now     = datetime.now(timezone.utc)
+
+    ps_col = get_photoshoots_collection()
+    failed_ps = await ps_col.find_one({"photoshoot_id": body.failed_photoshoot_id})
+    if not failed_ps:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Photoshoot '{body.failed_photoshoot_id}' not found.",
+        )
+
+    if failed_ps.get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this photoshoot.",
+        )
+
+    if failed_ps.get("status") != "failed":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Only failed photoshoots can be regenerated with this API.",
+        )
+
+    original_params = failed_ps.get("input_parameter", {})
+    if not original_params:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Failed photoshoot has no input_parameter to regenerate from.",
+        )
+
+    if original_params.get("pose_data"):
+        total_poses = len(original_params.get("pose_data") or [])
+    else:
+        total_poses = len(original_params.get("poses_ids") or [])
+    if total_poses <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Failed photoshoot has no valid pose input to regenerate.",
+        )
+
+    credit_per_image = float(original_params.get("credit_per_image") or _CREDIT_SINGLE_PHOTOSHOOT)
+    total_credit     = total_poses * credit_per_image
+    current_credits  = float(current_user.get("credits", 0))
+    if current_credits < total_credit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Insufficient credits. This regeneration requires {total_credit} credits "
+                f"({total_poses} pose(s) × {credit_per_image}) but you only have {current_credits}."
+            ),
+        )
+
+    new_photoshoot_id = str(uuid.uuid4())
+
+    job_payload = {
+        **original_params,
+        "user_id":                   user_id,
+        "regeneration_type":         "regenerate",
+        "regenerate_photoshoot_id":  body.failed_photoshoot_id,
+        "credit_per_image":          credit_per_image,
+    }
+
+    doc = {
+        "photoshoot_id":            new_photoshoot_id,
+        "user_id":                  user_id,
+        "sku_id":                   failed_ps.get("sku_id", ""),
+        "input_parameter":          {
+            **original_params,
+            "regeneration_type":        "regenerate",
+            "regenerate_photoshoot_id": body.failed_photoshoot_id,
+            "credit_per_image":         credit_per_image,
+        },
+        "output_images":            [],
+        "failed_poses":             [],
+        "total_credit":             total_credit,
+        "is_credit_deducted":       False,
+        "is_completed":             False,
+        "status":                   "queue",
+        "error":                    None,
+        "regeneration_type":        "regenerate",
+        "regenerate_photoshoot_id": body.failed_photoshoot_id,
+        "is_active":                True,
+        "created_at":               now,
+        "updated_at":               now,
+    }
+    await ps_col.insert_one(doc)
+
+    task = run_photoshoot_task.apply_async(
+        args=[new_photoshoot_id, job_payload],
+        queue="photoshoots",
+    )
+
+    return {
+        "message":                  "Failed photoshoot regeneration started successfully. Queued for background processing.",
+        "photoshoot_id":            new_photoshoot_id,
+        "task_id":                  task.id,
+        "regenerate_photoshoot_id": body.failed_photoshoot_id,
+        "regeneration_type":        "regenerate",
+        "total_poses":              total_poses,
+        "total_credit":             total_credit,
+        "status":                   "queue",
     }
 
 
@@ -1228,7 +1347,7 @@ async def background_change_photoshoot(
         "total_credit":             total_credit,
         "is_credit_deducted":       False,
         "is_completed":             False,
-        "status":                   "processing",
+        "status":                   "queue",
         "error":                    None,
         "regeneration_type":        "background_change",
         "regenerate_photoshoot_id": body.photoshoot_id,
@@ -1253,7 +1372,7 @@ async def background_change_photoshoot(
         "background_id":            body.background_id,
         "total_poses":              total_poses,
         "total_credit":             total_credit,
-        "status":                   "processing",
+        "status":                   "queue",
     }
 
 
@@ -1443,7 +1562,7 @@ async def fabric_change_photoshoot(
         "total_credit":             total_credit,
         "is_credit_deducted":       False,
         "is_completed":             False,
-        "status":                   "processing",
+        "status":                   "queue",
         "error":                    None,
         "regeneration_type":        "fabric_change",
         "regenerate_photoshoot_id": body.photoshoot_id,
@@ -1467,7 +1586,7 @@ async def fabric_change_photoshoot(
         "regeneration_type":        "fabric_change",
         "total_poses":              total_poses,
         "total_credit":             total_credit,
-        "status":                   "processing",
+        "status":                   "queue",
     }
 
 
@@ -1657,7 +1776,7 @@ async def texture_change_photoshoot(
         "total_credit":             total_credit,
         "is_credit_deducted":       False,
         "is_completed":             False,
-        "status":                   "processing",
+        "status":                   "queue",
         "error":                    None,
         "regeneration_type":        "texture_change",
         "regenerate_photoshoot_id": body.photoshoot_id,
@@ -1681,7 +1800,7 @@ async def texture_change_photoshoot(
         "regeneration_type":        "texture_change",
         "total_poses":              total_poses,
         "total_credit":             total_credit,
-        "status":                   "processing",
+        "status":                   "queue",
     }
 
 
@@ -1869,7 +1988,7 @@ async def color_change_photoshoot(
         "total_credit":             total_credit,
         "is_credit_deducted":       False,
         "is_completed":             False,
-        "status":                   "processing",
+        "status":                   "queue",
         "error":                    None,
         "regeneration_type":        "color_change",
         "regenerate_photoshoot_id": body.photoshoot_id,
@@ -1886,12 +2005,12 @@ async def color_change_photoshoot(
     )
 
     return {
-        "message":                  "Color change photoshoot started successfully. Processing in background.",
+        "message":                  "Color change photoshoot started successfully. Queued for background processing.",
         "photoshoot_id":            new_photoshoot_id,
         "task_id":                  task.id,
         "regenerate_photoshoot_id": body.photoshoot_id,
         "regeneration_type":        "color_change",
         "total_poses":              total_poses,
         "total_credit":             total_credit,
-        "status":                   "processing",
+        "status":                   "queue",
     }
