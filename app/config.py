@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     CREDIT_FABRIC_CHANGE_PER_IMAGE: float = 3.0
     CREDIT_TEXTURE_CHANGE_PER_IMAGE: float = 3.0
     CREDIT_COLOR_CHANGE_PER_IMAGE: float = 3.0
+    CREDIT_REMOVE_BACKGROUND: float = 1.0
+    # Standalone user upscale (KIE topaz only) — per upscale_factor
+    CREDIT_USER_UPSCALE_2X: float = 3.0
+    CREDIT_USER_UPSCALE_4X: float = 5.0
+    CREDIT_USER_UPSCALE_8X: float = 7.0
+
+    # fal.ai (optional — remove-background API falls back after KIE failures)
+    FAL_API_KEY: str = ""
 
     # Modal GPU enhancement pipeline
     # Class names must match what is currently DEPLOYED on Modal.

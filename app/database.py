@@ -68,6 +68,14 @@ def get_upscaling_collection() -> AsyncIOMotorCollection:
     return get_database()["upscaling_data"]
 
 
+def get_remove_background_collection() -> AsyncIOMotorCollection:
+    return get_database()["remove_background_data"]
+
+
+def get_user_upscaled_collection() -> AsyncIOMotorCollection:
+    return get_database()["user_upscaled"]
+
+
 def get_templates_collection() -> AsyncIOMotorCollection:
     return get_database()["templates"]
 
@@ -129,3 +137,17 @@ async def create_indexes() -> None:
     await templates.create_index("template_id", unique=True)
     await templates.create_index("user_id")
     await templates.create_index([("user_id", ASCENDING), ("is_default", ASCENDING)])
+
+    remove_bg = db["remove_background_data"]
+    await remove_bg.create_index("remove_background_id", unique=True)
+    await remove_bg.create_index("user_id")
+    await remove_bg.create_index("is_active")
+    await remove_bg.create_index("is_favorite")
+    await remove_bg.create_index("created_at")
+
+    user_up = db["user_upscaled"]
+    await user_up.create_index("upscale_id", unique=True)
+    await user_up.create_index("user_id")
+    await user_up.create_index("is_active")
+    await user_up.create_index("is_favorite")
+    await user_up.create_index("created_at")

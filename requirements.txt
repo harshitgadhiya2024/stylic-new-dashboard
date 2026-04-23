@@ -26,6 +26,9 @@ aioboto3
 httpx
 requests
 
+# ── fal.ai (optional remove-background fallback after KIE) ────────────────
+fal-client
+
 # ── Email (async SMTP) ────────────────────────────────────────────────────
 aiosmtplib
 
