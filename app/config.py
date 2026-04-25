@@ -134,6 +134,9 @@ class Settings(BaseSettings):
     # Multi-provider photoshoot generation pipeline (see pipeline.py architecture).
     # KIE is shared with SEEDDREAM_API_KEY; Vertex uses GOOGLE_CLOUD_API_KEY; Evolink uses EVOLINK_API_KEY.
     KIE_API_KEY: str = ""
+    # Pre-photoshoot garment analyzer model (KIE Gemini family) used to infer
+    # missing upper/lower garment details and footwear text from garment images.
+    KIE_GARMENT_ANALYZER_MODEL: str = "gemini-3-pro"
     GOOGLE_CLOUD_API_KEY: str = ""
     EVOLINK_API_KEY: str = ""
     # Generation tuning (aspect/resolution for KIE nano-banana-2 & Vertex models)
@@ -161,6 +164,22 @@ class Settings(BaseSettings):
     KIE_RATE_LIMIT_MAX_WAIT_S:  float = 60.0
     # Extra cool-down applied when a KIE HTTP 429 is actually observed.
     KIE_RATE_LIMIT_429_SLEEP_S: float = 5.0
+
+    # Feature-generation fallback chain (custom pose/face/background/fabric/color):
+    # nano-banana-2 (3x) -> gpt-image-2 (3x), fixed 3:4 and 1K.
+    KIE_PRIMARY_IMAGE_MODEL: str = "nano-banana-2"
+    KIE_FALLBACK_IMAGE_MODEL: str = "gpt-image-2"
+    KIE_FEATURE_MODEL_RETRIES: int = 3
+    KIE_FEATURE_ASPECT_RATIO: str = "3:4"
+    KIE_FEATURE_RESOLUTION: str = "1K"
+
+    # Razorpay (USD; ensure your Razorpay account supports international / USD)
+    RAZORPAY_KEY_ID: str = ""
+    RAZORPAY_KEY_SECRET: str = ""
+    RAZORPAY_WEBHOOK_SECRET: str = ""
+    RAZORPAY_CURRENCY: str = "USD"
+    FX_RATE_API_URL: str = "https://api.exchangerate.host/convert"
+    FX_RATE_TIMEOUT_S: int = 10
 
     # Redis / Celery queue
     REDIS_URL: str = "redis://localhost:6379/0"

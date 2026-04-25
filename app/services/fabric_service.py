@@ -15,13 +15,13 @@ Public functions:
 """
 
 import asyncio
-import json
 import logging
 
 import httpx
 from fastapi import HTTPException, status
 
 from app.config import settings
+from app.services.kie_image_fallback_service import generate_image_with_model_fallback
 
 logger = logging.getLogger("fabric_service")
 
@@ -195,98 +195,19 @@ def _require_kie_api_key() -> None:
         )
 
 
-async def _submit_nano_banana_garment_task(prompt: str, image_url: str, log_label: str) -> str:
-    """Submit a kie.ai nano-banana-pro image edit (same input shape as photoshoot realism pass)."""
+async def _edit_garment_via_kie(prompt: str, image_url: str, log_label: str) -> bytes:
     _require_kie_api_key()
-    model = settings.REALISM_MODEL
-    logger.info(
-        "[%s] Submitting kie.ai garment edit (%s, %d chars)...",
-        log_label, model, len(prompt),
-    )
-    payload = json.dumps({
-        "model": model,
-        "input": {
-            "prompt":       prompt,
-            "image_input":  [image_url],
-            "aspect_ratio": settings.REALISM_ASPECT,
-            "resolution":   settings.REALISM_QUALITY,
-        },
-    })
-    headers = {
-        "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
-        "Content-Type":  "application/json",
-    }
-    async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
-        resp = await client.post(_CREATE_URL, headers=headers, content=payload)
-        resp.raise_for_status()
-    task_id = resp.json().get("data", {}).get("taskId")
-    if not task_id:
+    try:
+        return await generate_image_with_model_fallback(
+            prompt,
+            image_urls=[image_url],
+            label=log_label,
+        )
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"No taskId returned from kie.ai ({log_label}): {resp.text}",
-        )
-    logger.info("[%s] kie.ai task submitted — task_id=%s", log_label, task_id)
-    return task_id
-
-
-async def _poll_kie_garment_task(task_id: str, log_label: str) -> str:
-    """Poll kie.ai until success and return first result URL."""
-    logger.info("[%s] Polling kie.ai task_id=%s ...", log_label, task_id)
-    headers = {"Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}"}
-    for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
-        try:
-            async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
-                resp = await client.get(f"{_STATUS_URL}?taskId={task_id}", headers=headers)
-                resp.raise_for_status()
-            data = resp.json().get("data", {})
-            state = data.get("state")
-            if state == "success":
-                urls = json.loads(data.get("resultJson", "{}")).get("resultUrls", [])
-                if urls:
-                    logger.info("[%s] kie.ai garment edit complete (attempt %d)", log_label, attempt)
-                    return urls[0]
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Garment edit succeeded but no resultUrls ({log_label}).",
-                )
-            if state == "fail":
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Garment edit task failed on kie.ai ({log_label}).",
-                )
-            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.warning("[%s] Poll #%d error: %s", log_label, attempt, exc)
-            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
-    raise HTTPException(
-        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-        detail=f"Garment edit timed out after {settings.SEEDDREAM_MAX_RETRIES} attempts ({log_label}).",
-    )
-
-
-async def _download_result_bytes(url: str, log_label: str) -> bytes:
-    for attempt in range(1, 4):
-        try:
-            async with httpx.AsyncClient(timeout=settings.KIE_HTTP_TIMEOUT) as client:
-                resp = await client.get(url, follow_redirects=True)
-                resp.raise_for_status()
-            logger.info("[%s] Downloaded result (%d bytes)", log_label, len(resp.content))
-            return resp.content
-        except Exception as exc:
-            if attempt == 3:
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Failed to download edited garment image ({log_label}): {exc}",
-                )
-            await asyncio.sleep(3)
-
-
-async def _edit_garment_via_kie(prompt: str, image_url: str, log_label: str) -> bytes:
-    task_id = await _submit_nano_banana_garment_task(prompt, image_url, log_label)
-    out_url = await _poll_kie_garment_task(task_id, log_label)
-    return await _download_result_bytes(out_url, log_label)
+            detail=f"Garment edit failed ({log_label}): {exc}",
+        ) from exc
 
 
 async def change_fabric(image_url: str, fabric: str) -> bytes:

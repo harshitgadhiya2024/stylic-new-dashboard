@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Razorpay Payment Test UI</title>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; max-width: 860px; }
+    h1 { margin-bottom: 8px; }
+    .muted { color: #666; font-size: 13px; margin-bottom: 16px; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+    .field { display: flex; flex-direction: column; min-width: 220px; flex: 1; }
+    label { font-size: 13px; margin-bottom: 4px; color: #333; }
+    input, select, button, textarea { padding: 8px; font-size: 14px; }
+    button { cursor: pointer; }
+    #logs { width: 100%; min-height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .ok { color: #0a7a32; }
+    .err { color: #a11; }
+  </style>
+</head>
+<body>
+  <h1>Razorpay Flow Test</h1>
+  <div class="muted">Creates order (USD input), opens checkout, then verifies payment via your API.</div>
+
+  <div class="card">
+    <div class="row">
+      <div class="field">
+        <label>API Base URL</label>
+        <input id="baseUrl" value="http://127.0.0.1:8000" />
+      </div>
+      <div class="field">
+        <label>Bearer Token (JWT)</label>
+        <input id="token" placeholder="Paste access token here" />
+      </div>
+    </div>
+    <div class="row">
+      <button id="btnConfig">Fetch /config</button>
+      <button id="btnCreate">Create Order</button>
+      <button id="btnCheckout">Open Razorpay Checkout</button>
+    </div>
+    <div id="status" class="muted"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div class="field">
+        <label>credit_type</label>
+        <select id="creditType">
+          <option value="plan">plan</option>
+          <option value="credit">credit</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>plan_type</label>
+        <select id="planType">
+          <option value="silver">silver</option>
+          <option value="gold">gold</option>
+          <option value="platinum">platinum</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>timeperiod</label>
+        <select id="timeperiod">
+          <option value="monthly">monthly</option>
+          <option value="yearly">yearly</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>credit (float)</label>
+        <input id="credit" type="number" step="0.01" value="20" />
+      </div>
+      <div class="field">
+        <label>amount in USD (float)</label>
+        <input id="amount" type="number" step="0.01" value="10" />
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <label>Logs / Responses</label>
+    <textarea id="logs" readonly></textarea>
+  </div>
+
+  <script>
+    let lastCreateOrder = null;
+    let publicKey = "";
+
+    const $ = (id) => document.getElementById(id);
+    const logs = $("logs");
+
+    function log(obj, isErr = false) {
+      const line = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+      logs.value += `[${new Date().toISOString()}] ${line}\n\n`;
+      logs.scrollTop = logs.scrollHeight;
+      $("status").innerHTML = isErr ? `<span class="err">${line}</span>` : `<span class="ok">${line}</span>`;
+    }
+
+    function getHeaders() {
+      const token = $("token").value.trim();
+      const headers = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      return headers;
+    }
+
+    function buildCreatePayload() {
+      const creditType = $("creditType").value;
+      const payload = {
+        credit_type: creditType,
+        credit: parseFloat($("credit").value),
+        amount: parseFloat($("amount").value), // always USD input on backend
+      };
+      if (creditType === "plan") {
+        payload.plan_type = $("planType").value;
+        payload.timeperiod = $("timeperiod").value;
+      }
+      return payload;
+    }
+
+    async function fetchConfig() {
+      const baseUrl = $("baseUrl").value.trim();
+      const res = await fetch(`${baseUrl}/api/v1/payments/razorpay/config`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Config failed (${res.status})`);
+      publicKey = data.key_id || "";
+      log({ config: data });
+      return data;
+    }
+
+    async function createOrder() {
+      const baseUrl = $("baseUrl").value.trim();
+      const payload = buildCreatePayload();
+      log({ create_order_request: payload });
+
+      const res = await fetch(`${baseUrl}/api/v1/payments/razorpay/create-order`, {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Create order failed (${res.status})`);
+      lastCreateOrder = data;
+      publicKey = data.key_id || publicKey;
+      log({ create_order_response: data });
+      return data;
+    }
+
+    async function verifyPayment({ stylic_payment_id, razorpay_order_id, razorpay_payment_id, razorpay_signature }) {
+      const baseUrl = $("baseUrl").value.trim();
+      const payload = { stylic_payment_id, razorpay_order_id, razorpay_payment_id, razorpay_signature };
+      log({ verify_request: payload });
+      const res = await fetch(`${baseUrl}/api/v1/payments/razorpay/verify`, {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Verify failed (${res.status})`);
+      log({ verify_response: data });
+      return data;
+    }
+
+    async function openCheckout() {
+      if (!lastCreateOrder) throw new Error("Create order first.");
+      const orderId = lastCreateOrder.razorpay_order_id;
+      const stylicPaymentId = lastCreateOrder.stylic_payment_id;
+      const key = lastCreateOrder.key_id || publicKey;
+      if (!key) throw new Error("Razorpay key_id missing. Check /config and env.");
+
+      const options = {
+        key,
+        order_id: orderId,
+        name: "Stylic AI Test",
+        description: "Payment Integration Test",
+        handler: async function (resp) {
+          try {
+            log({ razorpay_checkout_response: resp });
+            await verifyPayment({
+              stylic_payment_id: stylicPaymentId,
+              razorpay_order_id: resp.razorpay_order_id,
+              razorpay_payment_id: resp.razorpay_payment_id,
+              razorpay_signature: resp.razorpay_signature,
+            });
+          } catch (e) {
+            log(String(e.message || e), true);
+          }
+        },
+        modal: {
+          ondismiss: function () {
+            log("Checkout dismissed by user.", true);
+          }
+        }
+      };
+      const rzp = new Razorpay(options);
+      rzp.on("payment.failed", function (resp) {
+        log({ payment_failed: resp.error }, true);
+      });
+      rzp.open();
+    }
+
+    $("creditType").addEventListener("change", () => {
+      const isPlan = $("creditType").value === "plan";
+      $("planType").disabled = !isPlan;
+      $("timeperiod").disabled = !isPlan;
+    });
+
+    $("btnConfig").addEventListener("click", async () => {
+      try { await fetchConfig(); } catch (e) { log(String(e.message || e), true); }
+    });
+    $("btnCreate").addEventListener("click", async () => {
+      try { await createOrder(); } catch (e) { log(String(e.message || e), true); }
+    });
+    $("btnCheckout").addEventListener("click", async () => {
+      try { await openCheckout(); } catch (e) { log(String(e.message || e), true); }
+    });
+  </script>
+</body>
+</html>

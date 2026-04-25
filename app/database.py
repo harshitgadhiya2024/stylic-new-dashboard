@@ -52,6 +52,10 @@ def get_credit_history_collection() -> AsyncIOMotorCollection:
     return get_database()["credit_history"]
 
 
+def get_payment_history_collection() -> AsyncIOMotorCollection:
+    return get_database()["payment_history"]
+
+
 def get_backgrounds_collection() -> AsyncIOMotorCollection:
     return get_database()["backgrounds"]
 
@@ -100,6 +104,13 @@ async def create_indexes() -> None:
     await credit_history.create_index("history_id", unique=True)
     await credit_history.create_index("user_id")
     await credit_history.create_index("created_at")
+
+    payment_history = db["payment_history"]
+    await payment_history.create_index("payment_history_id", unique=True)
+    await payment_history.create_index("user_id")
+    await payment_history.create_index("razorpay_order_id")
+    await payment_history.create_index("status")
+    await payment_history.create_index("created_at")
 
     backgrounds = db["backgrounds"]
     await backgrounds.create_index("background_id", unique=True)

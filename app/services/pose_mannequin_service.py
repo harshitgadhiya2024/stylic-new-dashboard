@@ -25,6 +25,7 @@ from google.genai import types as gtypes
 from PIL import Image
 
 from app.config import settings
+from app.services.kie_image_fallback_service import generate_image_with_model_fallback
 from app.services.r2_service import upload_bytes_to_r2
 
 logger = logging.getLogger("pose_mannequin")
@@ -208,123 +209,23 @@ def _compose_text_mannequin_seeddream_prompt(pose_prompt: str, pose_type: str) -
     return text
 
 
-async def _submit_kie_task(model: str, input_payload: dict) -> str:
-    body = json.dumps({"model": model, "input": input_payload})
-    headers = {
-        "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(_CREATE_URL, headers=headers, content=body)
-        resp.raise_for_status()
-    task_id = resp.json().get("data", {}).get("taskId")
-    if not task_id:
-        raise RuntimeError("Mannequin generation could not be started (no task id).")
-    return task_id
-
-
-async def _poll_kie_task(task_id: str) -> str:
-    headers = {"Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}"}
-    for _ in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(
-                    f"{_STATUS_URL}?taskId={task_id}",
-                    headers=headers,
-                )
-                resp.raise_for_status()
-            data = resp.json().get("data", {})
-            state = data.get("state")
-            if state == "success":
-                result_urls = json.loads(data.get("resultJson", "{}")).get("resultUrls", [])
-                if result_urls:
-                    return result_urls[0]
-                raise RuntimeError("Mannequin generation finished but no image URL was returned.")
-            if state == "fail":
-                raise RuntimeError("Mannequin image generation failed.")
-            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            logger.warning("[mannequin] poll error: %s", exc)
-            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
-    raise RuntimeError("Mannequin image generation timed out.")
-
-
-async def _download_result_image(result_url: str) -> bytes:
-    last: Exception | None = None
-    for attempt in range(1, 4):
-        try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.get(result_url)
-                resp.raise_for_status()
-            return resp.content
-        except Exception as exc:
-            last = exc
-            if attempt < 3:
-                await asyncio.sleep(3)
-    raise RuntimeError(f"Failed to download mannequin image: {last}")
-
-
-async def _run_seedream_mannequin_once(
-    model: str,
-    input_payload: dict,
-) -> bytes:
-    _ensure_seedream_configured()
-    inp = {**input_payload, "nsfw_checker": False}
-    task_id = await _submit_kie_task(model, inp)
-    result_url = await _poll_kie_task(task_id)
-    return await _download_result_image(result_url)
-
-
 async def _seedream_mannequin_from_image_url_with_retries(image_url: str) -> bytes:
-    payload = {
-        "prompt": MANNEQUIN_PROMPT,
-        "image_urls": [image_url],
-        "aspect_ratio": settings.POSE_MANNEQUIN_SEEDREAM_ASPECT,
-        "quality": settings.POSE_MANNEQUIN_SEEDREAM_QUALITY,
-    }
-    model = settings.POSE_MANNEQUIN_SEEDREAM_IMG2IMG_MODEL
-    last: Exception | None = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            return await _run_seedream_mannequin_once(model, payload)
-        except Exception as exc:
-            last = exc
-            logger.warning(
-                "[mannequin img2img] attempt %s/%s failed: %s",
-                attempt,
-                MAX_RETRIES,
-                exc,
-            )
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(RETRY_DELAY)
-    raise last  # type: ignore[misc]
+    _ensure_seedream_configured()
+    return await generate_image_with_model_fallback(
+        MANNEQUIN_PROMPT,
+        image_urls=[image_url],
+        label="pose_mannequin_img2img",
+    )
 
 
 async def _seedream_mannequin_from_text_with_retries(pose_prompt: str, pose_type: str) -> bytes:
     text = _compose_text_mannequin_seeddream_prompt(pose_prompt, pose_type)
-    payload = {
-        "prompt": text,
-        "aspect_ratio": settings.POSE_MANNEQUIN_SEEDREAM_ASPECT,
-        "quality": settings.POSE_MANNEQUIN_SEEDREAM_QUALITY,
-    }
-    model = settings.POSE_MANNEQUIN_SEEDREAM_TEXT_MODEL
-    last: Exception | None = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            return await _run_seedream_mannequin_once(model, payload)
-        except Exception as exc:
-            last = exc
-            logger.warning(
-                "[mannequin text2img] attempt %s/%s failed: %s",
-                attempt,
-                MAX_RETRIES,
-                exc,
-            )
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(RETRY_DELAY)
-    raise last  # type: ignore[misc]
+    _ensure_seedream_configured()
+    return await generate_image_with_model_fallback(
+        text,
+        image_urls=None,
+        label="pose_mannequin_text2img",
+    )
 
 
 async def upload_mannequin_png(png_bytes: bytes) -> str:

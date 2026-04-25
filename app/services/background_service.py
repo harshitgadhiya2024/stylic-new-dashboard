@@ -16,8 +16,10 @@ from typing import AsyncGenerator, Tuple, Optional
 
 import httpx
 from fastapi import HTTPException, status
+from PIL import Image
 
 from app.config import settings
+from app.services.kie_image_fallback_service import generate_image_with_model_fallback
 from app.services.r2_service import upload_bytes_to_r2
 
 
@@ -112,16 +114,6 @@ async def _generate_background_image_with_gemini(
     Call Gemini to generate a 9:16 background image from a text description.
     Returns raw PNG bytes.
     """
-    try:
-        from google import genai
-        from google.genai import types as gtypes
-        from PIL import Image
-    except ImportError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Missing dependency: {exc}. Run: pip install google-genai Pillow",
-        )
-
     readable_name = background_name.replace("_", " ").strip()
 
     prompt = (
@@ -137,44 +129,21 @@ async def _generate_background_image_with_gemini(
         f"Do not add any text, watermarks, or overlays on the image."
     )
 
-    loop = asyncio.get_event_loop()
-
-    def _call_gemini():
-        g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        contents = [
-            gtypes.Content(
-                role="user",
-                parts=[gtypes.Part.from_text(text=prompt)],
-            )
-        ]
-        cfg = gtypes.GenerateContentConfig(
-            response_modalities=["IMAGE", "TEXT"],
-            image_config=gtypes.ImageConfig(aspect_ratio="9:16"),
-        )
-        return g_client.models.generate_content(
-            model=settings.GEMINI_MODEL,
-            contents=contents,
-            config=cfg,
-        )
-
     try:
-        response = await loop.run_in_executor(None, _call_gemini)
-        for part in response.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.data:
-                img = Image.open(io.BytesIO(part.inline_data.data))
-                buf = io.BytesIO()
-                img.convert("RGB").save(buf, format="PNG")
-                return buf.getvalue()
+        raw = await generate_image_with_model_fallback(
+            prompt,
+            image_urls=None,
+            label=f"custom_background:{readable_name or 'unnamed'}",
+        )
+        img = Image.open(io.BytesIO(raw))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="PNG")
+        return buf.getvalue()
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gemini background generation failed: {exc}",
+            detail=f"Background generation failed: {exc}",
         )
-
-    raise HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        detail="Gemini returned no image data for background generation.",
-    )
 
 
 async def generate_background_with_ai_stream(

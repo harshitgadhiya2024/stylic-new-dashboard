@@ -117,6 +117,7 @@ class PoseRuntime:
     index: int                          # 1-based within the photoshoot
     pose_prompt: str
     mannequin_url: str
+    pose_type: str = ""
     # Stage-1 output
     generated_url: Optional[str] = None
     generated_bytes: Optional[bytes] = None
@@ -135,6 +136,9 @@ class PoseRuntime:
 
     @property
     def is_back(self) -> bool:
+        pt = (self.pose_type or "").strip().lower()
+        if pt in {"front", "back", "side"}:
+            return pt == "back"
         return "back" in (self.pose_prompt or "").lower()
 
     @property
@@ -218,12 +222,14 @@ async def _fetch_pose_data(pose_ids: List[str], poses_col=None) -> List[dict]:
             results.append({
                 "image_url":   doc.get("image_url") or "",
                 "pose_prompt": doc.get("pose_prompt") or "",
+                "pose_type":   (doc.get("pose_type") or "").strip().lower(),
             })
         else:
             logger.warning("[poses] No doc for pose_id=%s — text fallback only", pid)
             results.append({
                 "image_url":   "",
                 "pose_prompt": f"Standing in a natural, relaxed fashion model pose — pose id: {pid}",
+                "pose_type":   "",
             })
     logger.info("[poses] Resolved %d pose doc(s)", len(results))
     return results
@@ -234,7 +240,11 @@ async def resolve_poses(req: dict, poses_col=None) -> List[dict]:
     pose_data = req.get("pose_data")
     if pose_data and isinstance(pose_data, list):
         result = [
-            {"image_url": pd.get("image_url") or "", "pose_prompt": pd.get("pose_prompt") or ""}
+            {
+                "image_url": pd.get("image_url") or "",
+                "pose_prompt": pd.get("pose_prompt") or "",
+                "pose_type": (pd.get("pose_type") or "").strip().lower(),
+            }
             for pd in pose_data
         ]
         logger.info("[poses] Using %d pre-resolved pose_data entries (regeneration)", len(result))
@@ -249,6 +259,187 @@ async def resolve_poses(req: dict, poses_col=None) -> List[dict]:
             i, bool(pd.get("image_url")), len(pd.get("pose_prompt", "")),
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Garment + footwear enrichment (single photoshoot pre-processing via KIE Gemini)
+# ---------------------------------------------------------------------------
+
+def _clean_text(v: Any) -> str:
+    return str(v or "").strip()
+
+
+def _first_non_empty(*values: Any) -> str:
+    for v in values:
+        s = _clean_text(v)
+        if s:
+            return s
+    return ""
+
+
+def _kie_any_api_key() -> str:
+    key = (os.environ.get("KIE_API_KEY") or getattr(settings, "KIE_API_KEY", "") or "").strip()
+    if not key:
+        key = (getattr(settings, "SEEDDREAM_API_KEY", "") or "").strip()
+    return key
+
+
+def _extract_text_from_kie_payload(payload: dict) -> str:
+    data = payload.get("data") or {}
+    raw = data.get("resultJson")
+    parsed: Any = {}
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = {"text": raw}
+    elif isinstance(raw, dict):
+        parsed = raw
+    for key in ("output_text", "text", "content", "result", "answer"):
+        v = parsed.get(key) if isinstance(parsed, dict) else None
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    if isinstance(parsed, dict):
+        cands = parsed.get("candidates") or []
+        if isinstance(cands, list):
+            for c in cands:
+                if isinstance(c, dict):
+                    if isinstance(c.get("content"), str) and c["content"].strip():
+                        return c["content"].strip()
+                    parts = c.get("parts") or []
+                    if isinstance(parts, list):
+                        for p in parts:
+                            if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"].strip():
+                                return p["text"].strip()
+    return ""
+
+
+def _extract_json_block(text: str) -> dict:
+    s = (text or "").strip()
+    if not s:
+        return {}
+    if s.startswith("```"):
+        s = s.strip("`")
+        if "\n" in s:
+            s = s.split("\n", 1)[1]
+    start = s.find("{")
+    end = s.rfind("}")
+    if start >= 0 and end > start:
+        s = s[start : end + 1]
+    try:
+        obj = json.loads(s)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _infer_garment_and_footwear(req: dict) -> dict:
+    """
+    Use KIE Gemini model on garment image(s) to infer garment + footwear JSON.
+    User-provided fields always win; this function only returns best-effort inference.
+    """
+    key = _kie_any_api_key()
+    front = _clean_text(req.get("front_garment_image"))
+    back = _clean_text(req.get("back_garment_image"))
+    if not key or (not front and not back):
+        return {}
+
+    model = (getattr(settings, "KIE_GARMENT_ANALYZER_MODEL", "") or "gemini-3-pro").strip()
+    prompt = (
+        "Analyze the provided garment image(s) and return STRICT JSON only with keys: "
+        "upper_garment_type, upper_garment_specification, lower_garment_type, lower_garment_specification, "
+        "footwear_type, footwear_specification. "
+        "Rules: "
+        "1) If image has only upper garment, infer lower garment details matching style. "
+        "2) If image has only lower garment, infer upper garment details matching style. "
+        "3) If image has both upper+lower garment, do not invent replacements; describe what is present. "
+        "4) Infer footwear type/specification from outfit style (color/pattern/type), concise but useful. "
+        "5) Output only valid JSON object, no markdown."
+    )
+    image_input = [u for u in (front, back) if u]
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    create_body = {
+        "model": model,
+        "input": {
+            "prompt": prompt,
+            "image_input": image_input,
+        },
+    }
+    timeout = int(getattr(settings, "KIE_HTTP_TIMEOUT", 300) or 300)
+    poll_interval = float(getattr(settings, "PHOTOSHOOT_KIE_POLL_INTERVAL_S", 2.0) or 2.0)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.post(_KIE_CREATE_URL, headers=headers, json=create_body)
+        r.raise_for_status()
+        created = r.json() or {}
+        if created.get("code") != 200:
+            raise RuntimeError(f"garment inference createTask failed: {created}")
+        task_id = (created.get("data") or {}).get("taskId")
+        if not task_id:
+            raise RuntimeError(f"garment inference task id missing: {created}")
+
+        deadline = time.monotonic() + 120.0
+        while time.monotonic() < deadline:
+            q = await client.get(_KIE_RECORD_URL, headers={"Authorization": headers["Authorization"]}, params={"taskId": task_id})
+            q.raise_for_status()
+            body = q.json() or {}
+            if body.get("code") != 200:
+                raise RuntimeError(f"garment inference recordInfo error: {body}")
+            data = body.get("data") or {}
+            state = (data.get("state") or "").lower()
+            if state == "success":
+                txt = _extract_text_from_kie_payload(body)
+                inferred = _extract_json_block(txt)
+                return inferred if isinstance(inferred, dict) else {}
+            if state in {"fail", "failed", "error"}:
+                return {}
+            await asyncio.sleep(poll_interval)
+    return {}
+
+
+async def enrich_request_with_ai_garment_data(req: dict) -> dict:
+    """
+    Fill missing garment/footwear fields from AI inference.
+    User request fields always take precedence.
+    """
+    if _clean_text(req.get("regeneration_type")):
+        # Keep regeneration flow deterministic; only single fresh photoshoot enriches.
+        return req
+    try:
+        inferred = await _infer_garment_and_footwear(req)
+    except Exception as exc:
+        logger.warning("[garment-enrich] inference skipped: %s", exc)
+        return req
+
+    if not inferred:
+        return req
+
+    merged = dict(req)
+    # user input wins
+    merged["upper_garment_type"] = _first_non_empty(req.get("upper_garment_type"), inferred.get("upper_garment_type"))
+    merged["upper_garment_specification"] = _first_non_empty(
+        req.get("upper_garment_specification"),
+        inferred.get("upper_garment_specification"),
+        inferred.get("upper_garment_specifications"),
+    )
+    merged["lower_garment_type"] = _first_non_empty(req.get("lower_garment_type"), inferred.get("lower_garment_type"))
+    merged["lower_garment_specification"] = _first_non_empty(
+        req.get("lower_garment_specification"),
+        inferred.get("lower_garment_specification"),
+    )
+    merged["footwear_type"] = _first_non_empty(req.get("footwear_type"), inferred.get("footwear_type"))
+    merged["footwear_specification"] = _first_non_empty(
+        req.get("footwear_specification"),
+        inferred.get("footwear_specification"),
+        inferred.get("footwear specification"),
+    )
+    logger.info(
+        "[garment-enrich] merged fields upper=%s lower=%s footwear=%s",
+        bool(_clean_text(merged.get("upper_garment_type"))),
+        bool(_clean_text(merged.get("lower_garment_type"))),
+        bool(_clean_text(merged.get("footwear_type"))),
+    )
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -426,8 +617,21 @@ def _core_prompt(pose: PoseRuntime, req: dict) -> str:
     garment_ref_note = (
         "Use the BACK garment reference image for the garment (this is a back pose)."
         if pose.is_back and req.get("back_garment_image")
-        else "Use the FRONT garment reference image for the garment."
+        else (
+            "Use the FRONT garment reference image for the garment (back image not provided)."
+            if pose.is_back
+            else "Use the FRONT garment reference image for the garment."
+        )
     )
+    footwear_type = _clean_text(req.get("footwear_type"))
+    footwear_spec = _clean_text(req.get("footwear_specification"))
+    footwear_hint = ""
+    if footwear_type or footwear_spec:
+        footwear_hint = (
+            f"For full-body poses, footwear is mandatory and must be: type='{footwear_type or 'matching shoes'}'"
+            f"{f', specification={footwear_spec!r}' if footwear_spec else ''}. "
+            "Ensure realistic material/color/pattern match and proper contact shadows."
+        )
 
     return f"""
 You are generating a hyper-realistic studio fashion photograph shot on a full-frame DSLR
@@ -476,6 +680,7 @@ with an 85mm prime lens at f/2.0. Output a single photorealistic image.
   the worn garment style, color harmony, and context (e.g., ethnic outfit -> matching
   sandals/jutti; western casual -> coordinated shoes/heels/sneakers). Footwear must be realistic,
   proportionate, and naturally integrated with pose, lighting, contact shadows, and perspective.
+  {footwear_hint}
 
 [PRIORITY 3 — POSE / BODY POSTURE]
 - Copy the body posture from the MANNEQUIN POSE reference EXACTLY:
@@ -560,15 +765,19 @@ def _ordered_refs(
     refs: List[tuple[str, str]] = []
     if model_face_url:
         refs.append(("MODEL FACE (identity lock)", model_face_url))
-    if pose.is_back and back:
-        refs.append(("GARMENT — BACK view (use this)", back))
-        if front:
-            refs.append(("GARMENT — FRONT view (context only)", front))
+    # Garment ref selection rule from product:
+    # - pose_type front/side -> only FRONT ref (never include back ref)
+    # - pose_type back       -> BACK ref if uploaded, else FRONT ref
+    if pose.is_back:
+        if back:
+            refs.append(("GARMENT — BACK view (use this)", back))
+        elif front:
+            refs.append(("GARMENT — FRONT view (fallback: back missing)", front))
     else:
         if front:
             refs.append(("GARMENT — FRONT view (use this)", front))
-        if back:
-            refs.append(("GARMENT — BACK view (context only)", back))
+        elif back:
+            refs.append(("GARMENT — BACK view (fallback: front missing)", back))
     if pose.mannequin_url:
         refs.append(("MANNEQUIN POSE — body posture only", pose.mannequin_url))
     if background_url:
@@ -677,9 +886,14 @@ def _evolink_compact_prompt(
     if pose.is_upper_body:
         footwear_rule = "Framing: upper-body only; NO footwear, feet out of frame."
     else:
+        ft = _clean_text(req.get("footwear_type"))
+        fs = _clean_text(req.get("footwear_specification"))
+        custom = ""
+        if ft or fs:
+            custom = f" Use footwear type '{ft or 'matching shoes'}'" + (f" with specification '{fs}'." if fs else ".")
         footwear_rule = (
             "Framing: full-body; footwear MANDATORY (realistic shoes matching "
-            "outfit, both feet visible with contact shadow, no bare feet)."
+            "outfit, both feet visible with contact shadow, no bare feet)." + custom
         )
 
     prompt = (
@@ -1011,23 +1225,27 @@ def _vertex_generate_sync(
         face_bytes, face_mime = _load_image_bytes_sync(mf)
         parts.append(genai_types.Part.from_bytes(data=face_bytes, mime_type=face_mime))
 
-    if pose.is_back and back:
-        d, m = _load_image_bytes_sync(back)
-        parts.append(genai_types.Part.from_text(text="[REF 2/4] GARMENT — BACK view (use this):"))
-        parts.append(genai_types.Part.from_bytes(data=d, mime_type=m))
-        if front:
-            d2, m2 = _load_image_bytes_sync(front)
-            parts.append(genai_types.Part.from_text(text="[REF 2b] GARMENT — FRONT view (context only):"))
-            parts.append(genai_types.Part.from_bytes(data=d2, mime_type=m2))
+    # Garment ref selection rule from product:
+    # - pose_type front/side -> only FRONT ref (never include back ref)
+    # - pose_type back       -> BACK ref if uploaded, else FRONT ref
+    if pose.is_back:
+        if back:
+            d, m = _load_image_bytes_sync(back)
+            parts.append(genai_types.Part.from_text(text="[REF 2/4] GARMENT — BACK view (use this):"))
+            parts.append(genai_types.Part.from_bytes(data=d, mime_type=m))
+        elif front:
+            d, m = _load_image_bytes_sync(front)
+            parts.append(genai_types.Part.from_text(text="[REF 2/4] GARMENT — FRONT view (fallback: back missing):"))
+            parts.append(genai_types.Part.from_bytes(data=d, mime_type=m))
     else:
         if front:
             d, m = _load_image_bytes_sync(front)
             parts.append(genai_types.Part.from_text(text="[REF 2/4] GARMENT — FRONT view (use this):"))
             parts.append(genai_types.Part.from_bytes(data=d, mime_type=m))
-        if back:
-            d2, m2 = _load_image_bytes_sync(back)
-            parts.append(genai_types.Part.from_text(text="[REF 2b] GARMENT — BACK view (context only):"))
-            parts.append(genai_types.Part.from_bytes(data=d2, mime_type=m2))
+        elif back:
+            d, m = _load_image_bytes_sync(back)
+            parts.append(genai_types.Part.from_text(text="[REF 2/4] GARMENT — BACK view (fallback: front missing):"))
+            parts.append(genai_types.Part.from_bytes(data=d, mime_type=m))
 
     if pose.mannequin_url:
         d3, m3 = _load_image_bytes_sync(pose.mannequin_url)
@@ -1520,6 +1738,9 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
     job_start = time.time()
 
     try:
+        # Step 0 — optional AI garment/footwear enrichment (single photoshoot only).
+        req = await enrich_request_with_ai_garment_data(req)
+
         # Step 1 — resolve pose data
         pose_data_list = await resolve_poses(req, poses_col=poses_col)
         if not pose_data_list:
@@ -1542,6 +1763,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
                 index=i,
                 pose_prompt=(pd.get("pose_prompt") or "").strip(),
                 mannequin_url=(pd.get("image_url") or "").strip(),
+                pose_type=(pd.get("pose_type") or "").strip().lower(),
             )
             for i, pd in enumerate(pose_data_list, 1)
         ]

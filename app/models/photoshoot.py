@@ -141,6 +141,8 @@ class CreatePhotoshootRequest(BaseModel):
     upper_garment_specification:  Optional[str]  = ""
     lower_garment_type:           Optional[str]  = ""
     lower_garment_specification:  Optional[str]  = ""
+    footwear_type:                Optional[str]  = ""
+    footwear_specification:       Optional[str]  = ""
     one_piece_garment_type:       Optional[str]  = ""
     one_piece_garment_specification: Optional[str] = ""
     fitting:                      Optional[str]  = "regular fit"
@@ -186,6 +188,8 @@ class PhotoshootBatchFieldMixin(BaseModel):
     upper_garment_specification: Optional[str] = None
     lower_garment_type: Optional[str] = None
     lower_garment_specification: Optional[str] = None
+    footwear_type: Optional[str] = None
+    footwear_specification: Optional[str] = None
     one_piece_garment_type: Optional[str] = None
     one_piece_garment_specification: Optional[str] = None
     fitting: Optional[str] = None
@@ -221,6 +225,8 @@ class PhotoshootBatchListItem(BaseModel):
     upper_garment_specification: Optional[str] = None
     lower_garment_type: Optional[str] = None
     lower_garment_specification: Optional[str] = None
+    footwear_type: Optional[str] = None
+    footwear_specification: Optional[str] = None
     one_piece_garment_type: Optional[str] = None
     one_piece_garment_specification: Optional[str] = None
     fitting: Optional[str] = None

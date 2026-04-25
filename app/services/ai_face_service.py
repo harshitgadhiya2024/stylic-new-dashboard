@@ -7,7 +7,6 @@ scripts/generate_model_faces.py (passport-style headshot instructions).
 
 import asyncio
 import io
-import json
 import re
 import uuid
 from typing import Any, AsyncGenerator, Optional as Opt, Tuple
@@ -17,6 +16,7 @@ from fastapi import HTTPException, status
 from PIL import Image
 
 from app.config import settings
+from app.services.kie_image_fallback_service import generate_image_with_model_fallback
 from app.services.r2_service import upload_bytes_to_r2
 
 _CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
@@ -124,96 +124,6 @@ CLOTHING: Wearing a plain black crew-neck t-shirt. The t-shirt should be clean, 
 REALISM: This must look like a real photograph taken with a professional camera. Natural skin texture with pores and subtle imperfections, realistic hair strands, proper light interaction with skin and fabric. No artificial smoothing, no CGI look, no illustration style. Photorealistic quality similar to a real ID photo or modeling headshot."""
 
 
-async def _submit_model_face_kie_task(prompt: str) -> str:
-    if not settings.SEEDDREAM_API_KEY.strip():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Portrait generation is not configured.",
-        )
-    payload = json.dumps({
-        "model": settings.MODEL_FACE_GENERATE_MODEL,
-        "input": {
-            "prompt":         prompt,
-            "image_input":    [],
-            "aspect_ratio":   settings.MODEL_FACE_GENERATE_ASPECT,
-            "resolution":     settings.MODEL_FACE_GENERATE_RESOLUTION,
-            "output_format":  "png",
-        },
-    })
-    headers = {
-        "Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}",
-        "Content-Type":  "application/json",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(_CREATE_URL, headers=headers, content=payload)
-            resp.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Portrait generation request failed. Please try again later.",
-        ) from exc
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Portrait generation request failed. Please try again later.",
-        ) from exc
-
-    task_id = resp.json().get("data", {}).get("taskId")
-    if not task_id:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Portrait generation could not be started. Please try again later.",
-        )
-    return task_id
-
-
-async def _poll_model_face_kie_task(task_id: str) -> str:
-    headers = {"Authorization": f"Bearer {settings.SEEDDREAM_API_KEY}"}
-    for attempt in range(1, settings.SEEDDREAM_MAX_RETRIES + 1):
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(f"{_STATUS_URL}?taskId={task_id}", headers=headers)
-                resp.raise_for_status()
-            data  = resp.json().get("data", {})
-            state = data.get("state")
-            if state == "success":
-                urls = json.loads(data.get("resultJson", "{}")).get("resultUrls", [])
-                if urls:
-                    return urls[0]
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Portrait generation finished but no image URL was returned.",
-                )
-            if state == "fail":
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Portrait generation failed.",
-                )
-            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
-        except HTTPException:
-            raise
-        except Exception:
-            await asyncio.sleep(settings.SEEDDREAM_RETRY_DELAY)
-    raise HTTPException(
-        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-        detail="Portrait generation timed out. Please try again later.",
-    )
-
-
-async def _download_result_image(url: str) -> bytes:
-    try:
-        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return resp.content
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to download generated image: {exc}",
-        ) from exc
-
-
 def _normalize_to_png_bytes(raw: bytes) -> bytes:
     try:
         img = Image.open(io.BytesIO(raw))
@@ -233,9 +143,17 @@ async def generate_face_image(config: dict) -> bytes:
             detail="Face configuration exceeds the maximum prompt length (10000 characters).",
         )
 
-    task_id = await _submit_model_face_kie_task(prompt)
-    image_url = await _poll_model_face_kie_task(task_id)
-    raw = await _download_result_image(image_url)
+    try:
+        raw = await generate_image_with_model_fallback(
+            prompt,
+            image_urls=None,
+            label="custom_face_generation",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Portrait generation failed: {exc}",
+        ) from exc
     return _normalize_to_png_bytes(raw)
 
 
