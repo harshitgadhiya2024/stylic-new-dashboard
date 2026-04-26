@@ -193,8 +193,14 @@ class Settings(BaseSettings):
     CONTACT_SALES_MAX_PER_EMAIL_PER_24H: int = 5
     # When true, use first IP in X-Forwarded-For (first hop) — enable behind reverse proxy / CDNs.
     CONTACT_SALES_TRUST_X_FORWARDED_FOR: bool = False
-    # Contact / transactional email: marketing site base (footer link + logo href). Inline SVG in code.
+    # Contact / transactional email (Gmail and others block inline SVG — use a public <img> URL for the logo)
     STYLIC_MARKETING_BASE_URL: str = "https://stylic.ai"
+    # Logotype shown in email header; use a PNG/WebP on your domain or CDN for best results
+    STYLIC_MARKETING_LOGO_URL: str = "https://stylic.ai/favicon.ico"
+    STYLIC_EMAIL_FOOTER_CONTACT: str = "contact@stylic.ai"
+    STYLIC_EMAIL_FOOTER_COMPANY: str = "Aavish AI Labs"
+    STYLIC_SOCIAL_INSTAGRAM_URL: str = "https://www.instagram.com/stylicai/"
+    STYLIC_SOCIAL_FACEBOOK_URL: str = "https://www.facebook.com/stylicai/"
 
     # Server
     HOST: str = "0.0.0.0"
