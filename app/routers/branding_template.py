@@ -55,6 +55,8 @@ async def create_branding_template(
         "serial_code_format":   body.serial_code_format,
         "logo_position":        body.logo_position,
         "serial_code_position": body.serial_code_position,
+        "font_size":            body.font_size,
+        "logo_size":            body.logo_size,
         "is_default":           False,
         "is_active":            True,
         "created_at":           now,
