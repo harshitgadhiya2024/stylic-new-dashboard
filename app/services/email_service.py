@@ -78,6 +78,15 @@ def _st_email_card_open() -> str:
     return f"""<div style="background: {g}; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; padding: 36px 32px; box-shadow: {sh};">"""
 
 
+def _st_email_social_icon_img_style() -> str:
+    """Black simple-icons SVGs → solid white on dark footer (opacity 1; -webkit- for Apple Mail)."""
+    fi = (settings.STYLIC_EMAIL_SOCIAL_ICON_FILTER or "brightness(0) invert(1)").strip()
+    return (
+        f"display: inline-block; border: 0; width: 24px; height: 24px; opacity: 1; "
+        f"filter: {fi}; -webkit-filter: {fi};"
+    )
+
+
 def _html_transactional_email_footer() -> str:
     """Shared footer for dark email bodies: product name, contact, company, social icons."""
     _raw_ct = (getattr(settings, "STYLIC_EMAIL_FOOTER_CONTACT", None) or "contact@stylic.ai").strip()
@@ -96,12 +105,12 @@ def _html_transactional_email_footer() -> str:
     mailto_href = html.escape(f"mailto:{_raw_ct}", quote=True)
     name = html.escape(str(settings.APP_NAME), quote=True)
 
-    t_muted, t_bright, t_link, icon_f = (
+    t_muted, t_bright, t_link = (
         "#9a9aa8",
         "#c8c8d0",
         "#a8b8ff",
-        "opacity: 0.9; filter: brightness(0) invert(1);",
     )
+    icon_img_style = _st_email_social_icon_img_style()
     border = (getattr(settings, "STYLIC_EMAIL_FOOTER_TOP_BORDER", None) or "1px solid rgba(255, 255, 255, 0.1)").strip()
     ig_svg = (getattr(settings, "STYLIC_EMAIL_SOCIAL_INSTAGRAM_SVG", None) or "").strip() or (
         "https://cdn.jsdelivr.net/npm/simple-icons@11.11.0/icons/instagram.svg"
@@ -123,10 +132,10 @@ def _html_transactional_email_footer() -> str:
     </td>
     <td align="right" valign="middle" style="width: 30%; max-width: 30%; white-space: nowrap; text-align: right; vertical-align: middle;">
       <a href="{ig}" target="_blank" rel="noopener noreferrer" style="text-decoration: none; display: inline-block; margin: 0; vertical-align: middle;">
-        <img src="{ig_src}" width="24" height="24" alt="Instagram" style="display: inline-block; border: 0; {icon_f}" />
+        <img src="{ig_src}" width="24" height="24" alt="Instagram" style="{icon_img_style}" />
       </a>
       <a href="{fb}" target="_blank" rel="noopener noreferrer" style="text-decoration: none; display: inline-block; margin: 0 0 0 10px; vertical-align: middle;">
-        <img src="{fb_src}" width="24" height="24" alt="Facebook" style="display: inline-block; border: 0; {icon_f}" />
+        <img src="{fb_src}" width="24" height="24" alt="Facebook" style="{icon_img_style}" />
       </a>
     </td>
   </tr>

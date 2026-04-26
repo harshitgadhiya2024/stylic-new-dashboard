@@ -224,6 +224,8 @@ class Settings(BaseSettings):
     STYLIC_EMAIL_SOCIAL_FACEBOOK_SVG: str = (
         "https://cdn.jsdelivr.net/npm/simple-icons@11.11.0/icons/facebook.svg"
     )
+    # CSS filter on footer social <img> so black SVGs render white on dark background
+    STYLIC_EMAIL_SOCIAL_ICON_FILTER: str = "brightness(0) invert(1)"
 
     # Server
     HOST: str = "0.0.0.0"
