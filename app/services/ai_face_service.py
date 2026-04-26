@@ -7,6 +7,7 @@ scripts/generate_model_faces.py (passport-style headshot instructions).
 
 import asyncio
 import io
+import json
 import re
 import uuid
 from typing import Any, AsyncGenerator, Optional as Opt, Tuple
