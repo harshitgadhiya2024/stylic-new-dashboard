@@ -93,6 +93,11 @@ async def send_otp_email(to_email: str, otp: str, purpose: str = "register") -> 
 
 def _build_contact_thank_you_html(safe_first_name: str) -> str:
     """`safe_first_name` must be HTML-escaped."""
+    base = (getattr(settings, "STYLIC_MARKETING_BASE_URL", "https://stylic.ai") or "https://stylic.ai").rstrip("/")
+    home_href = f"{base}/"
+    logo_url = (getattr(settings, "STYLIC_MARKETING_LOGO_URL", None) or f"{base}/favicon.ico").strip()
+    app_html = html.escape(str(settings.APP_NAME), quote=True)
+    logo_attr = html.escape(logo_url, quote=True)
     return f"""
 <!DOCTYPE html>
 <html>
@@ -102,8 +107,15 @@ def _build_contact_thank_you_html(safe_first_name: str) -> str:
   </head>
   <body style="margin:0; padding:0; background-color:#0f0f12; color:#e8e8ed; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
     <div style="max-width: 560px; margin: 0 auto; padding: 40px 20px 48px;">
-      <div style="text-align: center; margin-bottom: 28px;">
-        <div style="display: inline-block; width: 72px; height: 72px; border-radius: 20px; background: linear-gradient(135deg, #f7e6a0 0%, #f0b0c8 50%, #a8b8ff 100%); box-shadow: 0 12px 32px rgba(0,0,0,0.45);"></div>
+      <div style="text-align: center; margin-bottom: 24px;">
+        <a href="{html.escape(home_href, quote=True)}" style="text-decoration: none; display: inline-block;" target="_blank" rel="noopener noreferrer">
+          <img src="{logo_attr}" width="120" alt="{app_html}"
+               style="display: block; margin: 0 auto 12px; max-width: 160px; height: auto; border: 0; outline: none; border-radius: 12px;" />
+        </a>
+        <div style="margin: 0;">
+          <a href="{html.escape(home_href, quote=True)}" style="color: #a8b8ff; font-size: 15px; text-decoration: none; font-weight: 500;"
+             target="_blank" rel="noopener noreferrer">{html.escape(home_href, quote=True)}</a>
+        </div>
       </div>
       <div style="background: linear-gradient(180deg, #1a1a20 0%, #12121a 100%); border: 1px solid rgba(255,255,255,0.08);
                   border-radius: 16px; padding: 36px 32px; box-shadow: 0 24px 64px rgba(0,0,0,0.4);">
