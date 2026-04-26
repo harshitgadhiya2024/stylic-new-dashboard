@@ -5,6 +5,28 @@ from email.mime.text import MIMEText
 import httpx
 from fastapi import HTTPException, status
 from app.config import settings
+from app.services.email_stylic_logo_svg import STYLIC_LOGO_SVG
+
+
+def _marketing_home() -> tuple[str, str]:
+    """Returns (base_without_trailing_slash, home_href_with_slash)."""
+    base = (getattr(settings, "STYLIC_MARKETING_BASE_URL", "https://stylic.ai") or "https://stylic.ai").rstrip(
+        "/"
+    )
+    return base, f"{base}/"
+
+
+def _email_footer_with_base_url(style_light: bool = True) -> str:
+    """
+    Single-line footer with public base URL. ``style_light`` uses darker text on light backgrounds.
+    """
+    _base, home = _marketing_home()
+    base_label = html.escape(_base, quote=True)
+    href = html.escape(home, quote=True)
+    c = "#6b6b76" if style_light else "#5c5c66"
+    return f"""<p style="text-align:center; margin: 20px 0 0; font-size: 12px; line-height: 1.6; color: {c};">
+  <a href="{href}" style="color: {c}; text-decoration: underline;" target="_blank" rel="noopener noreferrer">{base_label}</a>
+</p>"""
 
 _PURPOSE_LABELS = {
     "register": "Email Verification",
@@ -15,17 +37,27 @@ _PURPOSE_LABELS = {
 
 
 def _build_otp_email_html(otp: str, label: str) -> str:
+    _b, home = _marketing_home()
+    a_home = html.escape(home, quote=True)
     return f"""
     <html>
-      <body style="font-family: Arial, sans-serif; background: #f9f9f9; padding: 30px;">
-        <div style="max-width: 480px; margin: auto; background: #fff; border-radius: 8px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
-          <h2 style="color: #222; margin-bottom: 4px;">{settings.APP_NAME}</h2>
-          <p style="color: #555; font-size: 15px;">Your OTP for <strong>{label.lower()}</strong>:</p>
-          <div style="font-size: 36px; font-weight: bold; letter-spacing: 12px; color: #111; text-align: center; margin: 24px 0;">{otp}</div>
+      <body style="font-family: 'Segoe UI', Tahoma, Arial, sans-serif; background: #f3f3f5; padding: 30px;">
+        <div style="max-width: 480px; margin: 0 auto;">
+          <div style="text-align: center; padding: 22px 20px; background: #0f0f12; border-radius: 8px 8px 0 0;">
+            <a href="{a_home}" style="text-decoration: none; display: inline-block;" target="_blank" rel="noopener noreferrer">
+              {STYLIC_LOGO_SVG}
+            </a>
+          </div>
+          <div style="background: #fff; border-radius: 0 0 8px 8px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+          <h2 style="color: #222; margin: 0 0 4px; font-size: 18px;">{html.escape(str(settings.APP_NAME), quote=True)}</h2>
+          <p style="color: #555; font-size: 15px; margin: 0 0 8px;">Your OTP for <strong>{html.escape(label.lower(), quote=True)}</strong>:</p>
+          <div style="font-size: 36px; font-weight: bold; letter-spacing: 12px; color: #111; text-align: center; margin: 24px 0;">{html.escape(otp, quote=True)}</div>
           <p style="color: #888; font-size: 13px;">
             This OTP is valid for <strong>{settings.OTP_EXPIRE_MINUTES} minutes</strong>.<br>
-            Do not share this with anyone. If you didn't request this, please ignore this email.
+            Do not share this with anyone. If you did not request this, please ignore this email.
           </p>
+          </div>
+          {_email_footer_with_base_url(style_light=True)}
         </div>
       </body>
     </html>
@@ -93,11 +125,8 @@ async def send_otp_email(to_email: str, otp: str, purpose: str = "register") -> 
 
 def _build_contact_thank_you_html(safe_first_name: str) -> str:
     """`safe_first_name` must be HTML-escaped."""
-    base = (getattr(settings, "STYLIC_MARKETING_BASE_URL", "https://stylic.ai") or "https://stylic.ai").rstrip("/")
-    home_href = f"{base}/"
-    logo_url = (getattr(settings, "STYLIC_MARKETING_LOGO_URL", None) or f"{base}/favicon.ico").strip()
-    app_html = html.escape(str(settings.APP_NAME), quote=True)
-    logo_attr = html.escape(logo_url, quote=True)
+    _base, home_href = _marketing_home()
+    a_home = html.escape(home_href, quote=True)
     return f"""
 <!DOCTYPE html>
 <html>
@@ -108,13 +137,12 @@ def _build_contact_thank_you_html(safe_first_name: str) -> str:
   <body style="margin:0; padding:0; background-color:#0f0f12; color:#e8e8ed; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
     <div style="max-width: 560px; margin: 0 auto; padding: 40px 20px 48px;">
       <div style="text-align: center; margin-bottom: 24px;">
-        <a href="{html.escape(home_href, quote=True)}" style="text-decoration: none; display: inline-block;" target="_blank" rel="noopener noreferrer">
-          <img src="{logo_attr}" width="120" alt="{app_html}"
-               style="display: block; margin: 0 auto 12px; max-width: 160px; height: auto; border: 0; outline: none; border-radius: 12px;" />
+        <a href="{a_home}" style="text-decoration: none; display: inline-block;" target="_blank" rel="noopener noreferrer">
+          {STYLIC_LOGO_SVG}
         </a>
-        <div style="margin: 0;">
-          <a href="{html.escape(home_href, quote=True)}" style="color: #a8b8ff; font-size: 15px; text-decoration: none; font-weight: 500;"
-             target="_blank" rel="noopener noreferrer">{html.escape(home_href, quote=True)}</a>
+        <div style="margin: 10px 0 0;">
+          <a href="{a_home}" style="color: #a8b8ff; font-size: 15px; text-decoration: none; font-weight: 500;"
+             target="_blank" rel="noopener noreferrer">{a_home}</a>
         </div>
       </div>
       <div style="background: linear-gradient(180deg, #1a1a20 0%, #12121a 100%); border: 1px solid rgba(255,255,255,0.08);
@@ -136,9 +164,8 @@ def _build_contact_thank_you_html(safe_first_name: str) -> str:
           you can safely ignore this email.
         </p>
       </div>
-      <p style="text-align:center; margin-top: 28px; font-size: 12px; color: #5c5c66;">
-        {html.escape(str(settings.APP_NAME))}
-      </p>
+      {_email_footer_with_base_url(style_light=False)}
+      <p style="text-align:center; margin: 8px 0 0; font-size: 11px; color: #4a4a52;">{html.escape(str(settings.APP_NAME), quote=True)}</p>
     </div>
   </body>
 </html>
@@ -153,7 +180,7 @@ async def send_contact_thank_you_email(to_email: str, first_name: str) -> None:
     if not to_email or not str(to_email).strip():
         raise RuntimeError("No recipient for contact thank-you email.")
     safe = html.escape(first_name or "there", quote=True)
-    subj = f"Thank you — {settings.APP_NAME} received your message"
+    subj = f"Thank you — {settings.APP_NAME} received your request."
     body = _build_contact_thank_you_html(safe)
     try:
         if settings.RESEND_API_KEY and settings.RESEND_FROM_EMAIL:

@@ -193,10 +193,8 @@ class Settings(BaseSettings):
     CONTACT_SALES_MAX_PER_EMAIL_PER_24H: int = 5
     # When true, use first IP in X-Forwarded-For (first hop) — enable behind reverse proxy / CDNs.
     CONTACT_SALES_TRUST_X_FORWARDED_FOR: bool = False
-    # Contact thank-you email: logo (absolute URL) and marketing home link
+    # Contact / transactional email: marketing site base (footer link + logo href). Inline SVG in code.
     STYLIC_MARKETING_BASE_URL: str = "https://stylic.ai"
-    # Must be a publicly loadable image URL (many clients block remote images; favicon is a safe default)
-    STYLIC_MARKETING_LOGO_URL: str = "https://stylic.ai/favicon.ico"
 
     # Server
     HOST: str = "0.0.0.0"
