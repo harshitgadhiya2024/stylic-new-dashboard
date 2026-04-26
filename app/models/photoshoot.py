@@ -141,8 +141,14 @@ class CreatePhotoshootRequest(BaseModel):
     upper_garment_specification:  Optional[str]  = ""
     lower_garment_type:           Optional[str]  = ""
     lower_garment_specification:  Optional[str]  = ""
-    footwear_type:                Optional[str]  = ""
-    footwear_specification:       Optional[str]  = ""
+    footwear_type:                Optional[str]  = Field(
+        default="",
+        description="Footwear to apply for full-body poses (e.g. heels, loafers, sneakers).",
+    )
+    footwear_specification:       Optional[str]  = Field(
+        default="",
+        description="Optional detail: color, material, heel height, or style for the footwear.",
+    )
     one_piece_garment_type:       Optional[str]  = ""
     one_piece_garment_specification: Optional[str] = ""
     fitting:                      Optional[str]  = "regular fit"
@@ -249,3 +255,111 @@ class CreateMultiplePhotoshootsRequest(BaseModel):
         min_length=1,
         description="Each entry is merged onto default_config and processed as one independent photoshoot.",
     )
+
+
+# ── Catalogue photoshoot: shared model params + a garments list (images and/or colorways) ──
+
+
+def _hex_color_to_normalized(v: object) -> str:
+    """Re-use same rules as ColorChangeRequest hex validation."""
+    if v is None or (isinstance(v, str) and not str(v).strip()):
+        raise ValueError("color hex is required")
+    s = str(v).strip()
+    if not s.startswith("#"):
+        s = "#" + s
+    body = s[1:]
+    if len(body) == 3:
+        body = "".join(c * 2 for c in body)
+        s = "#" + body
+        body = s[1:]
+    if len(body) != 6 or any(c not in "0123456789abcdefABCDEF" for c in body):
+        raise ValueError("color hex must be #RRGGBB (6 hex digits)")
+    return s.lower()
+
+
+class CatalogueGarmentItem(BaseModel):
+    """One catalogue row: either provide flat-lay image URLs, or a colorway (recolor the last image row)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    front_garment_image: Optional[str] = ""
+    back_garment_image:  Optional[str] = ""
+    upper_garment_color: Optional[str] = None
+    lower_garment_color: Optional[str] = None
+    footwear_type:          Optional[str] = None
+    footwear_specification: Optional[str] = None
+    sku_id:                 Optional[str]  = None
+
+    @field_validator("upper_garment_color", "lower_garment_color", mode="before")
+    @classmethod
+    def _hex_when_present(cls, v: object) -> Optional[str]:
+        if v is None or (isinstance(v, str) and not str(v).strip()):
+            return None
+        return _hex_color_to_normalized(v)
+
+
+class CataloguePhotoshootRequest(BaseModel):
+    """
+    Shared photoshoot fields (same as a single create) without garment images: those come from ``garments``.
+    Each list item is either a flat-lay with ``front_garment_image`` (and optional back), or a colorway that
+    recolors the **most recent** prior row that had a flat-lay image, using the same kie recoloring as
+    ``/change-color``, then runs the normal single-photoshoot pipeline.
+    """
+
+    garments: List[CatalogueGarmentItem] = Field(
+        ...,
+        min_length=1,
+        description="Ordered rows: image-based entries update the recolor source; color-only entries follow.",
+    )
+    ethnicity: str
+    gender: str
+    skin_tone: str
+    age: str
+    age_group: str
+    weight: Optional[str] = Field(
+        default="regular",
+        validation_alias=AliasChoices("weight", "body_weight"),
+    )
+    height: Optional[str] = Field(
+        default="regular",
+        validation_alias=AliasChoices("height", "body_height"),
+    )
+    upper_garment_type:           Optional[str] = ""
+    upper_garment_specification:  Optional[str] = ""
+    lower_garment_type:           Optional[str] = ""
+    lower_garment_specification:  Optional[str] = ""
+    footwear_type:                Optional[str] = Field(
+        default="",
+        description="Applies to every row unless a catalogue garment item overrides (see that model).",
+    )
+    footwear_specification:       Optional[str] = Field(
+        default="",
+        description="Applies to every row unless a catalogue garment item overrides.",
+    )
+    one_piece_garment_type:       Optional[str] = ""
+    one_piece_garment_specification: Optional[str] = ""
+    fitting:                      Optional[str]  = "regular fit"
+    background_id:                str
+    poses_ids:                    List[str] = Field(
+        ...,
+        min_length=1,
+        description="At least one pose_id; applied to every catalogue row.",
+    )
+    model_id:                     str
+    lighting_style:               str
+    ornaments:                    Optional[str]  = ""
+    sku_id:                       Optional[str]  = ""
+    regeneration_type:            Optional[str]  = ""
+    regenerate_photoshoot_id:     Optional[str]  = ""
+
+    @field_validator("poses_ids", mode="before")
+    @classmethod
+    def _normalize_pose_ids(cls, v):
+        if v is None:
+            raise ValueError("poses_ids is required")
+        if not isinstance(v, list):
+            raise ValueError("poses_ids must be a list of strings")
+        out = [str(x).strip() for x in v if x is not None and str(x).strip()]
+        if not out:
+            raise ValueError("poses_ids must contain at least one non-empty pose_id")
+        return out

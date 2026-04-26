@@ -192,6 +192,75 @@ class PipelineContext:
     successful_image_ids: List[str] = field(default_factory=list)
     # Stage-1 tracking (only used for logging / final summary)
     stage1_failed: List[PoseRuntime] = field(default_factory=list)
+    # DB refs for usage $inc on successful run (``finalize`` — background / model / poses)
+    backgrounds_col: Any = None
+    model_faces_col: Any = None
+    poses_col: Any = None
+    pose_ids: List[str] = field(default_factory=list)
+
+
+def _pose_ids_for_usage_from_req(req: dict) -> List[str]:
+    """Resolve pose id list for DB usage counters: ``poses_ids`` or ``pose_id`` in each ``pose_data`` item."""
+    raw = list(req.get("poses_ids") or [])
+    if raw:
+        return [str(x).strip() for x in raw if x is not None and str(x).strip()]
+    pds = req.get("pose_data")
+    if isinstance(pds, list):
+        out: List[str] = []
+        for x in pds:
+            if not isinstance(x, dict):
+                continue
+            pid = x.get("pose_id")
+            if pid is not None and str(pid).strip():
+                out.append(str(pid).strip())
+        return out
+    return []
+
+
+async def increment_photoshoot_success_usage(
+    photoshoot_id: str,
+    req: dict,
+    pose_ids: List[str],
+    backgrounds_col: Any,
+    model_faces_col: Any,
+    poses_col: Any,
+) -> None:
+    """
+    When a photoshoot finishes with all poses output successfully, increment usage counts:
+    backgrounds ``count`` (+1 for ``background_id``), model faces ``model_used_count`` (+1 for ``model_id``),
+    poses_data ``count`` (+1 per ``pose_id`` in this run).
+    """
+    if backgrounds_col is None and model_faces_col is None and poses_col is None:
+        return
+    bid = (str(req.get("background_id") or "")).strip()
+    mid = (str(req.get("model_id") or "")).strip()
+    pids = list(pose_ids) or _pose_ids_for_usage_from_req(req)
+
+    try:
+        if bid and backgrounds_col is not None:
+            r = await backgrounds_col.update_one(
+                {"background_id": bid},
+                {"$inc": {"count": 1}},
+            )
+            if r.matched_count == 0:
+                logger.warning("[usage] no background for increment — background_id=%s (photoshoot=%s)", bid, photoshoot_id)
+        if mid and model_faces_col is not None:
+            r = await model_faces_col.update_one(
+                {"model_id": mid},
+                {"$inc": {"model_used_count": 1}},
+            )
+            if r.matched_count == 0:
+                logger.warning("[usage] no model face for increment — model_id=%s (photoshoot=%s)", mid, photoshoot_id)
+        if poses_col is not None and pids:
+            for pid in pids:
+                r = await poses_col.update_one(
+                    {"pose_id": pid},
+                    {"$inc": {"count": 1}},
+                )
+                if r.matched_count == 0:
+                    logger.warning("[usage] no pose for increment — pose_id=%s (photoshoot=%s)", pid, photoshoot_id)
+    except Exception as exc:
+        logger.exception("[usage] failed incrementing stats (photoshoot=%s): %s", photoshoot_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +306,15 @@ async def _fetch_pose_data(pose_ids: List[str], poses_col=None) -> List[dict]:
 
 async def resolve_poses(req: dict, poses_col=None) -> List[dict]:
     """Resolve pose data from either pre-supplied ``pose_data`` or ``poses_ids``."""
+    ft = (str(req.get("footwear_type") or "")).strip()
+    fspec = (str(req.get("footwear_specification") or "")).strip()
+    if ft or fspec:
+        logger.info(
+            "[poses] Step-1: request footwear (used in generation prompts) — type=%r specification=%r",
+            ft or "(none)",
+            fspec or "(none)",
+        )
+
     pose_data = req.get("pose_data")
     if pose_data and isinstance(pose_data, list):
         result = [
@@ -333,6 +411,29 @@ def _extract_json_block(text: str) -> dict:
         return {}
 
 
+def _user_garment_footwear_hints_for_analyzer(req: dict) -> str:
+    """Build a line for the KIE garment analyzer: user-specified text fields that must be honored in JSON."""
+    parts: List[str] = []
+    for key, label in (
+        ("upper_garment_type", "upper_garment_type"),
+        ("upper_garment_specification", "upper_garment_specification"),
+        ("lower_garment_type", "lower_garment_type"),
+        ("lower_garment_specification", "lower_garment_specification"),
+        ("footwear_type", "footwear_type"),
+        ("footwear_specification", "footwear_specification"),
+    ):
+        v = _clean_text(req.get(key))
+        if v:
+            parts.append(f'"{label}": {json.dumps(v)}')
+    if not parts:
+        return ""
+    return (
+        "\nThe client already specified the following; use these exact string values in the JSON for those keys "
+        "(where provided). Only infer missing keys. "
+        + " ".join(parts)
+    )
+
+
 async def _infer_garment_and_footwear(req: dict) -> dict:
     """
     Use KIE Gemini model on garment image(s) to infer garment + footwear JSON.
@@ -345,6 +446,7 @@ async def _infer_garment_and_footwear(req: dict) -> dict:
         return {}
 
     model = (getattr(settings, "KIE_GARMENT_ANALYZER_MODEL", "") or "gemini-3-pro").strip()
+    hint = _user_garment_footwear_hints_for_analyzer(req)
     prompt = (
         "Analyze the provided garment image(s) and return STRICT JSON only with keys: "
         "upper_garment_type, upper_garment_specification, lower_garment_type, lower_garment_specification, "
@@ -353,8 +455,10 @@ async def _infer_garment_and_footwear(req: dict) -> dict:
         "1) If image has only upper garment, infer lower garment details matching style. "
         "2) If image has only lower garment, infer upper garment details matching style. "
         "3) If image has both upper+lower garment, do not invent replacements; describe what is present. "
-        "4) Infer footwear type/specification from outfit style (color/pattern/type), concise but useful. "
+        "4) Infer footwear type/specification from outfit style (color/pattern/type), concise but useful, "
+        "except when the client has already given footwear in the follow-up line — use those. "
         "5) Output only valid JSON object, no markdown."
+        f"{hint}"
     )
     image_input = [u for u in (front, back) if u]
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -440,6 +544,31 @@ async def enrich_request_with_ai_garment_data(req: dict) -> dict:
         bool(_clean_text(merged.get("footwear_type"))),
     )
     return merged
+
+
+# Keys Step-0 (enrichment) may set from AI; keep Mongo ``input_parameter`` in sync for API consumers.
+_GARMENT_ENRICH_SYNC_KEYS = (
+    "upper_garment_type",
+    "upper_garment_specification",
+    "lower_garment_type",
+    "lower_garment_specification",
+    "footwear_type",
+    "footwear_specification",
+)
+
+
+async def sync_garment_footwear_input_parameter(
+    photoshoots_col: Any,
+    photoshoot_id: str,
+    req: dict,
+) -> None:
+    """Update stored ``input_parameter`` garment/footwear fields to match the job ``req`` (after Step-0)."""
+    try:
+        patch: dict[str, Any] = {f"input_parameter.{k}": req.get(k) or "" for k in _GARMENT_ENRICH_SYNC_KEYS}
+        patch["updated_at"] = datetime.now(timezone.utc)
+        await photoshoots_col.update_one({"photoshoot_id": photoshoot_id}, {"$set": patch})
+    except Exception as exc:
+        logger.warning("[job] could not sync garment/footwear fields to input_parameter: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1646,6 +1775,15 @@ async def _node_finalize(state: PipelineState) -> PipelineState:
             "updated_at":   now,
         }},
     )
+    if final_status == "completed":
+        await increment_photoshoot_success_usage(
+            ctx.photoshoot_id,
+            ctx.req,
+            list(ctx.pose_ids) if ctx.pose_ids else _pose_ids_for_usage_from_req(ctx.req),
+            ctx.backgrounds_col,
+            ctx.model_faces_col,
+            ctx.poses_col,
+        )
     logger.info(
         "[graph] finalize done photoshoot=%s ok=%d/%d status=%s",
         ctx.photoshoot_id, ok, len(ctx.poses), final_status,
@@ -1728,7 +1866,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
         history_col     = _db["credit_history"]
     else:
         photoshoots_col = get_photoshoots_collection()
-        poses_col       = None
+        poses_col       = get_poses_collection()
         upscaling_col   = None
         backgrounds_col = get_backgrounds_collection()
         model_faces_col = get_model_faces_collection()
@@ -1740,8 +1878,9 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
     try:
         # Step 0 — optional AI garment/footwear enrichment (single photoshoot only).
         req = await enrich_request_with_ai_garment_data(req)
+        await sync_garment_footwear_input_parameter(photoshoots_col, photoshoot_id, req)
 
-        # Step 1 — resolve pose data
+        # Step 1 — resolve pose data (footwear from the request is logged here; prompts use ctx.req in generation)
         pose_data_list = await resolve_poses(req, poses_col=poses_col)
         if not pose_data_list:
             raise ValueError("No poses could be resolved.")
@@ -1780,6 +1919,10 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
             credit_per_image=float(
                 req.get("credit_per_image", settings.CREDIT_SINGLE_PHOTOSHOOT_PER_IMAGE)
             ),
+            backgrounds_col=backgrounds_col,
+            model_faces_col=model_faces_col,
+            poses_col=poses_col,
+            pose_ids=_pose_ids_for_usage_from_req(req),
         )
 
         # Reset output_images/failed_poses so repeated runs don't duplicate.

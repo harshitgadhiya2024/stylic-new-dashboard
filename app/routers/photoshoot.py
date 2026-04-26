@@ -17,6 +17,7 @@ from app.dependencies import get_current_user
 from app.models.photoshoot import (
     CreatePhotoshootRequest,
     CreateMultiplePhotoshootsRequest,
+    CataloguePhotoshootRequest,
     UpscalePhotoshootRequest,
     RegeneratePhotoshootRequest,
     RegenerateFailedPhotoshootRequest,
@@ -59,6 +60,8 @@ _CREDIT_COLOR_CHANGE      = settings.CREDIT_COLOR_CHANGE_PER_IMAGE
         "pose_id in Mongo, runs all poses concurrently via SeedDream (quality=high, 9:16), "
         "generates 4K/2K/1K images for each pose, uploads all to Cloudflare R2, deducts credits, "
         "and updates the document to status='completed' (or 'failed'). "
+        "Optional ``footwear_type`` and ``footwear_specification`` are passed through the job, "
+        "used in the garment analyzer (Step-0) when provided, in pose resolution logging (Step-1), and in all generation prompts. "
         "Requires at least one poses_ids entry. "
         "Secured — user_id is taken from the auth token."
     ),
@@ -166,7 +169,8 @@ async def create_photoshoot(
         "Merges each entry in ``photoshoot_list_config`` with ``default_config`` (per-field overrides), "
         "validates the result as a full photoshoot payload (each row must resolve to at least one "
         "``poses_ids`` entry after merge), checks credits for the entire batch, "
-        "then creates one photoshoot document and one Celery job per row — same pipeline as POST /."
+        "then creates one photoshoot document and one Celery job per row — same pipeline as POST /. "
+        "``footwear_type`` / ``footwear_specification`` can be set in ``default_config`` and/or per list item. "
     ),
 )
 async def create_multiple_photoshoots(
@@ -303,6 +307,216 @@ async def create_multiple_photoshoots(
         "total_photoshoots":   len(results),
         "total_credit":        total_credit_batch,
         "photoshoots":         results,
+    }
+
+
+@router.post(
+    "/catalogue",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Catalogue photoshoot (per garment, optional color recolor)",
+    description=(
+        "Runs one single-photoshoot job per entry in ``garments``. "
+        "Rows with ``front_garment_image`` use that flat-lay (and optional back) directly. "
+        "Rows with only color fields recolor the **most recent** prior flat-lay row using the same kie flow "
+        "as ``/change-color``, then enqueue that row with the new URLs. "
+        "Shared body fields may include ``footwear_type`` and ``footwear_specification``; each item in "
+        "``garments`` can optionally set those to override the shared values for that row. "
+        "Credits: len(poses_ids) × the standard single-photoshoot rate, summed across all rows. "
+        "Secured — user_id is taken from the auth token."
+    ),
+)
+async def create_catalogue_photoshoots(
+    body: CataloguePhotoshootRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    from app.services.fabric_service import change_garment_upper_lower_colors
+    from app.services.r2_service import upload_bytes_to_r2
+
+    user_id   = current_user["user_id"]
+    total_poses_one = len(body.poses_ids)
+    if total_poses_one == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="poses_ids must contain at least one valid pose_id.",
+        )
+
+    ref_front: str = ""
+    ref_back:  str = ""
+
+    # Pre-validate the garment stream (and resolve per-row type) without calling kie.
+    for i, g in enumerate(body.garments):
+        f = (g.front_garment_image or "").strip()
+        b = (g.back_garment_image or "").strip()
+        if f:
+            ref_front, ref_back = f, b
+        else:
+            if not ref_front:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"garments[{i}]: a colorway row is not valid before the first row with "
+                        "front_garment_image. Provide a flat-lay first, or an image for this row."
+                    ),
+                )
+            if g.upper_garment_color is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"garments[{i}]: without front_garment_image, "
+                        "upper_garment_color is required (optional: lower_garment_color, defaults to upper)."
+                    ),
+                )
+
+    n_garment_rows  = len(body.garments)
+    total_pose_runs = n_garment_rows * total_poses_one
+    total_credit    = total_pose_runs * _CREDIT_SINGLE_PHOTOSHOOT
+    current_credits = float(current_user.get("credits", 0))
+
+    if current_credits < total_credit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Insufficient credits. This catalogue run requires {total_credit} credits "
+                f"({n_garment_rows} garment row(s) × {total_poses_one} pose(s) × "
+                f"{_CREDIT_SINGLE_PHOTOSHOOT}) but you only have {current_credits}."
+            ),
+        )
+
+    catalogue_photoshoot_id = str(uuid.uuid4())
+    now                    = datetime.now(timezone.utc)
+    col                    = get_photoshoots_collection()
+    ref_front = ""
+    ref_back  = ""
+    results: list[dict] = []
+
+    shared_dump = body.model_dump(exclude={"garments"})
+
+    for idx, g in enumerate(body.garments):
+        f = (g.front_garment_image or "").strip()
+        b = (g.back_garment_image or "").strip()
+
+        if f:
+            ref_front, ref_back = f, b
+            use_front, use_back = f, b
+        else:
+            u = g.upper_garment_color
+            l = g.lower_garment_color if g.lower_garment_color is not None else u
+            u_tag = u.lstrip("#")
+            l_tag = l.lstrip("#")
+            tag   = f"u{u_tag}_l{l_tag}_{uuid.uuid4().hex[:8]}"
+            front_bytes = await change_garment_upper_lower_colors(ref_front, u, l)
+            f_key = f"photoshoots/catalogue/{catalogue_photoshoot_id}/{idx}/front_{tag}.png"
+            use_front = await upload_bytes_to_r2(front_bytes, f_key, content_type="image/png")
+            if ref_back:
+                back_bytes = await change_garment_upper_lower_colors(ref_back, u, l)
+                b_key = f"photoshoots/catalogue/{catalogue_photoshoot_id}/{idx}/back_{tag}.png"
+                use_back = await upload_bytes_to_r2(back_bytes, b_key, content_type="image/png")
+            else:
+                use_back = ""
+
+        row_sku = (g.sku_id or "").strip() or (body.sku_id or "")
+        merged: dict = {
+            **shared_dump,
+            "front_garment_image": use_front,
+            "back_garment_image":  use_back,
+            "sku_id":              row_sku,
+        }
+        if g.footwear_type is not None and str(g.footwear_type).strip():
+            merged["footwear_type"] = str(g.footwear_type).strip()
+        if g.footwear_specification is not None and str(g.footwear_specification).strip():
+            merged["footwear_specification"] = str(g.footwear_specification).strip()
+        try:
+            row_req = CreatePhotoshootRequest.model_validate(merged)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "message": f"Invalid merged create payload for garments index {idx}",
+                    "index":   idx,
+                    "errors":  exc.errors(),
+                },
+            ) from exc
+
+        photoshoot_id = str(uuid.uuid4())
+        this_credit  = total_poses_one * _CREDIT_SINGLE_PHOTOSHOOT
+
+        doc = {
+            "photoshoot_id":           photoshoot_id,
+            "user_id":                 user_id,
+            "batch_photoshoot_id":     catalogue_photoshoot_id,
+            "batch_index":             idx,
+            "catalogue_photoshoot":   True,
+            "sku_id":                 row_sku,
+            "input_parameter":        {
+                "front_garment_image":             row_req.front_garment_image,
+                "back_garment_image":              row_req.back_garment_image or "",
+                "ethnicity":                       row_req.ethnicity,
+                "gender":                          row_req.gender,
+                "skin_tone":                       row_req.skin_tone,
+                "age":                             row_req.age,
+                "age_group":                       row_req.age_group,
+                "weight":                          row_req.weight,
+                "height":                          row_req.height,
+                "upper_garment_type":              row_req.upper_garment_type,
+                "upper_garment_specification":     row_req.upper_garment_specification,
+                "lower_garment_type":              row_req.lower_garment_type,
+                "lower_garment_specification":     row_req.lower_garment_specification,
+                "footwear_type":                   row_req.footwear_type,
+                "footwear_specification":          row_req.footwear_specification,
+                "one_piece_garment_type":          row_req.one_piece_garment_type,
+                "one_piece_garment_specification": row_req.one_piece_garment_specification,
+                "fitting":                         row_req.fitting,
+                "background_id":                   row_req.background_id,
+                "poses_ids":                       list(row_req.poses_ids),
+                "model_id":                        row_req.model_id,
+                "lighting_style":                  row_req.lighting_style,
+                "ornaments":                       row_req.ornaments or "",
+                "regeneration_type":               row_req.regeneration_type or "",
+                "regenerate_photoshoot_id":        row_req.regenerate_photoshoot_id or "",
+                "credit_per_image":                _CREDIT_SINGLE_PHOTOSHOOT,
+                "batch_photoshoot_id":              catalogue_photoshoot_id,
+                "batch_index":                     idx,
+            },
+            "output_images":            [],
+            "failed_poses":            [],
+            "total_credit":            this_credit,
+            "is_credit_deducted":     False,
+            "is_completed":            False,
+            "status":                  "queue",
+            "error":                    None,
+            "regeneration_type":       row_req.regeneration_type or "",
+            "regenerate_photoshoot_id": row_req.regenerate_photoshoot_id or "",
+            "is_active":               True,
+            "created_at":              now,
+            "updated_at":              now,
+        }
+
+        await col.insert_one(doc)
+
+        job_payload = {**doc["input_parameter"], "user_id": user_id}
+        task = run_photoshoot_task.apply_async(
+            args=[photoshoot_id, job_payload],
+            queue="photoshoots",
+        )
+        results.append(
+            {
+                "catalogue_index":  idx,
+                "photoshoot_id":   photoshoot_id,
+                "task_id":         task.id,
+                "total_poses":     total_poses_one,
+                "total_credit":    this_credit,
+                "status":          "queue",
+                "source":         "image_urls" if f else "recolor",
+            }
+        )
+
+    return {
+        "message":                 "Catalogue photoshoots started. Each job runs in background.",
+        "catalogue_photoshoot_id": catalogue_photoshoot_id,
+        "total_garment_rows":     n_garment_rows,
+        "total_poses":            total_pose_runs,
+        "total_credit":            total_credit,
+        "photoshoots":             results,
     }
 
 
