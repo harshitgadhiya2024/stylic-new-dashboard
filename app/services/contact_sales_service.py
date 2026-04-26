@@ -54,7 +54,7 @@ async def process_contact_sales_submission(body: ContactSalesRequest) -> dict[st
         "company_size":          body.company_size,
         "message":               msg,
         "conversation_channel":  "email",
-        "status":                "new",
+        "status":                "pending",
         "created_at":            now,
         "updated_at":            now,
     }
