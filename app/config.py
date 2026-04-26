@@ -187,6 +187,13 @@ class Settings(BaseSettings):
     # Flower dashboard basic auth (format: user:password)
     FLOWER_BASIC_AUTH: str = ""
 
+    # Public contact / sales form (unauthenticated, rate-limited, strict validation)
+    CONTACT_SALES_MAX_PER_IP: int = 5
+    CONTACT_SALES_IP_WINDOW_S: int = 3600
+    CONTACT_SALES_MAX_PER_EMAIL_PER_24H: int = 5
+    # When true, use first IP in X-Forwarded-For (first hop) — enable behind reverse proxy / CDNs.
+    CONTACT_SALES_TRUST_X_FORWARDED_FOR: bool = False
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000

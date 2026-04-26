@@ -84,6 +84,10 @@ def get_templates_collection() -> AsyncIOMotorCollection:
     return get_database()["templates"]
 
 
+def get_contact_sales_collection() -> AsyncIOMotorCollection:
+    return get_database()["contact_sales"]
+
+
 async def create_indexes() -> None:
     """Create all collection indexes. Call once at application startup."""
     db = get_database()
@@ -162,3 +166,9 @@ async def create_indexes() -> None:
     await user_up.create_index("is_active")
     await user_up.create_index("is_favorite")
     await user_up.create_index("created_at")
+
+    contact_sales = db["contact_sales"]
+    await contact_sales.create_index("submission_id", unique=True)
+    await contact_sales.create_index("work_email")
+    await contact_sales.create_index("status")
+    await contact_sales.create_index("created_at")
