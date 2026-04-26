@@ -391,41 +391,43 @@ async def get_model_faces(
     }
 
 
-def _merge_unique_ethnicity_strings(*value_lists: list[Any]) -> list[str]:
-    """
-    Deduplicate by semantic key (case + hyphen/underscore/space variants).
-    One canonical label per key (``string.capwords`` on normalized words).
-    """
-    by_key: dict[str, str] = {}
-    for lst in value_lists:
-        for v in lst:
-            label = ethnicity_canonical_label(v)
-            if not label:
-                continue
-            k = ethnicity_semantic_key(v)
-            if not k:
-                continue
-            if k not in by_key:
-                by_key[k] = label
-    return sorted(by_key.values(), key=lambda x: x.casefold())
-
-
 @router.get(
     "/get-all-ethnicity",
     summary="List unique ethnicities",
     description=(
-        "Returns all distinct ethnicity values across every model face in the collection, "
-        "from top-level `ethnicity` and `model_configuration.ethnicity`. "
+        "Returns unique ethnicity labels that appear on model face documents, using the same "
+        "source as list/detail: top-level `ethnicity` if set, otherwise `model_configuration.ethnicity`. "
         "Deduplicated by semantic key (case, spaces, hyphens, underscores) and "
-        "returned as one canonical label per group, sorted alphabetically."
+        "returned as one canonical label per group, sorted alphabetically. "
+        "No labels are included unless at least one document has that effective ethnicity."
     ),
     dependencies=[Depends(get_current_user)],
 )
 async def get_all_ethnicity():
     col = get_model_faces_collection()
-    top_level = await col.distinct("ethnicity")
-    from_config = await col.distinct("model_configuration.ethnicity")
-    ethnicities = _merge_unique_ethnicity_strings(top_level, from_config)
+    by_key: dict[str, str] = {}
+    async for doc in col.find(
+        {},
+        {
+            "ethnicity":                   1,
+            "model_configuration.ethnicity": 1,
+            "_id":                         0,
+        },
+    ):
+        _, eth, _ = _coerce_age_ethnicity_gender(doc)
+        if eth is None:
+            continue
+        s = str(eth).strip()
+        if not s:
+            continue
+        label = ethnicity_canonical_label(eth)
+        k = ethnicity_semantic_key(eth)
+        if not label or not k:
+            continue
+        if k not in by_key:
+            by_key[k] = label
+
+    ethnicities = sorted(by_key.values(), key=lambda x: x.casefold())
 
     return {
         "ethnicities": ethnicities,
