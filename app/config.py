@@ -227,6 +227,11 @@ class Settings(BaseSettings):
     # CSS filter on footer social <img> so black SVGs render white on dark background
     STYLIC_EMAIL_SOCIAL_ICON_FILTER: str = "brightness(0) invert(1)"
 
+    # Admin panel — protect /api/v1/admin/* write routes. Send header:
+    #   X-Admin-API-Key: <this value>
+    # Empty string disables admin routes (they return 503).
+    ADMIN_API_KEY: str = ""
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000

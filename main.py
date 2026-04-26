@@ -16,6 +16,7 @@ from app.routers import (
     user_upscale,
     payment,
     contact_sales,
+    blogs,
 )
 from app.firebase_config import get_firebase_app
 from app.config import settings
@@ -78,6 +79,8 @@ app.include_router(remove_background.router)
 app.include_router(user_upscale.router)
 app.include_router(payment.router)
 app.include_router(contact_sales.router)
+app.include_router(blogs.public_router)
+app.include_router(blogs.admin_router)
 
 
 @app.get("/", tags=["Root"])
