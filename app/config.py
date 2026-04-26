@@ -196,11 +196,34 @@ class Settings(BaseSettings):
     # Contact / transactional email (Gmail and others block inline SVG — use a public <img> URL for the logo)
     STYLIC_MARKETING_BASE_URL: str = "https://stylic.ai"
     # Logotype shown in email header; use a PNG/WebP on your domain or CDN for best results
-    STYLIC_MARKETING_LOGO_URL: str = "https://stylic.ai/favicon.ico"
+    STYLIC_MARKETING_LOGO_URL: str = (
+        "https://pub-51c3a7dccc2448f792c2fb1bacf8e05d.r2.dev/users/"
+        "5971e90a-2682-4c24-a16e-2eda4162f4e8/0f63e79b0d16475288340dfcd5b23444.png"
+    )
     STYLIC_EMAIL_FOOTER_CONTACT: str = "contact@stylic.ai"
     STYLIC_EMAIL_FOOTER_COMPANY: str = "Aavish AI Labs"
     STYLIC_SOCIAL_INSTAGRAM_URL: str = "https://www.instagram.com/stylicai/"
     STYLIC_SOCIAL_FACEBOOK_URL: str = "https://www.facebook.com/stylicai/"
+    # Web app (welcome email primary CTA)
+    STYLIC_APP_BASE_URL: str = "https://app.stylic.ai"
+    # Transactional email layout (defaults match email_templates_preview.html)
+    STYLIC_EMAIL_BODY_BG: str = "#0f0f12"
+    STYLIC_EMAIL_TEXT_PRIMARY: str = "#e8e8ed"
+    STYLIC_EMAIL_FONT_STACK: str = "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif"
+    STYLIC_EMAIL_MAX_WIDTH: str = "560px"
+    STYLIC_EMAIL_INNER_PADDING: str = "40px 20px 48px"
+    STYLIC_EMAIL_LOGO_MARGIN_BOTTOM: str = "24px"
+    STYLIC_EMAIL_CARD_GRADIENT: str = "linear-gradient(180deg, #1a1a20 0%, #12121a 100%)"
+    STYLIC_EMAIL_CARD_BOX_SHADOW: str = "0 24px 64px rgba(0, 0, 0, 0.4)"
+    STYLIC_EMAIL_CTA_GRADIENT: str = "linear-gradient(90deg, #f7e6a0 0%, #f0b0c8 45%, #a8b8ff 100%)"
+    STYLIC_EMAIL_CTA_LABEL_COLOR: str = "#0f0f12"
+    STYLIC_EMAIL_FOOTER_TOP_BORDER: str = "1px solid rgba(255, 255, 255, 0.1)"
+    STYLIC_EMAIL_SOCIAL_INSTAGRAM_SVG: str = (
+        "https://cdn.jsdelivr.net/npm/simple-icons@11.11.0/icons/instagram.svg"
+    )
+    STYLIC_EMAIL_SOCIAL_FACEBOOK_SVG: str = (
+        "https://cdn.jsdelivr.net/npm/simple-icons@11.11.0/icons/facebook.svg"
+    )
 
     # Server
     HOST: str = "0.0.0.0"

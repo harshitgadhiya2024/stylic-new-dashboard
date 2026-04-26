@@ -24,7 +24,7 @@ from app.services.jwt_service import (
     create_refresh_token,
     decode_token,
 )
-from app.services.email_service import send_otp_email
+from app.services.email_service import send_otp_email, send_welcome_email
 from app.services.otp_service import (
     generate_otp,
     save_otp,
@@ -150,7 +150,7 @@ async def register(body: RegisterRequest, background_tasks: BackgroundTasks):
     response_model=TokenResponse,
     summary="Register – Step 2: Verify OTP & Create Account",
 )
-async def register_verify_otp(body: VerifyOTPRequest):
+async def register_verify_otp(body: VerifyOTPRequest, background_tasks: BackgroundTasks):
     record = await verify_otp(email=body.email, otp=body.otp, purpose="register")
 
     hashed_password = record.get("hashed_password", "")
@@ -172,6 +172,11 @@ async def register_verify_otp(body: VerifyOTPRequest):
     )
     await col.insert_one(user_doc)
     await consume_otp(body.email, "register")
+    background_tasks.add_task(
+        send_welcome_email,
+        user_doc["email"],
+        user_doc.get("first_name") or "",
+    )
 
     return _build_token_response(user_doc)
 
@@ -415,7 +420,7 @@ async def forgot_password_reset(body: ResetPasswordRequest):
     summary="Google Sign-In / Sign-Up",
     description="Verify a Firebase ID token from Google sign-in, then login or auto-register the user.",
 )
-async def google_sign_in(body: GoogleSignInRequest):
+async def google_sign_in(body: GoogleSignInRequest, background_tasks: BackgroundTasks):
     try:
         get_firebase_app()
         decoded = firebase_auth.verify_id_token(body.id_token)
@@ -459,5 +464,10 @@ async def google_sign_in(body: GoogleSignInRequest):
     )
     await col.insert_one(user_doc)
     user_doc.pop("_id", None)
+    background_tasks.add_task(
+        send_welcome_email,
+        user_doc["email"],
+        first_name,
+    )
 
     return _build_token_response(user_doc)
