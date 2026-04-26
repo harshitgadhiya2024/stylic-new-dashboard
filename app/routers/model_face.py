@@ -18,6 +18,10 @@ from app.models.model_face import (
 from app.services.ai_face_service import coerce_age_to_int, generate_and_upload_face_stream
 from app.services.face_to_model_service import generate_model_face_from_reference_stream
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
+from app.utils.ethnicity_normalization import (
+    ethnicity_canonical_label,
+    ethnicity_semantic_key,
+)
 
 router = APIRouter(prefix="/api/v1/model-faces", tags=["Model Faces"])
 
@@ -80,11 +84,9 @@ def _doc_numeric_age(doc: dict) -> Optional[int]:
 
 
 def _doc_ethnicity_normalized(doc: dict) -> Optional[str]:
+    """Semantic key (spaces/hyphens/underscores/unified, lowercased) for filters."""
     _, eth, _ = _coerce_age_ethnicity_gender(doc)
-    if eth is None:
-        return None
-    s = str(eth).strip()
-    return s.lower() if s else None
+    return ethnicity_semantic_key(eth)
 
 
 def _passes_age_ethnicity_filters(
@@ -216,7 +218,8 @@ def _sse(event: str, data: dict) -> str:
         "Optional filters: `is_favorite`, `model_category` "
         f"(e.g. {_MODEL_CATEGORY_FILTER_EXAMPLES} — matched to stored snake_case), "
         "`min_age` / `max_age` (inclusive, integer years; uses top-level or model_configuration.age), "
-        "and `ethnicity` (case-insensitive exact match on top-level or model_configuration). "
+        "and `ethnicity` (semantic match: case-insensitive; hyphens/underscores/spaces equivalent; "
+        "top-level or model_configuration). "
         "When `is_favorite=true`, `type` is ignored: returns union of your custom faces with "
         "`is_favorite=true` and default faces whose `favorite_list` contains your user_id. "
         "When `is_favorite=false`, filtering is scoped by `type` (custom: your non-favorites; "
@@ -263,7 +266,10 @@ async def get_model_faces(
     ),
     ethnicity: Optional[str] = Query(
         default=None,
-        description="Filter by ethnicity; case-insensitive exact match against stored value (top-level or inside model_configuration).",
+        description=(
+            "Filter by ethnicity; match is semantic: case-insensitive, and hyphens, "
+            "underscores, and spaces are treated as equivalent (e.g. `South Asian` = `south-asian`)."
+        ),
     ),
     current_user: dict = Depends(get_current_user),
 ):
@@ -288,7 +294,7 @@ async def get_model_faces(
     if ethnicity is not None:
         e = ethnicity.strip()
         if e:
-            eth_norm = e.lower()
+            eth_norm = ethnicity_semantic_key(e)
 
     def _sort_key_updated(doc: dict) -> datetime:
         u = doc.get("updated_at")
@@ -386,23 +392,22 @@ async def get_model_faces(
 
 
 def _merge_unique_ethnicity_strings(*value_lists: list[Any]) -> list[str]:
-    """Strip, drop empty, dedupe case-insensitively; sort by casefold; keep first-seen spelling."""
-    seen: set[str] = set()
-    out: list[str] = []
+    """
+    Deduplicate by semantic key (case + hyphen/underscore/space variants).
+    One canonical label per key (``string.capwords`` on normalized words).
+    """
+    by_key: dict[str, str] = {}
     for lst in value_lists:
         for v in lst:
-            if v is None:
+            label = ethnicity_canonical_label(v)
+            if not label:
                 continue
-            s = str(v).strip()
-            if not s:
+            k = ethnicity_semantic_key(v)
+            if not k:
                 continue
-            key = s.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(s)
-    out.sort(key=lambda x: x.casefold())
-    return out
+            if k not in by_key:
+                by_key[k] = label
+    return sorted(by_key.values(), key=lambda x: x.casefold())
 
 
 @router.get(
@@ -411,7 +416,8 @@ def _merge_unique_ethnicity_strings(*value_lists: list[Any]) -> list[str]:
     description=(
         "Returns all distinct ethnicity values across every model face in the collection, "
         "from top-level `ethnicity` and `model_configuration.ethnicity`. "
-        "Deduplicated case-insensitively and sorted alphabetically."
+        "Deduplicated by semantic key (case, spaces, hyphens, underscores) and "
+        "returned as one canonical label per group, sorted alphabetically."
     ),
     dependencies=[Depends(get_current_user)],
 )
