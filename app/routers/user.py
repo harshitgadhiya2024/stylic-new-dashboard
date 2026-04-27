@@ -4,13 +4,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFi
 from app.database import get_users_collection
 from app.dependencies import get_current_user
 from app.models.user import (
-    UpdateUserRequest,
-    ChangePasswordRequest,
     ChangeEmailRequest,
-    VerifyEmailChangeRequest,
+    ChangePasswordRequest,
     MessageResponse,
-    UserSchema,
     PartialNotificationPreferences,
+    StoreOnboardingRequest,
+    UpdateUserRequest,
+    UserSchema,
+    VerifyEmailChangeRequest,
 )
 from app.routers.auth import _generate_username
 from app.services.email_service import send_otp_email
@@ -31,6 +32,41 @@ _ALLOWED_MIME_TYPES = {
 
 def _clean_user(user: dict) -> dict:
     return user_dict_for_api(user)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ONBOARDING
+# ══════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/store-onboarding",
+    response_model=UserSchema,
+    summary="Store onboarding data",
+    description=(
+        "Persists onboarding answers on the authenticated user document (`onboarding` subdocument). "
+        "Requires a valid access token; `user_id` is taken from the token."
+    ),
+)
+async def store_onboarding(
+    body: StoreOnboardingRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    now = datetime.now(timezone.utc)
+    onboarding = body.model_dump(mode="python", by_alias=False)
+    onboarding["stored_at"] = now
+
+    col = get_users_collection()
+    await col.update_one(
+        {"user_id": current_user["user_id"]},
+        {"$set": {"onboarding": onboarding, "updated_at": now}},
+    )
+    updated = await col.find_one({"user_id": current_user["user_id"]})
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+    return _clean_user(updated)
 
 
 # ══════════════════════════════════════════════════════════════════════════
