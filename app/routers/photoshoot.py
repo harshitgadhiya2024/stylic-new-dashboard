@@ -592,6 +592,7 @@ async def upscale_photoshoot(
         img["image_id"]: {
             "pose_prompt": img.get("pose_prompt", ""),
             "pose_image_url": img.get("pose_image_url", ""),
+            "garment_type": img.get("garment_type", ""),
         }
         for img in original_ps.get("output_images", [])
     }
@@ -618,6 +619,7 @@ async def upscale_photoshoot(
             "image_id":        image_id,
             "pose_prompt":     pd.get("pose_prompt", ""),
             "pose_image_url":  pd.get("pose_image_url", ""),
+            "garment_type":    pd.get("garment_type", ""),
             "image":           image_url,
         })
 
@@ -740,7 +742,11 @@ async def regenerate_photoshoot(
         selected = all_output_images
 
     pose_data = [
-        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        {
+            "image_url": img.get("pose_image_url", ""),
+            "pose_prompt": img.get("pose_prompt", ""),
+            "garment_type": img.get("garment_type", ""),
+        }
         for img in selected
     ]
     total_poses = len(pose_data)
@@ -1512,7 +1518,11 @@ async def background_change_photoshoot(
         )
 
     pose_data = [
-        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        {
+            "image_url": img.get("pose_image_url", ""),
+            "pose_prompt": img.get("pose_prompt", ""),
+            "garment_type": img.get("garment_type", ""),
+        }
         for img in selected
     ]
     total_poses = len(pose_data)
@@ -1737,7 +1747,11 @@ async def fabric_change_photoshoot(
         )
 
     pose_data = [
-        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        {
+            "image_url": img.get("pose_image_url", ""),
+            "pose_prompt": img.get("pose_prompt", ""),
+            "garment_type": img.get("garment_type", ""),
+        }
         for img in selected
     ]
 
@@ -1951,7 +1965,11 @@ async def texture_change_photoshoot(
         )
 
     pose_data = [
-        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        {
+            "image_url": img.get("pose_image_url", ""),
+            "pose_prompt": img.get("pose_prompt", ""),
+            "garment_type": img.get("garment_type", ""),
+        }
         for img in selected
     ]
 
@@ -2163,7 +2181,11 @@ async def color_change_photoshoot(
         )
 
     pose_data = [
-        {"image_url": img.get("pose_image_url", ""), "pose_prompt": img.get("pose_prompt", "")}
+        {
+            "image_url": img.get("pose_image_url", ""),
+            "pose_prompt": img.get("pose_prompt", ""),
+            "garment_type": img.get("garment_type", ""),
+        }
         for img in selected
     ]
 

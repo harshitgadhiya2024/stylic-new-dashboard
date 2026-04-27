@@ -60,6 +60,7 @@ def serialize_pose_response(
         "pose_name":     d.get("pose_name") or "",
         "pose_type":     d.get("pose_type") or "front",
         "pose_prompt":   d.get("pose_prompt") or "",
+        "garment_type":  d.get("garment_type") or "",
         "image_url":     d.get("image_url") or "",
         "count":         int(d.get("count", 0) or 0),
         "notes":         d.get("notes") or "",
@@ -288,6 +289,7 @@ async def create_pose_from_image(
     async def event_stream() -> AsyncGenerator[str, None]:
         mannequin_url: str | None = None
         pose_prompt_final: str | None = None
+        garment_type: str = "full_body"
         try:
             yield _sse("initialize", {"step": "initialize", "message": "Initializing custom pose generation"})
             await asyncio.sleep(0.6)
@@ -308,6 +310,8 @@ async def create_pose_from_image(
                 elif kind == "done":
                     mannequin_url = chunk[1]
                     pose_prompt_final = chunk[2]
+                    if len(chunk) > 3 and chunk[3]:
+                        garment_type = str(chunk[3])
                     break
             if not mannequin_url or pose_prompt_final is None:
                 yield _sse("error", {"step": "error", "message": "Pipeline returned no result"})
@@ -322,6 +326,7 @@ async def create_pose_from_image(
                 "pose_name":     body.pose_name,
                 "pose_type":     body.pose_type,
                 "pose_prompt":   pose_prompt_final,
+                "garment_type":  garment_type,
                 "image_url":     mannequin_url,
                 "count":         0,
                 "notes":         body.notes or "",
@@ -378,6 +383,7 @@ async def create_pose_from_prompt(
     async def event_stream() -> AsyncGenerator[str, None]:
         mannequin_url: str | None = None
         pose_prompt_final: str | None = None
+        garment_type: str = "full_body"
         try:
             yield _sse("initialize", {"step": "initialize", "message": "Initializing custom pose generation"})
             await asyncio.sleep(0.6)
@@ -395,6 +401,8 @@ async def create_pose_from_prompt(
                 elif kind == "done":
                     mannequin_url = chunk[1]
                     pose_prompt_final = chunk[2] if len(chunk) > 2 else None
+                    if len(chunk) > 3 and chunk[3]:
+                        garment_type = str(chunk[3])
                     break
             if not mannequin_url or pose_prompt_final is None:
                 yield _sse(
@@ -412,6 +420,7 @@ async def create_pose_from_prompt(
                 "pose_name":     body.pose_name,
                 "pose_type":     body.pose_type,
                 "pose_prompt":   pose_prompt_final,
+                "garment_type":  garment_type,
                 "image_url":     mannequin_url,
                 "count":         0,
                 "notes":         body.notes or "",

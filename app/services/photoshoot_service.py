@@ -118,6 +118,8 @@ class PoseRuntime:
     pose_prompt: str
     mannequin_url: str
     pose_type: str = ""
+    # From poses collection: upper_body | lower_body | full_body (optional for legacy poses)
+    garment_type: str = ""
     # Stage-1 output
     generated_url: Optional[str] = None
     generated_bytes: Optional[bytes] = None
@@ -149,6 +151,13 @@ class PoseRuntime:
         explicitly a headshot / portrait / half / bust / torso / waist-up
         framing counts as upper-body.  Full-body (the default) requires shoes.
         """
+        g = (self.garment_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+        while "__" in g:
+            g = g.replace("__", "_")
+        if g == "upper_body":
+            return True
+        if g in ("lower_body", "full_body"):
+            return False
         text = (self.pose_prompt or "").lower()
         upper_markers = (
             "upper body", "upper-body", "upper half", "half body", "half-body",
@@ -159,8 +168,30 @@ class PoseRuntime:
         return any(m in text for m in upper_markers)
 
     @property
+    def is_lower_body(self) -> bool:
+        """True when the pose is specifically lower-half framing."""
+        g = (self.garment_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+        while "__" in g:
+            g = g.replace("__", "_")
+        if g == "lower_body":
+            return True
+        if g in ("upper_body", "full_body"):
+            return False
+        text = (self.pose_prompt or "").lower()
+        lower_markers = (
+            "lower body", "lower-body", "lower half", "waist down", "waist-down",
+            "legs", "leg pose", "hip", "hips", "thigh", "thighs", "calf", "calves",
+            "ankle", "ankles", "foot", "feet",
+        )
+        return any(m in text for m in lower_markers)
+
+    @property
     def framing_label(self) -> str:
-        return "upper-body" if self.is_upper_body else "full-body"
+        if self.is_upper_body:
+            return "upper-body"
+        if self.is_lower_body:
+            return "lower-body"
+        return "full-body"
 
     @property
     def is_generated(self) -> bool:
@@ -269,7 +300,7 @@ async def increment_photoshoot_success_usage(
 
 async def _fetch_pose_data(pose_ids: List[str], poses_col=None) -> List[dict]:
     """
-    Return ``[{"image_url": ..., "pose_prompt": ...}, ...]`` per pose_id, in
+    Return ``[{"image_url", "pose_prompt", "pose_type", "garment_type"}, ...]`` per pose_id, in
     the same order as ``pose_ids``. Uses a single ``$in`` query instead of
     N round-trips to Mongo (was ~500ms, now ~30ms for 7 poses).
     """
@@ -289,16 +320,18 @@ async def _fetch_pose_data(pose_ids: List[str], poses_col=None) -> List[dict]:
         if doc:
             logger.info("[poses] Found pose_id=%s image_url=%s", pid, bool(doc.get("image_url")))
             results.append({
-                "image_url":   doc.get("image_url") or "",
-                "pose_prompt": doc.get("pose_prompt") or "",
-                "pose_type":   (doc.get("pose_type") or "").strip().lower(),
+                "image_url":     doc.get("image_url") or "",
+                "pose_prompt":   doc.get("pose_prompt") or "",
+                "pose_type":     (doc.get("pose_type") or "").strip().lower(),
+                "garment_type":  (doc.get("garment_type") or "").strip().lower(),
             })
         else:
             logger.warning("[poses] No doc for pose_id=%s — text fallback only", pid)
             results.append({
-                "image_url":   "",
-                "pose_prompt": f"Standing in a natural, relaxed fashion model pose — pose id: {pid}",
-                "pose_type":   "",
+                "image_url":     "",
+                "pose_prompt":   f"Standing in a natural, relaxed fashion model pose — pose id: {pid}",
+                "pose_type":     "",
+                "garment_type":  "",
             })
     logger.info("[poses] Resolved %d pose doc(s)", len(results))
     return results
@@ -319,9 +352,10 @@ async def resolve_poses(req: dict, poses_col=None) -> List[dict]:
     if pose_data and isinstance(pose_data, list):
         result = [
             {
-                "image_url": pd.get("image_url") or "",
-                "pose_prompt": pd.get("pose_prompt") or "",
-                "pose_type": (pd.get("pose_type") or "").strip().lower(),
+                "image_url":     pd.get("image_url") or "",
+                "pose_prompt":   pd.get("pose_prompt") or "",
+                "pose_type":     (pd.get("pose_type") or "").strip().lower(),
+                "garment_type":  (pd.get("garment_type") or "").strip().lower(),
             }
             for pd in pose_data
         ]
@@ -757,10 +791,28 @@ def _core_prompt(pose: PoseRuntime, req: dict) -> str:
     footwear_hint = ""
     if footwear_type or footwear_spec:
         footwear_hint = (
-            f"For full-body poses, footwear is mandatory and must be: type='{footwear_type or 'matching shoes'}'"
+            f"When mannequin framing includes visible feet, footwear is mandatory and should be: type='{footwear_type or 'matching shoes'}'"
             f"{f', specification={footwear_spec!r}' if footwear_spec else ''}. "
             "Ensure realistic material/color/pattern match and proper contact shadows."
         )
+    framing_rule = (
+        "FRAMING LOCK (STRICT): render ONLY upper-body framing from the mannequin pose reference "
+        "(waist-up / torso crop). Do not reveal hips, legs, knees, or feet, and do not zoom out."
+        if pose.is_upper_body
+        else (
+            "FRAMING LOCK (STRICT): render ONLY lower-body framing from the mannequin pose reference "
+            "(waist-down / legs focus). Do not reveal full head-and-shoulders framing, and do not zoom out or recrop."
+            if pose.is_lower_body
+            else "FRAMING LOCK (STRICT): render full-body framing matching the mannequin pose reference. "
+                 "Keep head-to-feet visible with matching camera distance and subject scale."
+        )
+    )
+    pose_match_rule = (
+        "Pose lock (STRICT): match mannequin pose 1:1 with zero deviation — same spine/neck orientation, "
+        "same shoulder tilt, same elbow and wrist bend, same finger spread/curl, same pelvis/hip angle, "
+        "same knee and ankle bend, same foot direction and weight distribution. No pose beautification, "
+        "no symmetry correction, no reposing, no limb repositioning."
+    )
 
     return f"""
 You are generating a hyper-realistic studio fashion photograph shot on a full-frame DSLR
@@ -816,6 +868,8 @@ with an 85mm prime lens at f/2.0. Output a single photorealistic image.
   hand position, finger placement, arm angles, shoulder tilt, hip sway, leg stance,
   foot placement, head tilt and overall silhouette must match the mannequin 1:1.
 - Use ONLY the mannequin for posture — its face/skin/clothes/background are irrelevant.
+- {framing_rule}
+- {pose_match_rule}
 
 [PRIORITY 4 — SCENE LIGHTING, SHADOWS, LENS & GROUNDING]
 - Place the subject INTO the background reference as if the photo was actually shot there
@@ -1013,8 +1067,13 @@ def _evolink_compact_prompt(
         else "Use FRONT garment ref."
     )
     if pose.is_upper_body:
-        footwear_rule = "Framing: upper-body only; NO footwear, feet out of frame."
+        framing_rule = "Framing lock: upper-body only (strict waist-up crop); no legs/feet; no zoom-out."
+        footwear_rule = "Footwear: NO footwear; feet must stay out of frame."
+    elif pose.is_lower_body:
+        framing_rule = "Framing lock: lower-body only (strict waist-down / legs focus); no full head-and-shoulders framing; no recrop/zoom-out."
+        footwear_rule = "Footwear: if feet are visible in the mannequin framing, footwear is MANDATORY and must match garment style."
     else:
+        framing_rule = "Framing lock: full-body only (strict head-to-feet framing) matching mannequin camera distance and scale."
         ft = _clean_text(req.get("footwear_type"))
         fs = _clean_text(req.get("footwear_specification"))
         custom = ""
@@ -1024,6 +1083,9 @@ def _evolink_compact_prompt(
             "Framing: full-body; footwear MANDATORY (realistic shoes matching "
             "outfit, both feet visible with contact shadow, no bare feet)." + custom
         )
+    pose_lock = (
+        "Pose lock: EXACT 1:1 mannequin posture — same joints, limb angles, hand/finger placement, pelvis/hip angle, knee/ankle bend, foot direction, weight balance; no re-pose or symmetry clean-up."
+    )
 
     prompt = (
         f"Images: {legend}.\n\n"
@@ -1033,6 +1095,8 @@ def _evolink_compact_prompt(
         "(2) garment fabric/print/seams/trims/color EXACT from ref; "
         "(3) copy mannequin posture exactly (ignore its face/skin/clothes/bg); "
         "(4) subject INSIDE scene light (no cutout/halo/float).\n"
+        f"{framing_rule}\n"
+        f"{pose_lock}\n"
         "SKIN: SSS, visible pores, peach-fuzz on cheeks/jaw, micro-specular on "
         "nose/cheeks/forehead, subtle veins/tendons on hands/forearms, sharp eye "
         "catchlights, tiny lip lines. NO airbrush/plastic/AI-smooth skin.\n"
@@ -1522,6 +1586,7 @@ async def _materialize_and_upscale(pose: PoseRuntime, ctx: PipelineContext) -> N
             "image_id":       image_id,
             "pose_prompt":    pose.pose_prompt,
             "pose_image_url": pose.mannequin_url,
+            "garment_type":   pose.garment_type,
             "image":          display_image,
         }
         pose.output_image = output_image
@@ -1903,6 +1968,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
                 pose_prompt=(pd.get("pose_prompt") or "").strip(),
                 mannequin_url=(pd.get("image_url") or "").strip(),
                 pose_type=(pd.get("pose_type") or "").strip().lower(),
+                garment_type=(pd.get("garment_type") or "").strip().lower(),
             )
             for i, pd in enumerate(pose_data_list, 1)
         ]

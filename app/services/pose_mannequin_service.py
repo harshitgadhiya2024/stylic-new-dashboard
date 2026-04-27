@@ -14,8 +14,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
-import json
 import logging
+import re
 import uuid
 from typing import AsyncGenerator
 
@@ -91,7 +91,13 @@ STRICT RULES for line 2:
 - Line 2 length: 70–120 words.
 - Do not repeat line 1 inside line 2.
 
-Return ONLY line 1, one blank line, then line 2 — no other text.
+MANDATORY LINE 3 — immediately after line 2 (one newline, no extra blank line), a single line exactly in this form (pick one value):
+GARMENT_TYPE: upper_body
+OR: GARMENT_TYPE: lower_body
+OR: GARMENT_TYPE: full_body
+Definitions: upper_body = waist-up / head-and-shoulders / bust / torso crop (legs not in frame or not the focus). lower_body = waist-down / hips–legs emphasis without full upper body in frame. full_body = head-to-toe or both upper and lower body clearly in frame.
+
+Return ONLY line 1, one blank line, line 2, one newline, then line 3 — no other text.
 """
 
 
@@ -110,12 +116,68 @@ def _to_png_bytes(data: bytes) -> bytes:
     return buf.getvalue()
 
 
+_GARMENT_TYPE_RE = re.compile(
+    r"^GARMENT_TYPE:\s*([A-Za-z0-9_\s-]+)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+_VALID_GARMENT = frozenset({"upper_body", "lower_body", "full_body"})
+
+
+def _normalize_garment_type_token(raw: str) -> str:
+    s = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    while "__" in s:
+        s = s.replace("__", "_")
+    if s in _VALID_GARMENT:
+        return s
+    return "full_body"
+
+
+def _infer_garment_type_from_framing_line(pose_prompt: str) -> str:
+    """
+    If GARMENT_TYPE is missing, infer from the leading FRAMING tag line (line 1).
+    """
+    first = (pose_prompt or "").strip().splitlines()[:1]
+    if not first:
+        return "full_body"
+    line = first[0].lower()
+    if "lower half" in line:
+        return "lower_body"
+    if any(
+        p in line
+        for p in (
+            "upper half",
+            "head and shoulder",
+            "bust and upper",
+            "single-side partial",
+            "midsection",
+        )
+    ):
+        return "upper_body"
+    if "full body" in line:
+        return "full_body"
+    return "full_body"
+
+
+def _split_pose_prompt_and_garment_type(text: str) -> tuple[str, str]:
+    raw = (text or "").strip()
+    if not raw:
+        return "", "full_body"
+    matches = list(_GARMENT_TYPE_RE.finditer(raw))
+    if matches:
+        m = matches[-1]
+        gt = _normalize_garment_type_token(m.group(1))
+        before = raw[: m.start()].rstrip()
+        return before, gt
+    return raw, _infer_garment_type_from_framing_line(raw)
+
+
 def _generate_pose_prompt_from_png(
     png_bytes: bytes,
     label: str,
     *,
     pose_type: str = "front",
-) -> str:
+) -> tuple[str, str]:
     pt = (pose_type or "front").strip().lower()
     if pt not in ("front", "back", "side"):
         pt = "front"
@@ -135,7 +197,7 @@ def _generate_pose_prompt_from_png(
     )
     for part in response.candidates[0].content.parts:
         if part.text:
-            return part.text.strip()
+            return _split_pose_prompt_and_garment_type(part.text)
     raise RuntimeError("Gemini returned no pose prompt.")
 
 
@@ -238,7 +300,7 @@ async def stream_pose_from_image_url(
     *,
     pose_type: str = "front",
 ) -> AsyncGenerator[tuple, None]:
-    """Yield ``("progress", msg)`` then ``("done", mannequin_url, pose_prompt)``."""
+    """Yield ``("progress", msg)`` then ``("done", mannequin_url, pose_prompt, garment_type)``."""
     yield ("progress", "Generating mannequin (SeedDream)…")
     raw = await _seedream_mannequin_from_image_url_with_retries(image_url)
     png_bytes = _to_png_bytes(raw)
@@ -248,7 +310,7 @@ async def stream_pose_from_image_url(
     pt = (pose_type or "front").strip().lower()
     if pt not in ("front", "back", "side"):
         pt = "front"
-    pose_prompt = await loop.run_in_executor(
+    pose_prompt, garment_type = await loop.run_in_executor(
         None,
         lambda: _with_retry_sync(
             lambda: _generate_pose_prompt_from_png(png_bytes, "pose_prompt", pose_type=pt),
@@ -259,7 +321,7 @@ async def stream_pose_from_image_url(
     yield ("progress", "Uploading mannequin to R2…")
     url = await upload_mannequin_png(png_bytes)
 
-    yield ("done", url, pose_prompt)
+    yield ("done", url, pose_prompt, garment_type)
 
 
 async def stream_pose_from_text_prompt(
@@ -275,7 +337,7 @@ async def stream_pose_from_text_prompt(
     pt = (pose_type or "front").strip().lower()
     if pt not in ("front", "back", "side"):
         pt = "front"
-    derived_pose_prompt = await loop.run_in_executor(
+    derived_pose_prompt, garment_type = await loop.run_in_executor(
         None,
         lambda: _with_retry_sync(
             lambda: _generate_pose_prompt_from_png(png_bytes, "pose_prompt_text", pose_type=pt),
@@ -285,4 +347,4 @@ async def stream_pose_from_text_prompt(
 
     yield ("progress", "Uploading mannequin to R2…")
     url = await upload_mannequin_png(png_bytes)
-    yield ("done", url, derived_pose_prompt)
+    yield ("done", url, derived_pose_prompt, garment_type)
