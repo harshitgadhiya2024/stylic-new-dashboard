@@ -24,8 +24,6 @@ logger = logging.getLogger("contact_sales")
 _MAX = {
     "first_name":  100,
     "last_name":   100,
-    "job_title":   200,
-    "company_name": 200,
     "message":     5000,
 }
 
@@ -33,8 +31,6 @@ _MAX = {
 async def process_contact_sales_submission(body: ContactSalesRequest) -> dict[str, Any]:
     first = sanitize_plain_line(body.first_name, _MAX["first_name"])
     last = sanitize_plain_line(body.last_name, _MAX["last_name"])
-    job = sanitize_plain_line(body.job_title, _MAX["job_title"])
-    comp = sanitize_plain_line(body.company_name, _MAX["company_name"])
     phone = sanitize_optional_phone(body.phone)
     msg = sanitize_message(body.message, _MAX["message"])
     work_email = body.work_email  # already normalized by Pydantic
@@ -49,9 +45,6 @@ async def process_contact_sales_submission(body: ContactSalesRequest) -> dict[st
         "last_name":             last,
         "work_email":            work_email,
         "phone":                 phone,
-        "job_title":             job,
-        "company_name":          comp,
-        "company_size":          body.company_size,
         "message":               msg,
         "conversation_channel":  "email",
         "status":                "pending",
