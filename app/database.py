@@ -96,6 +96,14 @@ def get_admins_collection() -> AsyncIOMotorCollection:
     return get_database()["admins"]
 
 
+def get_mail_templates_collection() -> AsyncIOMotorCollection:
+    return get_database()["mail_templates"]
+
+
+def get_mail_sends_collection() -> AsyncIOMotorCollection:
+    return get_database()["mail_sends"]
+
+
 async def create_indexes() -> None:
     """Create all collection indexes. Call once at application startup."""
     db = get_database()
@@ -178,7 +186,6 @@ async def create_indexes() -> None:
     contact_sales = db["contact_sales"]
     await contact_sales.create_index("submission_id", unique=True)
     await contact_sales.create_index("work_email")
-    await contact_sales.create_index("email")
     await contact_sales.create_index("status")
     await contact_sales.create_index("created_at")
 
@@ -191,3 +198,14 @@ async def create_indexes() -> None:
     await blogs.create_index("status")
     await blogs.create_index("blog_post_date_and_time")
     await blogs.create_index("created_at")
+
+    mail_templates = db["mail_templates"]
+    await mail_templates.create_index("mail_template_id", unique=True, name="mail_template_id_unique")
+    await mail_templates.create_index("admin_id")
+    await mail_templates.create_index("created_at")
+
+    mail_sends = db["mail_sends"]
+    await mail_sends.create_index("mail_sender_id", unique=True, name="mail_sender_id_unique")
+    await mail_sends.create_index("mail_template_id")
+    await mail_sends.create_index("created_at")
+    await mail_sends.create_index("admin_id")

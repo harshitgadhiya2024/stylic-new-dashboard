@@ -1,28 +1,33 @@
-"""Render ``{{ var }}`` placeholders in admin mail templates; escape values for HTML."""
+"""Render admin mail templates with ``{{key}}`` and ``{key}`` substitution."""
 
 from __future__ import annotations
 
-import html
-import re
-from typing import Any, Dict
-
-_PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
+import html as html_lib
+from typing import Any, Mapping
 
 
 def render_template_string(
     template: str,
-    data: Dict[str, Any],
+    values: Mapping[str, Any],
     *,
-    is_html: bool = True,
+    escape_for_html: bool,
 ) -> str:
-    def repl(m: re.Match[str]) -> str:
-        key = m.group(1)
-        raw = data.get(key, "")
-        if raw is None:
-            raw = ""
-        s = str(raw)
-        if is_html:
-            return html.escape(s, quote=True)
-        return s
-
-    return _PLACEHOLDER.sub(repl, template or "")
+    """
+    Replace ``{{name}}`` first, then ``{name}`` (longer keys first to reduce partial matches).
+    Values are stringified; when ``escape_for_html`` is True, values are HTML-escaped.
+    """
+    out = str(template or "")
+    items = sorted(
+        ((str(k).strip(), v) for k, v in values.items() if str(k).strip()),
+        key=lambda x: len(x[0]),
+        reverse=True,
+    )
+    for k, v in items:
+        raw = "" if v is None else str(v)
+        repl = html_lib.escape(raw, quote=False) if escape_for_html else raw
+        out = out.replace("{{" + k + "}}", repl)
+    for k, v in items:
+        raw = "" if v is None else str(v)
+        repl = html_lib.escape(raw, quote=False) if escape_for_html else raw
+        out = out.replace("{" + k + "}", repl)
+    return out

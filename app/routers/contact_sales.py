@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/v1", tags=["Contact / Sales"])
     summary="Contact sales (public form)",
     description=(
         "Submit the marketing site contact / sales form. Honeypot, strict plaintext validation, "
-        "per-IP and per-email rate limits, then confirmation email; "
+        "per-IP and per-email rate limits, then confirmation email to the work address; "
         "a database record is created only after the message is sent."
     ),
 )
@@ -35,7 +35,7 @@ async def post_contact_sales(request: Request, body: ContactSalesRequest) -> Con
         # Indistinguishable success for bots; no email, no DB, no rate counters
         return ContactSalesResponse(ok=True, message=_ok_msg)
 
-    enforce_rate_limits_for_contact(request, body.email)
+    enforce_rate_limits_for_contact(request, body.work_email)
 
     try:
         await process_contact_sales_submission(body)
