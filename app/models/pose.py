@@ -69,7 +69,7 @@ class PoseSchema(BaseModel):
     pose_prompt: str
     garment_type: str = Field(
         default="",
-        description="upper_body, lower_body, or full_body (from vision when the pose was created).",
+        description="upper_body or full_body (from vision when the pose was created).",
     )
     image_url: str
     count: int = 0

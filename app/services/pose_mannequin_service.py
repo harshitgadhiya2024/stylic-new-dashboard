@@ -82,7 +82,7 @@ Examine the mannequin image carefully. The user selected pose orientation VIEW =
 Your reply will be stored and reused as a pose prompt. It MUST lead with explicit shoot / framing metadata, then the body pose.
 
 MANDATORY LINE 1 — start your entire output with this exact prefix (fill the bracketed choices from the image only):
-Output tags: FRAMING = <choose exactly one: full body | upper half body | lower half body | head and shoulders | bust and upper chest (garment detail, may exclude full head if cropped) | midsection waist–hip garment detail (no head in frame) | single-side partial upper body (only one arm/hand visible)>; VIEW = <front | back | side — use **{pose_type}** unless the mannequin clearly faces another way, then pick the closest>; FOCUS = <choose exactly one: full-body pose | upper-body garment drape and fabric detailing pose | lower-body stance | head and neck region | macro garment intersection only>.
+Output tags: FRAMING = <choose exactly one: full body | upper half body | lower half body | head and shoulders | bust and upper chest (garment detail, may exclude full head if cropped) | midsection waist–hip garment detail (no head in frame) | single-side partial upper body (only one arm/hand visible)>; VIEW = <front | back | side — use **{pose_type}** unless the mannequin clearly faces another way, then pick the closest>; FOCUS = <choose exactly one: full-body pose | upper-body garment drape and fabric detailing pose | legs-and-stance emphasis | head and neck region | macro garment intersection only>.
 
 MANDATORY LINE 2 — blank line after line 1, then dense comma-separated pose-only phrases (no prose sentences). Describe ONLY anatomy that is VISIBLE in the image: e.g. if no head in frame, do not mention head; if only one arm, describe only that arm; if no legs, do not mention legs or feet.
 
@@ -91,11 +91,10 @@ STRICT RULES for line 2:
 - Line 2 length: 70–120 words.
 - Do not repeat line 1 inside line 2.
 
-MANDATORY LINE 3 — immediately after line 2 (one newline, no extra blank line), a single line exactly in this form (pick one value):
+MANDATORY LINE 3 — immediately after line 2 (one newline, no extra blank line), a single line exactly in this form (pick one value only — these are the only allowed values):
 GARMENT_TYPE: upper_body
-OR: GARMENT_TYPE: lower_body
 OR: GARMENT_TYPE: full_body
-Definitions: upper_body = waist-up / head-and-shoulders / bust / torso crop (legs not in frame or not the focus). lower_body = waist-down / hips–legs emphasis without full upper body in frame. full_body = head-to-toe or both upper and lower body clearly in frame.
+Definitions: upper_body = waist-up / head-and-shoulders / bust / torso crop (legs not in frame or not the focus). full_body = head-to-toe or near full body in frame, or any framing that is not upper_body-only.
 
 Return ONLY line 1, one blank line, line 2, one newline, then line 3 — no other text.
 """
@@ -121,13 +120,15 @@ _GARMENT_TYPE_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
-_VALID_GARMENT = frozenset({"upper_body", "lower_body", "full_body"})
+_VALID_GARMENT = frozenset({"upper_body", "full_body"})
 
 
 def _normalize_garment_type_token(raw: str) -> str:
     s = raw.strip().lower().replace(" ", "_").replace("-", "_")
     while "__" in s:
         s = s.replace("__", "_")
+    if s == "lower_body":
+        return "full_body"
     if s in _VALID_GARMENT:
         return s
     return "full_body"
@@ -141,8 +142,6 @@ def _infer_garment_type_from_framing_line(pose_prompt: str) -> str:
     if not first:
         return "full_body"
     line = first[0].lower()
-    if "lower half" in line:
-        return "lower_body"
     if any(
         p in line
         for p in (
@@ -154,7 +153,7 @@ def _infer_garment_type_from_framing_line(pose_prompt: str) -> str:
         )
     ):
         return "upper_body"
-    if "full body" in line:
+    if "lower half" in line or "full body" in line:
         return "full_body"
     return "full_body"
 

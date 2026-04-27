@@ -118,7 +118,7 @@ class PoseRuntime:
     pose_prompt: str
     mannequin_url: str
     pose_type: str = ""
-    # From poses collection: upper_body | lower_body | full_body (optional for legacy poses)
+    # From poses collection: upper_body | full_body (optional; missing = full-body default)
     garment_type: str = ""
     # Stage-1 output
     generated_url: Optional[str] = None
@@ -144,54 +144,27 @@ class PoseRuntime:
         return "back" in (self.pose_prompt or "").lower()
 
     @property
-    def is_upper_body(self) -> bool:
-        """True when the pose clearly only shows the upper half (head → waist).
-
-        Used to decide whether footwear must be rendered.  Anything that is
-        explicitly a headshot / portrait / half / bust / torso / waist-up
-        framing counts as upper-body.  Full-body (the default) requires shoes.
-        """
+    def effective_garment_type(self) -> str:
+        """``upper_body`` or ``full_body``; missing/unknown/legacy ``lower_body`` → ``full_body``."""
         g = (self.garment_type or "").strip().lower().replace("-", "_").replace(" ", "_")
         while "__" in g:
             g = g.replace("__", "_")
         if g == "upper_body":
-            return True
-        if g in ("lower_body", "full_body"):
-            return False
-        text = (self.pose_prompt or "").lower()
-        upper_markers = (
-            "upper body", "upper-body", "upper half", "half body", "half-body",
-            "waist up", "waist-up", "waist-level", "bust shot", "bust-shot",
-            "headshot", "head shot", "portrait", "torso", "chest up", "chest-up",
-            "close up", "close-up", "closeup", "shoulders up", "shoulder up",
-        )
-        return any(m in text for m in upper_markers)
+            return "upper_body"
+        return "full_body"
 
     @property
-    def is_lower_body(self) -> bool:
-        """True when the pose is specifically lower-half framing."""
-        g = (self.garment_type or "").strip().lower().replace("-", "_").replace(" ", "_")
-        while "__" in g:
-            g = g.replace("__", "_")
-        if g == "lower_body":
-            return True
-        if g in ("upper_body", "full_body"):
-            return False
-        text = (self.pose_prompt or "").lower()
-        lower_markers = (
-            "lower body", "lower-body", "lower half", "waist down", "waist-down",
-            "legs", "leg pose", "hip", "hips", "thigh", "thighs", "calf", "calves",
-            "ankle", "ankles", "foot", "feet",
-        )
-        return any(m in text for m in lower_markers)
+    def is_upper_body(self) -> bool:
+        """True only when ``garment_type`` is ``upper_body`` (strict upper-half framing).
+
+        If ``garment_type`` is missing, empty, or anything other than ``upper_body``,
+        this is false — **full-body** is the default (no inference from ``pose_prompt``).
+        """
+        return self.effective_garment_type == "upper_body"
 
     @property
     def framing_label(self) -> str:
-        if self.is_upper_body:
-            return "upper-body"
-        if self.is_lower_body:
-            return "lower-body"
-        return "full-body"
+        return "upper-body" if self.is_upper_body else "full-body"
 
     @property
     def is_generated(self) -> bool:
@@ -799,13 +772,9 @@ def _core_prompt(pose: PoseRuntime, req: dict) -> str:
         "FRAMING LOCK (STRICT): render ONLY upper-body framing from the mannequin pose reference "
         "(waist-up / torso crop). Do not reveal hips, legs, knees, or feet, and do not zoom out."
         if pose.is_upper_body
-        else (
-            "FRAMING LOCK (STRICT): render ONLY lower-body framing from the mannequin pose reference "
-            "(waist-down / legs focus). Do not reveal full head-and-shoulders framing, and do not zoom out or recrop."
-            if pose.is_lower_body
-            else "FRAMING LOCK (STRICT): render full-body framing matching the mannequin pose reference. "
-                 "Keep head-to-feet visible with matching camera distance and subject scale."
-        )
+        else "FRAMING LOCK (STRICT): render full-body framing matching the mannequin pose reference. "
+        "Keep head-to-feet visible with matching camera distance and subject scale (use full-body when "
+        "garment_type is absent or not upper-body-only)."
     )
     pose_match_rule = (
         "Pose lock (STRICT): match mannequin pose 1:1 with zero deviation — same spine/neck orientation, "
@@ -1069,9 +1038,6 @@ def _evolink_compact_prompt(
     if pose.is_upper_body:
         framing_rule = "Framing lock: upper-body only (strict waist-up crop); no legs/feet; no zoom-out."
         footwear_rule = "Footwear: NO footwear; feet must stay out of frame."
-    elif pose.is_lower_body:
-        framing_rule = "Framing lock: lower-body only (strict waist-down / legs focus); no full head-and-shoulders framing; no recrop/zoom-out."
-        footwear_rule = "Footwear: if feet are visible in the mannequin framing, footwear is MANDATORY and must match garment style."
     else:
         framing_rule = "Framing lock: full-body only (strict head-to-feet framing) matching mannequin camera distance and scale."
         ft = _clean_text(req.get("footwear_type"))
