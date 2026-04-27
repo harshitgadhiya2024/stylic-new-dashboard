@@ -143,7 +143,7 @@ def _email_increase_mem(email: str) -> None:
         _mem_email[h] = (cnt + 1, t0)
 
 
-def enforce_rate_limits_for_contact(request: Request, work_email: str) -> str:
+def enforce_rate_limits_for_contact(request: Request, email: str) -> str:
     """
     Enforce per-email 24h quota (read-only) first, then per-IP limit (increments IP).
     Returns client IP.
@@ -151,14 +151,14 @@ def enforce_rate_limits_for_contact(request: Request, work_email: str) -> str:
     ip = client_ip_from_request(request)
     r = _get_redis()
     if r is not None:
-        if not _email_quota_ok_redis(r, work_email):
+        if not _email_quota_ok_redis(r, email):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Too many requests from this email address. Please try again later.",
             )
         _ip_limit_redis(r, ip)
     else:
-        if not _email_quota_ok_mem(work_email):
+        if not _email_quota_ok_mem(email):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Too many requests from this email address. Please try again later.",

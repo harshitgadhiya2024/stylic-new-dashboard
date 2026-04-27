@@ -92,6 +92,10 @@ def get_blogs_collection() -> AsyncIOMotorCollection:
     return get_database()["blogs"]
 
 
+def get_admins_collection() -> AsyncIOMotorCollection:
+    return get_database()["admins"]
+
+
 async def create_indexes() -> None:
     """Create all collection indexes. Call once at application startup."""
     db = get_database()
@@ -174,8 +178,13 @@ async def create_indexes() -> None:
     contact_sales = db["contact_sales"]
     await contact_sales.create_index("submission_id", unique=True)
     await contact_sales.create_index("work_email")
+    await contact_sales.create_index("email")
     await contact_sales.create_index("status")
     await contact_sales.create_index("created_at")
+
+    admins = db["admins"]
+    await admins.create_index("admin_id", unique=True)
+    await admins.create_index("email", unique=True)
 
     blogs = db["blogs"]
     await blogs.create_index("blog_id", unique=True, name="blog_id_unique")

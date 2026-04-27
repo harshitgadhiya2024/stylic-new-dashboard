@@ -148,6 +148,7 @@ _PURPOSE_LABELS = {
     "login":       "Login Verification",
     "forgot_password": "Password Reset",
     "change_email":   "Email Change Verification",
+    "admin_login":  "Admin login verification",
 }
 
 
@@ -328,3 +329,77 @@ async def send_welcome_email(to_email: str, first_name: str = "") -> None:
             logger.warning("Welcome email skipped: no Resend or SMTP configured.")
     except (aiosmtplib.SMTPException, httpx.HTTPError, RuntimeError, OSError) as exc:
         logger.warning("Could not send welcome email to %s: %s", to_email, exc)
+
+
+async def send_custom_mail(
+    from_email: str,
+    to_email: str,
+    subject: str,
+    *,
+    html_body: str | None = None,
+    text_body: str | None = None,
+) -> None:
+    """
+    Send a single message with a custom ``From`` (must be allowed by Resend domain / SMTP server).
+    One of ``html_body`` or ``text_body`` is required.
+    """
+    if not html_body and not text_body:
+        raise ValueError("send_custom_mail requires html_body or text_body")
+    to_e = (to_email or "").strip().lower()
+    if not to_e:
+        raise ValueError("Recipient email is required.")
+    from_a = (from_email or "").strip()
+    if not from_a:
+        from_a = (settings.RESEND_FROM_EMAIL or settings.SMTP_EMAIL or "").strip()
+    if not from_a:
+        raise RuntimeError("No sender address: set from_email, RESEND_FROM_EMAIL, or SMTP_EMAIL.")
+
+    if settings.RESEND_API_KEY and settings.RESEND_FROM_EMAIL:
+        headers = {
+            "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+            "Content-Type":  "application/json",
+        }
+        payload: dict = {
+            "from":    from_a,
+            "to":      [to_e],
+            "subject": subject,
+        }
+        if html_body:
+            payload["html"] = html_body
+        if text_body:
+            payload["text"] = text_body
+        if not html_body and text_body:
+            payload["html"] = f"<pre>{html.escape(text_body, quote=True)}</pre>"
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post("https://api.resend.com/emails", headers=headers, json=payload)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Resend API error ({resp.status_code}): {resp.text}")
+        return
+
+    if not (settings.SMTP_SERVER and settings.SMTP_EMAIL and settings.SMTP_PASSWORD):
+        raise RuntimeError("Resend and SMTP are not configured; cannot send mail.")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = from_a
+    msg["To"]      = to_e
+    if html_body:
+        msg.attach(MIMEText(html_body, "html"))
+    if text_body:
+        msg.attach(MIMEText(text_body, "plain"))
+    if html_body and not text_body:
+        pass
+    elif not html_body and text_body:
+        pass
+    if not msg.get_payload():
+        msg.attach(MIMEText(html_body or text_body or "", "html" if html_body else "plain"))
+
+    await aiosmtplib.send(
+        msg,
+        hostname=settings.SMTP_SERVER,
+        port=settings.SMTP_PORT,
+        username=settings.SMTP_EMAIL,
+        password=settings.SMTP_PASSWORD,
+        start_tls=True,
+    )

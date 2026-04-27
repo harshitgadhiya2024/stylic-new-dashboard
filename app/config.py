@@ -232,6 +232,15 @@ class Settings(BaseSettings):
     # Empty string disables admin routes (they return 503).
     ADMIN_API_KEY: str = ""
 
+    # JWT for dashboard admins (`/api/v1/admins/*`) — separate from end-user tokens.
+    # If empty, falls back to ``JWT_SECRET_KEY`` (set a distinct secret in production).
+    ADMIN_JWT_SECRET_KEY: str = ""
+    ADMIN_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    ADMIN_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    # If set, ``POST /api/v1/admins/auth/bootstrap`` can create the first superadmin when the
+    # ``admins`` collection is empty (one-time; header ``X-Admin-Bootstrap-Key``).
+    ADMIN_BOOTSTRAP_KEY: str = ""
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000

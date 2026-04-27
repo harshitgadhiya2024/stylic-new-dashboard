@@ -4,14 +4,10 @@ Public contact-sales form (no authentication).
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic import EmailStr
-
-
-# UI drop-down — keep in sync with website options
-CompanySize = Literal["1-10", "11-50", "51-200", "201-1000", "1001+"]
 
 
 class ContactSalesRequest(BaseModel):
@@ -19,11 +15,8 @@ class ContactSalesRequest(BaseModel):
 
     first_name: str = Field(..., min_length=1, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
-    work_email: EmailStr
+    email: EmailStr
     phone: Optional[str] = Field(default=None, max_length=32)
-    job_title: str = Field(..., min_length=1, max_length=200)
-    company_name: str = Field(..., min_length=1, max_length=200)
-    company_size: CompanySize
     message: str = Field(..., min_length=1, max_length=5000)
     # Honeypot: must stay empty; not advertised to humans in marketing copy
     website: Optional[str] = Field(
@@ -31,7 +24,7 @@ class ContactSalesRequest(BaseModel):
         max_length=500,
     )
 
-    @field_validator("work_email", mode="after")
+    @field_validator("email", mode="after")
     @classmethod
     def _lower_email(cls, v: str) -> str:
         return v.strip().lower()
@@ -48,7 +41,7 @@ class ContactSalesRequest(BaseModel):
             raise ValueError("Invalid control characters")
         return s
 
-    @field_validator("first_name", "last_name", "job_title", "company_name", mode="after")
+    @field_validator("first_name", "last_name", mode="after")
     @classmethod
     def _no_brackets_or_controls(cls, v: str) -> str:
         s = (v or "").strip()
