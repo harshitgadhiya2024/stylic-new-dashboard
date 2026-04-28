@@ -41,7 +41,7 @@ _STATUS_URL = "https://api.kie.ai/api/v1/jobs/recordInfo"
 POSE_MANNEQUIN_SEEDDREAM_PROMPT_MAX_CHARS = 3000
 
 MANNEQUIN_PROMPT = """\
-Fashion-tech editor: convert the person photo into a clean grey mannequin on pure white (#FFFFFF) only.
+Fashion-tech editor: convert the input photo into a clean neutral mannequin on pure white (#FFFFFF) only.
 
 VISIBILITY (strict — highest priority):
 - Only regions visible in the input; crop edges are hard limits — never reveal cropped-out body parts.
@@ -52,8 +52,8 @@ VISIBILITY (strict — highest priority):
 - Head-and-shoulders / over-shoulder: only what is in frame. Full head-to-feet mannequin only if source is full body — never zoom out to a catalogue full body.
 
 MANNEQUIN (visible areas only):
-- Skin #9E9E9E matte grey, no texture. Featureless face + bald only if head is in frame; if head cropped out, do not draw a head.
-- Male segment proportions for visible parts; match source silhouette — do not infer hidden full-body shape.
+- Use neutral matte grey (#9E9E9E) mannequin surface with no texture or identity details.
+- Keep only the visible body region shapes from the source silhouette — do not infer hidden full-body shape.
 
 GARMENTS (visible regions only; no extras):
 - Only plain white half-sleeve tee + plain dark charcoal jeans — no prints, logos, patterns, jacket, hoodie, vest, belt, jewellery, hat, bag, scarf, socks, shoes.

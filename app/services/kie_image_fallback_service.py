@@ -33,10 +33,16 @@ def _kie_api_key() -> str:
 
 
 def _model_chain() -> list[str]:
-    return [
+    chain = [
         (getattr(settings, "KIE_PRIMARY_IMAGE_MODEL", "") or "nano-banana-2").strip(),
         (getattr(settings, "KIE_FALLBACK_IMAGE_MODEL", "") or "gpt-image-2").strip(),
     ]
+    # keep order, drop empties and duplicates
+    out: list[str] = []
+    for m in chain:
+        if m and m not in out:
+            out.append(m)
+    return out
 
 
 def _build_input_payload(
@@ -159,6 +165,10 @@ async def generate_image_with_model_fallback(
                 err = f"{model} attempt {attempt}/{retries}: {exc}"
                 logger.warning("[%s] %s", label, err)
                 errors.append(err)
+                # If model is unsupported by KIE, do not waste retries on it.
+                if "not supported" in str(exc).lower() or "code': 422" in str(exc):
+                    logger.warning("[%s] model=%s unsupported; skipping further retries", label, model)
+                    break
                 if attempt < retries:
                     await asyncio.sleep(2.0)
     raise RuntimeError(f"All fallback models failed. {' | '.join(errors)}")
