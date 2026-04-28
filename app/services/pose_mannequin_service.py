@@ -83,7 +83,7 @@ Examine the mannequin image carefully.
 Your reply will be stored and reused as a pose prompt. It MUST lead with explicit shoot / framing metadata, then the body pose.
 
 MANDATORY LINE 1 — start your entire output with this exact prefix (fill the bracketed choices from the image only):
-Output tags: FRAMING = <choose exactly one: full body | upper half body | lower half body | head and shoulders | bust and upper chest (garment detail, may exclude full head if cropped) | midsection waist–hip garment detail (no head in frame) | single-side partial upper body (only one arm/hand visible)>; VIEW = <front | back | side — use **{pose_type}** unless the mannequin clearly faces another way, then pick the closest>; FOCUS = <choose exactly one: full-body pose | upper-body garment drape and fabric detailing pose | legs-and-stance emphasis | head and neck region | macro garment intersection only>.
+Output tags: FRAMING = <choose exactly one: full body | upper half body | lower half body | head and shoulders | bust and upper chest (garment detail, may exclude full head if cropped) | midsection waist–hip garment detail (no head in frame) | single-side partial upper body (only one arm/hand visible)>; VIEW = <front | back | side>; FOCUS = <choose exactly one: full-body pose | upper-body garment drape and fabric detailing pose | legs-and-stance emphasis | head and neck region | macro garment intersection only>.
 
 MANDATORY LINE 2 — blank line after line 1, then dense comma-separated pose-only phrases (no prose sentences). Describe ONLY anatomy that is VISIBLE in the image: e.g. if no head in frame, do not mention head; if only one arm, describe only that arm; if no legs, do not mention legs or feet.
 
