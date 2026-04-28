@@ -6,10 +6,11 @@ Architecture (mirrors ``pipeline.py`` at the repo root, adapted to this app):
   Stage-1 GENERATION — provider fallback chain (each provider tried for all
   pending poses before moving to the next provider):
 
-      1) KIE.ai  nano-banana-2        (concurrency 10, retries 2)
-      2) Vertex  nano-banana-2 direct (concurrency 2,  retries 4)
-      3) Vertex  nano-banana-pro      (concurrency 2,  retries 4)
-      4) Evolink nano-banana-2        (concurrency 10, retries 10)
+      1) KIE.ai  nano-banana-2                 (concurrency 10, retries 3)
+      2) KIE.ai  gpt-image-2-image-to-image    (concurrency 10, retries 3)
+      3) Vertex  nano-banana-2 direct          (concurrency 2,  retries 4)
+      4) Vertex  nano-banana-pro               (concurrency 2,  retries 4)
+      5) Evolink nano-banana-2                 (concurrency 10, retries 10)
 
   Stage-2 UPSCALE — streamed per-pose materialize + upscale.  Each pose
   runs downstream work as soon as its own generation finishes; successful
@@ -19,7 +20,7 @@ Architecture (mirrors ``pipeline.py`` at the repo root, adapted to this app):
 
 LangGraph graph (``build_photoshoot_graph``):
 
-  init  ─► gen_kie_nb2  ─► gen_vertex_nb2  ─► gen_vertex_nbpro  ─► gen_evolink_nb2  ─► finalize ─► END
+  init  ─► gen_kie_nb2  ─► gen_kie_gpt_image_2_i2i  ─► gen_vertex_nb2  ─► gen_vertex_nbpro  ─► gen_evolink_nb2  ─► finalize ─► END
 
 Each ``gen_*`` node kicks off two things concurrently for every pending pose:
   • generation with the node's provider (with retries+timeout), and
@@ -101,10 +102,11 @@ class GenPolicy:
 
 
 GEN_POLICIES: List[GenPolicy] = [
-    GenPolicy(name="kie_nb2",       concurrency=10, retries=2),
-    GenPolicy(name="vertex_nb2",    concurrency=2,  retries=4),
-    GenPolicy(name="vertex_nbpro",  concurrency=2,  retries=4),
-    GenPolicy(name="evolink_nb2",   concurrency=10, retries=10),
+    GenPolicy(name="kie_nb2",             concurrency=10, retries=3),
+    GenPolicy(name="kie_gpt_image_2_i2i", concurrency=10, retries=3),
+    GenPolicy(name="vertex_nb2",          concurrency=2,  retries=4),
+    GenPolicy(name="vertex_nbpro",        concurrency=2,  retries=4),
+    GenPolicy(name="evolink_nb2",         concurrency=10, retries=10),
 ]
 
 
@@ -1175,7 +1177,26 @@ def _kie_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {_kie_api_key()}", "Content-Type": "application/json"}
 
 
-def _kie_create_nb2_task_sync(prompt: str, image_urls: List[str]) -> str:
+def _kie_input_payload(model: str, prompt: str, image_urls: List[str]) -> dict[str, Any]:
+    if model == "gpt-image-2-image-to-image":
+        return {
+            "prompt": prompt,
+            "input_urls": image_urls,
+            "aspect_ratio": settings.PHOTOSHOOT_GEN_ASPECT_RATIO,
+            "resolution": settings.PHOTOSHOOT_GEN_RESOLUTION,
+            "nsfw_checker": False,
+        }
+
+    return {
+        "prompt": prompt,
+        "image_input": image_urls,
+        "aspect_ratio": settings.PHOTOSHOOT_GEN_ASPECT_RATIO,
+        "resolution": settings.PHOTOSHOOT_GEN_RESOLUTION,
+        "output_format": "jpg",
+    }
+
+
+def _kie_create_task_sync(model: str, prompt: str, image_urls: List[str]) -> str:
     """Submit one KIE createTask, rate-limited globally across all workers.
 
     Every call first acquires a token from the Redis sliding-window limiter
@@ -1188,14 +1209,8 @@ def _kie_create_nb2_task_sync(prompt: str, image_urls: List[str]) -> str:
     from app.services import kie_rate_limiter
 
     body = {
-        "model": "nano-banana-2",
-        "input": {
-            "prompt": prompt,
-            "image_input": image_urls,
-            "aspect_ratio": settings.PHOTOSHOOT_GEN_ASPECT_RATIO,
-            "resolution": settings.PHOTOSHOOT_GEN_RESOLUTION,
-            "output_format": "jpg",
-        },
+        "model": model,
+        "input": _kie_input_payload(model, prompt, image_urls),
     }
 
     last_exc: Optional[BaseException] = None
@@ -1283,7 +1298,13 @@ def _kie_poll_sync(task_id: str, timeout_s: float) -> str:
 
 def _agent_kie_nb2_sync(pose: PoseRuntime, req: dict, mf: str, bg: str) -> str:
     prompt, urls = _prompt_with_url_preamble(pose, req, mf, bg)
-    task_id = _kie_create_nb2_task_sync(prompt, urls)
+    task_id = _kie_create_task_sync("nano-banana-2", prompt, urls)
+    return _kie_poll_sync(task_id, timeout_s=settings.PHOTOSHOOT_GEN_PER_IMAGE_TIMEOUT_S)
+
+
+def _agent_kie_gpt_image_2_i2i_sync(pose: PoseRuntime, req: dict, mf: str, bg: str) -> str:
+    prompt, urls = _prompt_with_url_preamble(pose, req, mf, bg)
+    task_id = _kie_create_task_sync("gpt-image-2-image-to-image", prompt, urls)
     return _kie_poll_sync(task_id, timeout_s=settings.PHOTOSHOOT_GEN_PER_IMAGE_TIMEOUT_S)
 
 
@@ -1480,10 +1501,11 @@ def _agent_vertex_nbpro_sync(pose: PoseRuntime, req: dict, mf: str, bg: str) -> 
 
 
 GENERATOR_AGENTS: dict[str, Callable[[PoseRuntime, dict, str, str], Any]] = {
-    "kie_nb2":      _agent_kie_nb2_sync,
-    "vertex_nb2":   _agent_vertex_nb2_sync,
-    "vertex_nbpro": _agent_vertex_nbpro_sync,
-    "evolink_nb2":  _agent_evolink_nb2_sync,
+    "kie_nb2":             _agent_kie_nb2_sync,
+    "kie_gpt_image_2_i2i": _agent_kie_gpt_image_2_i2i_sync,
+    "vertex_nb2":          _agent_vertex_nb2_sync,
+    "vertex_nbpro":        _agent_vertex_nbpro_sync,
+    "evolink_nb2":         _agent_evolink_nb2_sync,
 }
 
 
@@ -1832,7 +1854,7 @@ def build_photoshoot_graph():
     Graph shape (each provider → next provider if any pose still missing,
     else → finalize):
 
-        init → gen_kie_nb2 → gen_vertex_nb2 → gen_vertex_nbpro → gen_evolink_nb2 → finalize → END
+        init → gen_kie_nb2 → gen_kie_gpt_image_2_i2i → gen_vertex_nb2 → gen_vertex_nbpro → gen_evolink_nb2 → finalize → END
     """
     g = StateGraph(PipelineState)
     g.add_node("init", _node_init)
