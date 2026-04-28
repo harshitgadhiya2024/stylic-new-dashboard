@@ -18,6 +18,7 @@ from app.models.model_face import (
 from app.services.ai_face_service import coerce_age_to_int, generate_and_upload_face_stream
 from app.services.face_to_model_service import generate_model_face_from_reference_stream
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
+from app.utils.streaming_errors import custom_input_policy_error_payload
 from app.utils.ethnicity_normalization import (
     ethnicity_canonical_label,
     ethnicity_semantic_key,
@@ -523,11 +524,11 @@ async def create_model_face(
                     )
                 else:
                     yield _sse(step, {"step": step, "message": message})
-        except HTTPException as exc:
-            yield _sse("error", {"step": "error", "message": exc.detail})
+        except HTTPException:
+            yield _sse("error", custom_input_policy_error_payload())
             return
-        except Exception as exc:
-            yield _sse("error", {"step": "error", "message": str(exc)})
+        except Exception:
+            yield _sse("error", custom_input_policy_error_payload())
             return
 
         if generated_face_url:
@@ -638,11 +639,11 @@ async def create_model_face_with_ai(
                     )
                 else:
                     yield _sse(step, {"step": step, "message": message})
-        except HTTPException as exc:
-            yield _sse("error", {"step": "error", "message": exc.detail})
+        except HTTPException:
+            yield _sse("error", custom_input_policy_error_payload())
             return
-        except Exception as exc:
-            yield _sse("error", {"step": "error", "message": str(exc)})
+        except Exception:
+            yield _sse("error", custom_input_policy_error_payload())
             return
 
         if generated_face_url:

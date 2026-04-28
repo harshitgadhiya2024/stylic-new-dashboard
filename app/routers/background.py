@@ -16,6 +16,7 @@ from app.models.background import (
 )
 from app.services.background_service import generate_background_stream, generate_background_with_ai_stream
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
+from app.utils.streaming_errors import custom_input_policy_error_payload
 
 router = APIRouter(prefix="/api/v1/backgrounds", tags=["Backgrounds"])
 
@@ -172,11 +173,11 @@ async def create_background(
                     yield _sse("done", {"step": "done", "message": "Custom background upload complete", "data": payload})
                 else:
                     yield _sse(step, {"step": step, "message": message})
-        except HTTPException as exc:
-            yield _sse("error", {"step": "error", "message": exc.detail})
+        except HTTPException:
+            yield _sse("error", custom_input_policy_error_payload())
             return
-        except Exception as exc:
-            yield _sse("error", {"step": "error", "message": str(exc)})
+        except Exception:
+            yield _sse("error", custom_input_policy_error_payload())
             return
 
         if generated_bg_url:
@@ -253,11 +254,11 @@ async def create_background_with_ai(
                     yield _sse("done", {"step": "done", "message": "Background generation complete", "data": payload})
                 else:
                     yield _sse(step, {"step": step, "message": message})
-        except HTTPException as exc:
-            yield _sse("error", {"step": "error", "message": exc.detail})
+        except HTTPException:
+            yield _sse("error", custom_input_policy_error_payload())
             return
-        except Exception as exc:
-            yield _sse("error", {"step": "error", "message": str(exc)})
+        except Exception:
+            yield _sse("error", custom_input_policy_error_payload())
             return
 
         if generated_bg_url:

@@ -17,6 +17,7 @@ from app.models.pose import (
 )
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
 from app.services.pose_mannequin_service import stream_pose_from_image_url, stream_pose_from_text_prompt
+from app.utils.streaming_errors import custom_input_policy_error_payload
 
 router = APIRouter(prefix="/api/v1/poses", tags=["Poses"])
 
@@ -359,10 +360,10 @@ async def create_pose_from_image(
                 generated_face_url=mannequin_url,
                 notes=body.notes or "",
             )
-        except HTTPException as exc:
-            yield _sse("error", {"step": "error", "message": exc.detail})
-        except Exception as exc:
-            yield _sse("error", {"step": "error", "message": str(exc)})
+        except HTTPException:
+            yield _sse("error", custom_input_policy_error_payload())
+        except Exception:
+            yield _sse("error", custom_input_policy_error_payload())
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
@@ -458,10 +459,10 @@ async def create_pose_from_prompt(
                 generated_face_url=mannequin_url,
                 notes=body.notes or "",
             )
-        except HTTPException as exc:
-            yield _sse("error", {"step": "error", "message": exc.detail})
-        except Exception as exc:
-            yield _sse("error", {"step": "error", "message": str(exc)})
+        except HTTPException:
+            yield _sse("error", custom_input_policy_error_payload())
+        except Exception:
+            yield _sse("error", custom_input_policy_error_payload())
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
