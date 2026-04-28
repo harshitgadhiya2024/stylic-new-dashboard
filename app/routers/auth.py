@@ -34,19 +34,19 @@ from app.services.otp_service import (
     get_pending_otp,
 )
 from app.utils.password import hash_password, verify_password, validate_password_strength
-from app.utils.user_response import user_dict_for_api
+from app.utils.user_response import user_dict_for_api_with_credit_metrics
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
 
 # ─────────────────────────── Helpers ──────────────────────────────────────
 
-def _clean_user(user: dict) -> dict:
-    return user_dict_for_api(user)
+async def _clean_user(user: dict) -> dict:
+    return await user_dict_for_api_with_credit_metrics(user)
 
 
-def _build_token_response(user: dict) -> dict:
-    clean = _clean_user(user)
+async def _build_token_response(user: dict) -> dict:
+    clean = await _clean_user(user)
     return {
         "access_token": create_access_token(user["user_id"]),
         "refresh_token": create_refresh_token(user["user_id"]),
@@ -178,7 +178,7 @@ async def register_verify_otp(body: VerifyOTPRequest, background_tasks: Backgrou
         user_doc.get("first_name") or "",
     )
 
-    return _build_token_response(user_doc)
+    return await _build_token_response(user_doc)
 
 
 @router.post(
@@ -276,7 +276,7 @@ async def login_verify_otp(body: VerifyOTPRequest):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found.")
 
     await consume_otp(body.email, "login")
-    return _build_token_response(user)
+    return await _build_token_response(user)
 
 
 @router.post(
@@ -314,7 +314,7 @@ async def refresh_token(body: RefreshTokenRequest):
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found.")
 
-    return _build_token_response(user)
+    return await _build_token_response(user)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -451,7 +451,7 @@ async def google_sign_in(body: GoogleSignInRequest, background_tasks: Background
 
     if user:
         user.pop("_id", None)
-        return _build_token_response(user)
+        return await _build_token_response(user)
 
     user_doc = _new_user_doc(
         email=email,
@@ -470,4 +470,4 @@ async def google_sign_in(body: GoogleSignInRequest, background_tasks: Background
         first_name,
     )
 
-    return _build_token_response(user_doc)
+    return await _build_token_response(user_doc)

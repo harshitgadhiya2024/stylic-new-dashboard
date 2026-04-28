@@ -73,6 +73,9 @@ class UserSchema(BaseModel):
     time_zone: Optional[str] = ""
     credits: float = 5.0
     plan: str = ""
+    total_credit: float = 0.0
+    used_credit: float = 0.0
+    credit_percentage: int = 0
     role_mapping_dict: dict[str, Any]
     plan_mapping_dict: dict[str, Any]
     auth_provider: str = "email"

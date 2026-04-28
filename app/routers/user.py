@@ -18,7 +18,7 @@ from app.services.email_service import send_otp_email
 from app.services.otp_service import generate_otp, save_otp, verify_otp, consume_otp
 from app.services.r2_service import upload_file_to_r2
 from app.utils.password import hash_password, verify_password, validate_password_strength
-from app.utils.user_response import user_dict_for_api
+from app.utils.user_response import user_dict_for_api_with_credit_metrics
 
 router = APIRouter(prefix="/api/v1/user", tags=["User"])
 
@@ -30,8 +30,8 @@ _ALLOWED_MIME_TYPES = {
 
 # ─────────────────────────── Helpers ──────────────────────────────────────
 
-def _clean_user(user: dict) -> dict:
-    return user_dict_for_api(user)
+async def _clean_user(user: dict) -> dict:
+    return await user_dict_for_api_with_credit_metrics(user)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -66,7 +66,7 @@ async def store_onboarding(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found.",
         )
-    return _clean_user(updated)
+    return await _clean_user(updated)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -79,7 +79,7 @@ async def store_onboarding(
     summary="Get My Profile",
 )
 async def get_me(current_user: dict = Depends(get_current_user)):
-    return _clean_user(current_user)
+    return await _clean_user(current_user)
 
 
 @router.put(
@@ -119,7 +119,7 @@ async def update_me(body: UpdateUserRequest, current_user: dict = Depends(get_cu
     )
 
     updated = await col.find_one({"user_id": current_user["user_id"]})
-    return _clean_user(updated)
+    return await _clean_user(updated)
 
 
 @router.delete(
@@ -289,7 +289,7 @@ async def change_email_verify_otp(
     await consume_otp(body.new_email, "change_email")
 
     updated = await col.find_one({"user_id": current_user["user_id"]})
-    return _clean_user(updated)
+    return await _clean_user(updated)
 
 
 # ══════════════════════════════════════════════════════════════════════════
