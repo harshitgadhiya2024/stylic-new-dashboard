@@ -1,7 +1,19 @@
 from datetime import datetime, timezone
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, status
+from typing import Literal
 
-from app.database import get_users_collection
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Query, status
+
+from app.database import (
+    get_backgrounds_collection,
+    get_credit_history_collection,
+    get_model_faces_collection,
+    get_payment_history_collection,
+    get_photoshoots_collection,
+    get_poses_collection,
+    get_remove_background_collection,
+    get_user_upscaled_collection,
+    get_users_collection,
+)
 from app.dependencies import get_current_user
 from app.models.user import (
     ChangeEmailRequest,
@@ -32,6 +44,45 @@ _ALLOWED_MIME_TYPES = {
 
 async def _clean_user(user: dict) -> dict:
     return await user_dict_for_api_with_credit_metrics(user)
+
+
+async def _sum_numeric_field(collection, match: dict, field_name: str) -> float:
+    pipeline = [
+        {"$match": match},
+        {
+            "$group": {
+                "_id": None,
+                "total": {
+                    "$sum": {
+                        "$convert": {
+                            "input": f"${field_name}",
+                            "to": "double",
+                            "onError": 0.0,
+                            "onNull": 0.0,
+                        }
+                    }
+                },
+            }
+        },
+    ]
+    rows = await collection.aggregate(pipeline).to_list(length=1)
+    if not rows:
+        return 0.0
+    return float(rows[0].get("total", 0.0) or 0.0)
+
+
+def _feature_percentages(feature_counts: dict[str, int]) -> dict[str, float]:
+    total = sum(max(0, int(v)) for v in feature_counts.values())
+    if total <= 0:
+        return {k: 0.0 for k in feature_counts}
+
+    raw_bp = {k: (max(0, int(v)) * 10000) / total for k, v in feature_counts.items()}
+    floored_bp = {k: int(v) for k, v in raw_bp.items()}
+    remainder = 10000 - sum(floored_bp.values())
+    order = sorted(raw_bp.keys(), key=lambda k: (raw_bp[k] - floored_bp[k]), reverse=True)
+    for idx in range(remainder):
+        floored_bp[order[idx % len(order)]] += 1
+    return {k: round(floored_bp[k] / 100.0, 2) for k in feature_counts}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -80,6 +131,140 @@ async def store_onboarding(
 )
 async def get_me(current_user: dict = Depends(get_current_user)):
     return await _clean_user(current_user)
+
+
+@router.get(
+    "/dashboard-analytics",
+    summary="Get user dashboard analytics",
+    description="Returns user-level spend, credits, generation counts, feature usage counts, and feature usage percentages.",
+)
+async def get_dashboard_analytics(current_user: dict = Depends(get_current_user)):
+    user_id = current_user["user_id"]
+
+    payment_history_col = get_payment_history_collection()
+    photoshoots_col = get_photoshoots_collection()
+    backgrounds_col = get_backgrounds_collection()
+    model_faces_col = get_model_faces_collection()
+    poses_col = get_poses_collection()
+    credit_history_col = get_credit_history_collection()
+    remove_bg_col = get_remove_background_collection()
+    user_upscaled_col = get_user_upscaled_collection()
+
+    total_cost = await _sum_numeric_field(
+        payment_history_col,
+        {"user_id": user_id},
+        "amount_converted",
+    )
+    available_credits = round(float(current_user.get("credits", 0) or 0), 4)
+    generations = await photoshoots_col.count_documents({"user_id": user_id})
+
+    feature_counts = {
+        "total_custom_background": await backgrounds_col.count_documents(
+            {"user_id": user_id, "is_default": False}
+        ),
+        "total_custom_models": await model_faces_col.count_documents(
+            {"user_id": user_id, "is_default": False}
+        ),
+        "total_custom_poses": await poses_col.count_documents(
+            {"user_id": user_id, "is_default": False}
+        ),
+        "total_background_change": await credit_history_col.count_documents(
+            {"user_id": user_id, "regeneration_type": "background_change"}
+        ),
+        "total_regerated": await credit_history_col.count_documents(
+            {"user_id": user_id, "regeneration_type": "regenerate"}
+        ),
+        "total_color_change": await credit_history_col.count_documents(
+            {"user_id": user_id, "regeneration_type": "color_change"}
+        ),
+        "total_upscaled": await credit_history_col.count_documents(
+            {
+                "user_id": user_id,
+                "regeneration_type": {"$in": ["upscale (4x)", "upscale (2x)", "upscale (8x)"]},
+            }
+        ),
+        "total_fabric_change": await credit_history_col.count_documents(
+            {"user_id": user_id, "regeneration_type": "fabric_change"}
+        ),
+        "total_branding": await credit_history_col.count_documents(
+            {"user_id": user_id, "regeneration_type": "branding"}
+        ),
+        "total_remove_background": await remove_bg_col.count_documents({"user_id": user_id}),
+        "total_users_upscaled": await user_upscaled_col.count_documents({"user_id": user_id}),
+    }
+
+    return {
+        "total_cost": round(total_cost, 4),
+        "available_credits": available_credits,
+        "generations": generations,
+        "used_features": feature_counts,
+        "used_feature_percentages": _feature_percentages(feature_counts),
+    }
+
+
+@router.get(
+    "/credit-history",
+    summary="Get my credit history (paginated)",
+    description="Returns paginated credit history records for the authenticated user with selected fields only.",
+)
+async def get_my_credit_history(
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: Literal[25, 50, 75, 100] = Query(
+        25,
+        description="Page size. Supported values: 25, 50, 75, 100.",
+    ),
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    col = get_credit_history_collection()
+    skip = (page - 1) * int(limit)
+    total = await col.count_documents({"user_id": user_id})
+    total_pages = max(1, (total + int(limit) - 1) // int(limit))
+
+    cur = (
+        col.find({"user_id": user_id})
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(int(limit))
+    )
+
+    items = []
+    async for row in cur:
+        items.append(
+            {
+                "history_id": row.get("history_id", ""),
+                "type": row.get("type", ""),
+                "feature_name": row.get("feature_name", ""),
+                "credit": row.get("credit", 0),
+                "updated_at": row.get("updated_at") or row.get("created_at"),
+            }
+        )
+
+    return {
+        "total": total,
+        "page": page,
+        "limit": int(limit),
+        "total_pages": total_pages,
+        "credit_history": items,
+    }
+
+
+@router.get(
+    "/get-invoices",
+    summary="Get my invoices",
+    description="Returns all payment_history records for the authenticated user.",
+)
+async def get_my_invoices(
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    col = get_payment_history_collection()
+    cur = col.find({"user_id": user_id}).sort("created_at", -1)
+    invoices = []
+    async for row in cur:
+        row.pop("_id", None)
+        invoices.append(row)
+    return {"invoices": invoices}
 
 
 @router.put(
