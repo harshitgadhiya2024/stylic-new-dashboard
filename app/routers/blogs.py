@@ -1,7 +1,7 @@
 """
 Blogs: public read (published only) and admin CRUD under ``/api/v1/admin/``.
 
-Admin write routes require header ``X-Admin-API-Key`` (see :envvar:`ADMIN_API_KEY`).
+Admin write routes require admin JWT Bearer token.
 Public GETs require no authentication.
 """
 
@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pymongo import ReturnDocument
 
 from app.database import get_blogs_collection
-from app.dependencies import verify_admin_api_key
+from app.dependencies import require_admin_roles
 from app.models.blog import (
     BlogRecord,
     CreateBlogRequest,
@@ -30,11 +30,11 @@ public_router = APIRouter(
     tags=["Blogs (public)"],
 )
 
-# ── Admin (X-Admin-API-Key) — prefix includes ``admin`` ─────────────────────
+# ── Admin (Bearer admin JWT) — prefix includes ``admin`` ────────────────────
 
 admin_router = APIRouter(
     prefix="/api/v1/admin/blogs",
-    dependencies=[Depends(verify_admin_api_key)],
+    dependencies=[Depends(require_admin_roles("superadmin", "admin", "blogger"))],
     tags=["Admin — Blogs"],
 )
 
@@ -75,6 +75,68 @@ async def admin_create_blog(body: CreateBlogRequest) -> dict[str, Any]:
     }
     col = get_blogs_collection()
     await col.insert_one(doc)
+    return _doc_to_record(doc)
+
+
+@admin_router.get(
+    "",
+    response_model=list[BlogRecord],
+    summary="List blogs (admin)",
+    description="Returns blogs for admin panel. Optional `status` filter supports draft/published/archived.",
+)
+async def admin_list_blogs(
+    status_filter: str | None = Query(
+        default=None,
+        alias="status",
+        description="Optional status filter: draft, published, archived.",
+    ),
+    skip: int = Query(0, ge=0, le=1_000_000),
+    limit: int = Query(30, ge=1, le=100),
+) -> list[dict[str, Any]]:
+    query: dict[str, Any] = {}
+    if status_filter is not None:
+        normalized_status = status_filter.strip().lower()
+        if normalized_status not in _ALLOWED_STATUS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid status filter. Allowed: {sorted(_ALLOWED_STATUS)}",
+            )
+        query["status"] = normalized_status
+
+    col = get_blogs_collection()
+    cur = (
+        col.find(query)
+        .sort(
+            [
+                ("blog_post_date_and_time", -1),
+                ("created_at", -1),
+            ]
+        )
+        .skip(skip)
+        .limit(limit)
+    )
+    out: list[dict[str, Any]] = []
+    async for doc in cur:
+        out.append(_doc_to_record(doc))
+    return out
+
+
+@admin_router.get(
+    "/{blog_id}",
+    response_model=BlogRecord,
+    summary="Get one blog (admin)",
+    description="Returns one blog for admin panel by `blog_id` (any status).",
+)
+async def admin_get_blog(
+    blog_id: str = Path(..., min_length=1, max_length=64),
+) -> dict[str, Any]:
+    col = get_blogs_collection()
+    doc = await col.find_one({"blog_id": blog_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Blog not found for this blog_id.",
+        )
     return _doc_to_record(doc)
 
 

@@ -104,6 +104,10 @@ def get_mail_sends_collection() -> AsyncIOMotorCollection:
     return get_database()["mail_sends"]
 
 
+def get_promo_codes_collection() -> AsyncIOMotorCollection:
+    return get_database()["promo_codes"]
+
+
 async def create_indexes() -> None:
     """Create all collection indexes. Call once at application startup."""
     db = get_database()
@@ -209,3 +213,11 @@ async def create_indexes() -> None:
     await mail_sends.create_index("mail_template_id")
     await mail_sends.create_index("created_at")
     await mail_sends.create_index("admin_id")
+
+    promo_codes = db["promo_codes"]
+    await promo_codes.create_index("promo_id", unique=True, name="promo_id_unique")
+    await promo_codes.create_index("promo_code", unique=True, name="promo_code_unique")
+    await promo_codes.create_index("is_active")
+    await promo_codes.create_index("promo_type")
+    await promo_codes.create_index("expiry_date")
+    await promo_codes.create_index("created_at")

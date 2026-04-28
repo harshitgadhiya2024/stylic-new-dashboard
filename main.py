@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import (
     admins,
     admin_mail,
+    admin_dashboard_analytics,
     admin_user_management,
     auth,
     user,
@@ -20,6 +21,7 @@ from app.routers import (
     payment,
     contact_sales,
     blogs,
+    promo_codes,
 )
 from app.firebase_config import get_firebase_app
 from app.config import settings
@@ -73,6 +75,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(admins.router)
 app.include_router(admin_mail.router)
+app.include_router(admin_dashboard_analytics.router)
 app.include_router(admin_user_management.router)
 app.include_router(user.router)
 app.include_router(model_face.router)
@@ -87,6 +90,8 @@ app.include_router(payment.router)
 app.include_router(contact_sales.router)
 app.include_router(blogs.public_router)
 app.include_router(blogs.admin_router)
+app.include_router(promo_codes.admin_router)
+app.include_router(promo_codes.user_router)
 
 
 @app.get("/", tags=["Root"])
