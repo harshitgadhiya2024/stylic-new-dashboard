@@ -12,6 +12,7 @@ class PoseListItem(BaseModel):
 
 
 _POSE_TYPES = frozenset({"front", "back", "side"})
+_GARMENT_TYPES = frozenset({"upper_body", "full_body"})
 
 
 def normalize_pose_type_value(value: str) -> str:
@@ -25,9 +26,40 @@ def normalize_pose_type_value(value: str) -> str:
     )
 
 
+def normalize_optional_pose_type_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    return normalize_pose_type_value(s)
+
+
+def normalize_optional_garment_type_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    s = str(value).strip().lower().replace(" ", "_").replace("-", "_")
+    while "__" in s:
+        s = s.replace("__", "_")
+    if not s:
+        return None
+    if s == "lower_body":
+        return "full_body"
+    if s in _GARMENT_TYPES:
+        return s
+    raise ValueError("garment_type must be one of: upper_body, full_body.")
+
+
 class CreatePoseFromImageRequest(BaseModel):
     pose_name: str
-    pose_type: str = Field(..., description="front, back, or side (any case).")
+    pose_type: Optional[str] = Field(
+        default=None,
+        description="front, back, or side (any case). Optional; inferred from AI when omitted.",
+    )
+    garment_type: Optional[str] = Field(
+        default=None,
+        description="upper_body or full_body. Optional; inferred from AI when omitted.",
+    )
     image_url: str
     tags: Optional[List[str]] = None
     notes: Optional[str] = ""
@@ -35,20 +67,37 @@ class CreatePoseFromImageRequest(BaseModel):
     @field_validator("pose_type", mode="before")
     @classmethod
     def _pose_type(cls, v):
-        return normalize_pose_type_value(v)
+        return normalize_optional_pose_type_value(v)
+
+    @field_validator("garment_type", mode="before")
+    @classmethod
+    def _garment_type(cls, v):
+        return normalize_optional_garment_type_value(v)
 
 
 class CreatePoseFromPromptRequest(BaseModel):
     pose_name: str
     pose_prompt: str
-    pose_type: str = Field(..., description="front, back, or side (any case).")
+    pose_type: Optional[str] = Field(
+        default=None,
+        description="front, back, or side (any case). Optional; inferred from AI when omitted.",
+    )
+    garment_type: Optional[str] = Field(
+        default=None,
+        description="upper_body or full_body. Optional; inferred from AI when omitted.",
+    )
     tags: Optional[List[str]] = None
     notes: Optional[str] = ""
 
     @field_validator("pose_type", mode="before")
     @classmethod
     def _pose_type_prompt(cls, v):
-        return normalize_pose_type_value(v)
+        return normalize_optional_pose_type_value(v)
+
+    @field_validator("garment_type", mode="before")
+    @classmethod
+    def _garment_type_prompt(cls, v):
+        return normalize_optional_garment_type_value(v)
 
 
 class DeletePosesRequest(BaseModel):

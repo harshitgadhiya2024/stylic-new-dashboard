@@ -77,7 +77,8 @@ if len(MANNEQUIN_PROMPT) > POSE_MANNEQUIN_SEEDDREAM_PROMPT_MAX_CHARS:
 
 POSE_PROMPT_INSTRUCTION_TEMPLATE = """\
 You are an expert prompt engineer for AI image generation.
-Examine the mannequin image carefully. The user selected pose orientation VIEW = **{pose_type}** (front = facing camera, side = profile, back = back toward camera).
+Examine the mannequin image carefully.
+{pose_type_instruction}
 
 Your reply will be stored and reused as a pose prompt. It MUST lead with explicit shoot / framing metadata, then the body pose.
 
@@ -119,6 +120,10 @@ _GARMENT_TYPE_RE = re.compile(
     r"^GARMENT_TYPE:\s*([A-Za-z0-9_\s-]+)\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
+_VIEW_TYPE_RE = re.compile(
+    r"(?i)\bVIEW\s*=\s*(front|back|side)\b",
+    re.MULTILINE,
+)
 
 _VALID_GARMENT = frozenset({"upper_body", "full_body"})
 
@@ -132,6 +137,15 @@ def _normalize_garment_type_token(raw: str) -> str:
     if s in _VALID_GARMENT:
         return s
     return "full_body"
+
+
+def _normalize_pose_type_token(raw: str) -> str:
+    s = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    while "__" in s:
+        s = s.replace("__", "_")
+    if s in ("front", "back", "side"):
+        return s
+    return "front"
 
 
 def _infer_garment_type_from_framing_line(pose_prompt: str) -> str:
@@ -158,29 +172,44 @@ def _infer_garment_type_from_framing_line(pose_prompt: str) -> str:
     return "full_body"
 
 
-def _split_pose_prompt_and_garment_type(text: str) -> tuple[str, str]:
+def _split_pose_prompt_and_metadata(text: str) -> tuple[str, str, str]:
     raw = (text or "").strip()
     if not raw:
-        return "", "full_body"
+        return "", "full_body", "front"
+    m_view = _VIEW_TYPE_RE.search(raw)
+    view = _normalize_pose_type_token(m_view.group(1)) if m_view else "front"
     matches = list(_GARMENT_TYPE_RE.finditer(raw))
     if matches:
         m = matches[-1]
         gt = _normalize_garment_type_token(m.group(1))
         before = raw[: m.start()].rstrip()
-        return before, gt
-    return raw, _infer_garment_type_from_framing_line(raw)
+        return before, gt, view
+    return raw, _infer_garment_type_from_framing_line(raw), view
+
+
+def _build_pose_type_instruction(pose_type: str | None) -> str:
+    pt = (pose_type or "").strip().lower()
+    if pt in ("front", "back", "side"):
+        return (
+            f"The user selected pose orientation VIEW = **{pt}** "
+            "(front = facing camera, side = profile, back = back toward camera). "
+            "Use this unless the mannequin clearly faces another way; then pick the closest."
+        )
+    return (
+        "Infer VIEW from the mannequin orientation and choose exactly one of: front, back, side "
+        "(front = facing camera, side = profile, back = back toward camera)."
+    )
 
 
 def _generate_pose_prompt_from_png(
     png_bytes: bytes,
     label: str,
     *,
-    pose_type: str = "front",
-) -> tuple[str, str]:
-    pt = (pose_type or "front").strip().lower()
-    if pt not in ("front", "back", "side"):
-        pt = "front"
-    instruction = POSE_PROMPT_INSTRUCTION_TEMPLATE.format(pose_type=pt)
+    pose_type: str | None = None,
+) -> tuple[str, str, str]:
+    instruction = POSE_PROMPT_INSTRUCTION_TEMPLATE.format(
+        pose_type_instruction=_build_pose_type_instruction(pose_type)
+    )
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
     parts = [
         gtypes.Part.from_bytes(mime_type="image/png", data=png_bytes),
@@ -196,7 +225,7 @@ def _generate_pose_prompt_from_png(
     )
     for part in response.candidates[0].content.parts:
         if part.text:
-            return _split_pose_prompt_and_garment_type(part.text)
+            return _split_pose_prompt_and_metadata(part.text)
     raise RuntimeError("Gemini returned no pose prompt.")
 
 
@@ -297,22 +326,19 @@ async def upload_mannequin_png(png_bytes: bytes) -> str:
 async def stream_pose_from_image_url(
     image_url: str,
     *,
-    pose_type: str = "front",
+    pose_type: str | None = None,
 ) -> AsyncGenerator[tuple, None]:
-    """Yield ``("progress", msg)`` then ``("done", mannequin_url, pose_prompt, garment_type)``."""
-    yield ("progress", "Generating mannequin (SeedDream)…")
+    """Yield ``("progress", msg)`` then ``("done", mannequin_url, pose_prompt, garment_type, pose_type)``."""
+    yield ("progress", "Generating mannequin")
     raw = await _seedream_mannequin_from_image_url_with_retries(image_url)
     png_bytes = _to_png_bytes(raw)
 
     yield ("progress", "Deriving pose description…")
     loop = asyncio.get_running_loop()
-    pt = (pose_type or "front").strip().lower()
-    if pt not in ("front", "back", "side"):
-        pt = "front"
-    pose_prompt, garment_type = await loop.run_in_executor(
+    pose_prompt, garment_type, pose_type_ai = await loop.run_in_executor(
         None,
         lambda: _with_retry_sync(
-            lambda: _generate_pose_prompt_from_png(png_bytes, "pose_prompt", pose_type=pt),
+            lambda: _generate_pose_prompt_from_png(png_bytes, "pose_prompt", pose_type=pose_type),
             "pose prompt",
         ),
     )
@@ -320,30 +346,27 @@ async def stream_pose_from_image_url(
     yield ("progress", "Uploading mannequin to R2…")
     url = await upload_mannequin_png(png_bytes)
 
-    yield ("done", url, pose_prompt, garment_type)
+    yield ("done", url, pose_prompt, garment_type, pose_type_ai)
 
 
 async def stream_pose_from_text_prompt(
     pose_prompt: str,
-    pose_type: str,
+    pose_type: str | None,
 ) -> AsyncGenerator[tuple, None]:
-    yield ("progress", "Generating mannequin from pose description (SeedDream)…")
+    yield ("progress", "Generating mannequin from pose description")
     raw = await _seedream_mannequin_from_text_with_retries(pose_prompt, pose_type)
     png_bytes = _to_png_bytes(raw)
 
     yield ("progress", "Deriving pose description…")
     loop = asyncio.get_running_loop()
-    pt = (pose_type or "front").strip().lower()
-    if pt not in ("front", "back", "side"):
-        pt = "front"
-    derived_pose_prompt, garment_type = await loop.run_in_executor(
+    derived_pose_prompt, garment_type, pose_type_ai = await loop.run_in_executor(
         None,
         lambda: _with_retry_sync(
-            lambda: _generate_pose_prompt_from_png(png_bytes, "pose_prompt_text", pose_type=pt),
+            lambda: _generate_pose_prompt_from_png(png_bytes, "pose_prompt_text", pose_type=pose_type),
             "pose prompt",
         ),
     )
 
     yield ("progress", "Uploading mannequin to R2…")
     url = await upload_mannequin_png(png_bytes)
-    yield ("done", url, derived_pose_prompt, garment_type)
+    yield ("done", url, derived_pose_prompt, garment_type, pose_type_ai)
