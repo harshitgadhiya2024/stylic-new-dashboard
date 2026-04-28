@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -145,17 +145,30 @@ async def send_mail(
 @router.get("/sends")
 async def list_mail_sends(
     admin: dict = Depends(get_current_admin),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
-) -> list[dict[str, Any]]:
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: Literal[25, 50, 75, 100] = Query(
+        25,
+        description="Page size. Supported values: 25, 50, 75, 100.",
+    ),
+) -> dict[str, Any]:
     col = get_mail_sends_collection()
+    skip = (page - 1) * int(limit)
+    total = await col.count_documents({"admin_id": admin["admin_id"]})
+    total_pages = max(1, (total + int(limit) - 1) // int(limit))
     cur = (
         col.find({"admin_id": admin["admin_id"]})
         .sort("created_at", -1)
         .skip(skip)
-        .limit(limit)
+        .limit(int(limit))
     )
-    return [mail_send_public(d) async for d in cur]
+    items = [mail_send_public(d) async for d in cur]
+    return {
+        "total": total,
+        "page": page,
+        "limit": int(limit),
+        "total_pages": total_pages,
+        "sends": items,
+    }
 
 
 @router.get("/sends/{mail_sender_id}")

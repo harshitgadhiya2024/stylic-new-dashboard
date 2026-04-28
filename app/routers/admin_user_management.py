@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -56,21 +56,27 @@ async def _user_by_id(user_id: str) -> dict:
     summary="List all end users (paginated)",
 )
 async def list_users(
-    skip:  int  = Query(0, ge=0, le=1_000_000),
-    limit: int  = Query(200, ge=1, le=1000),
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: Literal[25, 50, 75, 100] = Query(
+        25,
+        description="Page size. Supported values: 25, 50, 75, 100.",
+    ),
     _viewer: dict = Depends(require_user_management_read()),
 ) -> dict[str, Any]:
     _ = _viewer
     col = get_users_collection()
-    total     = await col.count_documents({})
-    cursor     = col.find({}).sort("created_at", -1).skip(skip).limit(limit)
+    skip = (page - 1) * int(limit)
+    total = await col.count_documents({})
+    total_pages = max(1, (total + int(limit) - 1) // int(limit))
+    cursor = col.find({}).sort("created_at", -1).skip(skip).limit(int(limit))
     items: list[dict[str, Any]] = []
     async for doc in cursor:
         items.append(user_dict_for_api(doc))
     return {
         "total": total,
-        "skip":  skip,
-        "limit": limit,
+        "page": page,
+        "limit": int(limit),
+        "total_pages": total_pages,
         "users": items,
     }
 
