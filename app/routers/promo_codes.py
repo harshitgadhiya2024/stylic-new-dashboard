@@ -249,7 +249,7 @@ async def apply_promo_code(
     if already_used:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You already used this code type.",
+            detail="You already used this promo code",
         )
 
     promo_credit = round(float(promo.get("promo_credit", 0) or 0), 4)
