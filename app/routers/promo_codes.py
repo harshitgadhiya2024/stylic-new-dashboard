@@ -223,6 +223,7 @@ async def apply_promo_code(
     body: PromoCodeInput,
     user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
+    user_id = str(user.get("user_id") or "")
     col = get_promo_codes_collection()
     promo = await col.find_one({"promo_code": body.promo_code, "is_active": True})
     if not promo or _is_promo_expired(promo):
@@ -235,6 +236,22 @@ async def apply_promo_code(
             detail="Currently we only support credit promo codes.",
         )
 
+    history_col = get_credit_history_collection()
+    already_used = await history_col.find_one(
+        {
+            "user_id": user_id,
+            "$or": [
+                {"promo_id": promo.get("promo_id")},
+                {"promo_code": promo.get("promo_code")},
+            ],
+        }
+    )
+    if already_used:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You already used this code type.",
+        )
+
     promo_credit = round(float(promo.get("promo_credit", 0) or 0), 4)
     if promo_credit <= 0:
         raise HTTPException(
@@ -243,7 +260,6 @@ async def apply_promo_code(
         )
 
     users_col = get_users_collection()
-    user_id = str(user.get("user_id") or "")
     old_credits = float(user.get("credits", 0) or 0)
     new_credits = round(old_credits + promo_credit, 4)
     now = _now()
@@ -252,7 +268,6 @@ async def apply_promo_code(
         {"$set": {"credits": new_credits, "updated_at": now}},
     )
 
-    history_col = get_credit_history_collection()
     history_doc = {
         "history_id": str(uuid.uuid4()),
         "user_id": user_id,
