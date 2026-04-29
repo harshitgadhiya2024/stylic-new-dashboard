@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Query, status
 
@@ -33,6 +32,8 @@ from app.utils.password import hash_password, verify_password, validate_password
 from app.utils.user_response import user_dict_for_api_with_credit_metrics
 
 router = APIRouter(prefix="/api/v1/user", tags=["User"])
+
+_ALLOWED_CREDIT_HISTORY_LIMITS = frozenset({25, 50, 75, 100})
 
 _ALLOWED_MIME_TYPES = {
     "image/jpeg", "image/png", "image/gif", "image/webp",
@@ -209,12 +210,17 @@ async def get_dashboard_analytics(current_user: dict = Depends(get_current_user)
 )
 async def get_my_credit_history(
     page: int = Query(1, ge=1, description="1-based page number"),
-    limit: Literal[25, 50, 75, 100] = Query(
+    limit: int = Query(
         25,
         description="Page size. Supported values: 25, 50, 75, 100.",
     ),
     current_user: dict = Depends(get_current_user),
 ):
+    if limit not in _ALLOWED_CREDIT_HISTORY_LIMITS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="query.limit must be one of: 25, 50, 75, 100",
+        )
     user_id = current_user["user_id"]
     col = get_credit_history_collection()
     skip = (page - 1) * int(limit)
