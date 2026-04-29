@@ -45,7 +45,11 @@ def _doc_public(doc: dict[str, Any]) -> dict[str, Any]:
 
 def _is_promo_expired(doc: dict[str, Any]) -> bool:
     exp = doc.get("expiry_date")
-    return isinstance(exp, datetime) and exp <= _now()
+    if not isinstance(exp, datetime):
+        return False
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp <= _now()
 
 
 def _promo_filter(promo_id: str | None, promo_code: str | None) -> dict[str, Any]:
