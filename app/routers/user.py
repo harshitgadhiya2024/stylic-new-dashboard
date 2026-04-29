@@ -136,7 +136,7 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 @router.get(
     "/dashboard-analytics",
     summary="Get user dashboard analytics",
-    description="Returns user-level spend, credits, generation counts, feature usage counts, and feature usage percentages.",
+    description="Returns user-level spend (sum of amount_usd for paid payments), credits, generation counts, feature usage counts, and feature usage percentages.",
 )
 async def get_dashboard_analytics(current_user: dict = Depends(get_current_user)):
     user_id = current_user["user_id"]
@@ -152,8 +152,8 @@ async def get_dashboard_analytics(current_user: dict = Depends(get_current_user)
 
     total_cost = await _sum_numeric_field(
         payment_history_col,
-        {"user_id": user_id},
-        "amount_converted",
+        {"user_id": user_id, "status": "paid"},
+        "amount_usd",
     )
     available_credits = round(float(current_user.get("credits", 0) or 0), 4)
     generations = await photoshoots_col.count_documents({"user_id": user_id})
