@@ -33,7 +33,7 @@ from app.utils.user_response import user_dict_for_api_with_credit_metrics
 
 router = APIRouter(prefix="/api/v1/user", tags=["User"])
 
-_ALLOWED_CREDIT_HISTORY_LIMITS = frozenset({25, 50, 75, 100})
+_USER_PAGINATION_LIMITS = frozenset({25, 50, 75, 100})
 
 _ALLOWED_MIME_TYPES = {
     "image/jpeg", "image/png", "image/gif", "image/webp",
@@ -216,7 +216,7 @@ async def get_my_credit_history(
     ),
     current_user: dict = Depends(get_current_user),
 ):
-    if limit not in _ALLOWED_CREDIT_HISTORY_LIMITS:
+    if limit not in _USER_PAGINATION_LIMITS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="query.limit must be one of: 25, 50, 75, 100",
@@ -257,20 +257,44 @@ async def get_my_credit_history(
 
 @router.get(
     "/get-invoices",
-    summary="Get my invoices",
-    description="Returns all payment_history records for the authenticated user.",
+    summary="Get my invoices (paginated)",
+    description="Returns payment_history records for the authenticated user with page-based pagination.",
 )
 async def get_my_invoices(
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: int = Query(
+        25,
+        description="Page size. Supported values: 25, 50, 75, 100.",
+    ),
     current_user: dict = Depends(get_current_user),
 ):
+    if limit not in _USER_PAGINATION_LIMITS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="query.limit must be one of: 25, 50, 75, 100",
+        )
     user_id = current_user["user_id"]
     col = get_payment_history_collection()
-    cur = col.find({"user_id": user_id}).sort("created_at", -1)
+    skip = (page - 1) * int(limit)
+    total = await col.count_documents({"user_id": user_id})
+    total_pages = max(1, (total + int(limit) - 1) // int(limit))
+    cur = (
+        col.find({"user_id": user_id})
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(int(limit))
+    )
     invoices = []
     async for row in cur:
         row.pop("_id", None)
         invoices.append(row)
-    return {"invoices": invoices}
+    return {
+        "total": total,
+        "page": page,
+        "limit": int(limit),
+        "total_pages": total_pages,
+        "invoices": invoices,
+    }
 
 
 @router.put(

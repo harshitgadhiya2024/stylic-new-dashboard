@@ -10,6 +10,7 @@ from app.routers import (
     admin_user_management,
     auth,
     user,
+    tickets,
     model_face,
     background,
     photoshoot,
@@ -78,6 +79,7 @@ app.include_router(admin_mail.router)
 app.include_router(admin_dashboard_analytics.router)
 app.include_router(admin_user_management.router)
 app.include_router(user.router)
+app.include_router(tickets.router)
 app.include_router(model_face.router)
 app.include_router(background.router)
 app.include_router(photoshoot.router)

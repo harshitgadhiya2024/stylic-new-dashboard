@@ -108,6 +108,10 @@ def get_promo_codes_collection() -> AsyncIOMotorCollection:
     return get_database()["promo_codes"]
 
 
+def get_tickets_collection() -> AsyncIOMotorCollection:
+    return get_database()["tickets"]
+
+
 async def create_indexes() -> None:
     """Create all collection indexes. Call once at application startup."""
     db = get_database()
@@ -221,3 +225,9 @@ async def create_indexes() -> None:
     await promo_codes.create_index("promo_type")
     await promo_codes.create_index("expiry_date")
     await promo_codes.create_index("created_at")
+
+    tickets = db["tickets"]
+    await tickets.create_index("ticket_id", unique=True, name="ticket_id_unique")
+    await tickets.create_index("user_id")
+    await tickets.create_index("status")
+    await tickets.create_index("created_at")
