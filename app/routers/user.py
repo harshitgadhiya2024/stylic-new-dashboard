@@ -225,6 +225,7 @@ async def cancel_subscription(
         "updated_at": now,
     }
     await cancel_col.insert_one(cancel_doc)
+    cancel_doc.pop("_id", None)
 
     return {
         "success": True,
