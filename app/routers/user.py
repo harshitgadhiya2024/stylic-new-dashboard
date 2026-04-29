@@ -168,6 +168,7 @@ async def request_delete_account(
         "updated_at": now,
     }
     await delete_req_col.insert_one(doc)
+    doc.pop("_id", None)
 
     return {
         "success": True,
