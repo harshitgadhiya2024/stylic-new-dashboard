@@ -9,7 +9,7 @@ class CreateRazorpayOrderRequest(BaseModel):
     """Create a Razorpay order (USD). User is always taken from auth token."""
 
     credit_type: Literal["plan", "credit"]
-    plan_type: Optional[Literal["silver", "gold", "platinum"]] = None
+    plan_type: Optional[Literal["silver", "gold", "platinum", "enterprise"]] = None
     timeperiod: Optional[Literal["monthly", "yearly"]] = None
     credit: float = Field(..., gt=0, description="Credits to add on successful payment")
     amount: float = Field(

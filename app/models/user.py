@@ -163,6 +163,11 @@ class VerifyEmailChangeRequest(BaseModel):
     otp: str = Field(..., min_length=6, max_length=6)
 
 
+class CancelSubscriptionRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=2000)
+    comments: str = Field(default="", max_length=5000)
+
+
 # ─────────────────────────── Response models ──────────────────────────────
 
 class TokenResponse(BaseModel):

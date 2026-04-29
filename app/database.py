@@ -112,6 +112,14 @@ def get_tickets_collection() -> AsyncIOMotorCollection:
     return get_database()["tickets"]
 
 
+def get_cancel_subscription_collection() -> AsyncIOMotorCollection:
+    return get_database()["cancel_subscription"]
+
+
+def get_delete_account_request_collection() -> AsyncIOMotorCollection:
+    return get_database()["delete_account_request"]
+
+
 async def create_indexes() -> None:
     """Create all collection indexes. Call once at application startup."""
     db = get_database()
@@ -231,3 +239,17 @@ async def create_indexes() -> None:
     await tickets.create_index("user_id")
     await tickets.create_index("status")
     await tickets.create_index("created_at")
+
+    cancel_subscription = db["cancel_subscription"]
+    await cancel_subscription.create_index(
+        "cancel_subscription_id", unique=True, name="cancel_subscription_id_unique"
+    )
+    await cancel_subscription.create_index("user_id")
+    await cancel_subscription.create_index("created_at")
+
+    delete_account_request = db["delete_account_request"]
+    await delete_account_request.create_index(
+        "delete-request-id", unique=True, name="delete_request_id_unique"
+    )
+    await delete_account_request.create_index("user-id")
+    await delete_account_request.create_index("created_at")

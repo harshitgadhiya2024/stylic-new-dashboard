@@ -25,6 +25,7 @@ ALLOWED_USER_ROLE_MAPPING_KEYS: frozenset[str] = frozenset(
         "adjust_image",
         "fabric_change",
         "texture_change",
+        "photoshoot_backup",
     }
 )
 
@@ -48,6 +49,7 @@ class UserRoleMappingPartialRequest(BaseModel):
     adjust_image:         Optional[bool]  = None
     fabric_change:        Optional[bool]  = None
     texture_change:      Optional[bool]  = None
+    photoshoot_backup:   Optional[str]   = None
 
     @field_validator("max_pose")
     @classmethod
@@ -64,6 +66,14 @@ class UserRoleMappingPartialRequest(BaseModel):
         if v is None or not str(v).strip():
             return None
         return str(v).strip()
+
+    @field_validator("photoshoot_backup")
+    @classmethod
+    def backup_norm(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s if s else None
 
 
 class UserPlanPartialRequest(BaseModel):

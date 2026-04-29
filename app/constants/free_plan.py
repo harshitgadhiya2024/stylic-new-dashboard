@@ -20,6 +20,7 @@ FREE_ROLE_MAPPING_DICT: dict = {
     "adjust_image": True,
     "fabric_change": False,
     "texture_change": False,
+    "photoshoot_backup": "2 days",
 }
 
 

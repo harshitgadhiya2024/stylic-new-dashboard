@@ -1,10 +1,14 @@
 from datetime import datetime, timezone
+import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Query, status
 
+from app.constants.free_plan import FREE_ROLE_MAPPING_DICT, build_free_plan_mapping_dict
 from app.database import (
     get_backgrounds_collection,
+    get_cancel_subscription_collection,
     get_credit_history_collection,
+    get_delete_account_request_collection,
     get_model_faces_collection,
     get_payment_history_collection,
     get_photoshoots_collection,
@@ -15,6 +19,7 @@ from app.database import (
 )
 from app.dependencies import get_current_user
 from app.models.user import (
+    CancelSubscriptionRequest,
     ChangeEmailRequest,
     ChangePasswordRequest,
     MessageResponse,
@@ -130,6 +135,101 @@ async def store_onboarding(
 )
 async def get_me(current_user: dict = Depends(get_current_user)):
     return await _clean_user(current_user)
+
+
+@router.post(
+    "/delete-account-request",
+    response_model=MessageResponse,
+    summary="Request account deletion",
+    description=(
+        "Marks current user inactive immediately and stores an account-deletion request record. "
+        "Actual data deletion is processed asynchronously."
+    ),
+)
+async def request_delete_account(
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    now = datetime.now(timezone.utc)
+
+    users_col = get_users_collection()
+    await users_col.update_one(
+        {"user_id": user_id},
+        {"$set": {"is_active": False, "updated_at": now}},
+    )
+
+    delete_req_col = get_delete_account_request_collection()
+    doc = {
+        "delete-request-id": str(uuid.uuid4()),
+        "user-id": user_id,
+        "is_data_deleted": False,
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await delete_req_col.insert_one(doc)
+
+    return {
+        "success": True,
+        "message": (
+            "Your account data deletion process taking 10 days, "
+            "After deleted your data you got mail confirmation"
+        ),
+    }
+
+
+@router.post(
+    "/cancel-subscription",
+    summary="Cancel my subscription",
+    description="Downgrades current user to free plan, resets role mapping to free defaults, and stores a cancellation record.",
+)
+async def cancel_subscription(
+    body: CancelSubscriptionRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    old_plan = str(current_user.get("plan") or "free")
+    current_credit = round(float(current_user.get("credits", 0) or 0), 4)
+    now = datetime.now(timezone.utc)
+
+    users_col = get_users_collection()
+    existing_plan_mapping = current_user.get("plan_mapping_dict")
+    if isinstance(existing_plan_mapping, dict):
+        new_plan_mapping = {**existing_plan_mapping}
+        new_plan_mapping["plan"] = "free"
+    else:
+        new_plan_mapping = build_free_plan_mapping_dict(now=now, plan="free")
+
+    await users_col.update_one(
+        {"user_id": user_id},
+        {
+            "$set": {
+                "plan": "free",
+                "plan_mapping_dict": new_plan_mapping,
+                "role_mapping_dict": dict(FREE_ROLE_MAPPING_DICT),
+                "updated_at": now,
+            }
+        },
+    )
+
+    cancel_col = get_cancel_subscription_collection()
+    cancel_doc = {
+        "cancel_subscription_id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "reason": body.reason.strip(),
+        "comments": (body.comments or "").strip(),
+        "plan_type": old_plan,
+        "current_credit": current_credit,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await cancel_col.insert_one(cancel_doc)
+
+    return {
+        "success": True,
+        "message": "Subscription cancelled and downgraded to free plan.",
+        "data": cancel_doc,
+    }
 
 
 @router.get(

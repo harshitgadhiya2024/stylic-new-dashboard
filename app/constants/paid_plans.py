@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-PlanTier = Literal["silver", "gold", "platinum"]
+PlanTier = Literal["silver", "gold", "platinum", "enterprise"]
 PlanPeriod = Literal["monthly", "yearly"]
 
 # From product spec (testing.txt) — bools normalized to Python bool.
@@ -29,6 +29,7 @@ SILVER_ROLE_MAPPING: dict[str, Any] = {
     "adjust_image": True,
     "fabric_change": False,
     "texture_change": False,
+    "photoshoot_backup": "8 days",
 }
 
 GOLD_ROLE_MAPPING: dict[str, Any] = {
@@ -47,6 +48,7 @@ GOLD_ROLE_MAPPING: dict[str, Any] = {
     "adjust_image": True,
     "fabric_change": False,
     "texture_change": False,
+    "photoshoot_backup": "15 days",
 }
 
 PLATINUM_ROLE_MAPPING: dict[str, Any] = {
@@ -65,12 +67,19 @@ PLATINUM_ROLE_MAPPING: dict[str, Any] = {
     "adjust_image": True,
     "fabric_change": True,
     "texture_change": True,
+    "photoshoot_backup": "18 days",
+}
+
+ENTERPRISE_ROLE_MAPPING: dict[str, Any] = {
+    **PLATINUM_ROLE_MAPPING,
+    "photoshoot_backup": "18 days",
 }
 
 _ROLE_BY_PLAN: dict[str, dict[str, Any]] = {
     "silver":   SILVER_ROLE_MAPPING,
     "gold":     GOLD_ROLE_MAPPING,
     "platinum": PLATINUM_ROLE_MAPPING,
+    "enterprise": ENTERPRISE_ROLE_MAPPING,
 }
 
 
