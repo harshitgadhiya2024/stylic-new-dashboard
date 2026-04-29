@@ -33,8 +33,6 @@ from app.utils.user_response import user_dict_for_api_with_credit_metrics
 
 router = APIRouter(prefix="/api/v1/user", tags=["User"])
 
-_USER_PAGINATION_LIMITS = frozenset({25, 50, 75, 100})
-
 _ALLOWED_MIME_TYPES = {
     "image/jpeg", "image/png", "image/gif", "image/webp",
     "application/pdf", "video/mp4",
@@ -210,17 +208,9 @@ async def get_dashboard_analytics(current_user: dict = Depends(get_current_user)
 )
 async def get_my_credit_history(
     page: int = Query(1, ge=1, description="1-based page number"),
-    limit: int = Query(
-        25,
-        description="Page size. Supported values: 25, 50, 75, 100.",
-    ),
+    limit: int = Query(25, ge=1, description="Page size (integer)."),
     current_user: dict = Depends(get_current_user),
 ):
-    if limit not in _USER_PAGINATION_LIMITS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="query.limit must be one of: 25, 50, 75, 100",
-        )
     user_id = current_user["user_id"]
     col = get_credit_history_collection()
     skip = (page - 1) * int(limit)
@@ -262,17 +252,9 @@ async def get_my_credit_history(
 )
 async def get_my_invoices(
     page: int = Query(1, ge=1, description="1-based page number"),
-    limit: int = Query(
-        25,
-        description="Page size. Supported values: 25, 50, 75, 100.",
-    ),
+    limit: int = Query(25, ge=1, description="Page size (integer)."),
     current_user: dict = Depends(get_current_user),
 ):
-    if limit not in _USER_PAGINATION_LIMITS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="query.limit must be one of: 25, 50, 75, 100",
-        )
     user_id = current_user["user_id"]
     col = get_payment_history_collection()
     skip = (page - 1) * int(limit)

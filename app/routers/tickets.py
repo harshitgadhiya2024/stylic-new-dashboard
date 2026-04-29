@@ -55,6 +55,24 @@ async def create_ticket(
 
 
 @router.get(
+    "",
+    response_model=list[TicketRecord],
+    summary="Get all tickets",
+    description="Returns all tickets created by the current user.",
+)
+async def get_all_tickets(
+    current_user: dict = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    uid = str(current_user["user_id"])
+    col = get_tickets_collection()
+    cur = col.find({"user_id": uid}).sort("created_at", -1)
+    out: list[dict[str, Any]] = []
+    async for doc in cur:
+        out.append(_to_public(doc))
+    return out
+
+
+@router.get(
     "/{ticket_id}",
     response_model=TicketRecord,
     summary="Get ticket details",

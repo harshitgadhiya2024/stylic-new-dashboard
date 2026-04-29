@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pymongo import ReturnDocument
@@ -95,10 +95,7 @@ async def create_promo_code(body: CreatePromoCodeRequest) -> dict[str, Any]:
 )
 async def get_all_promo_codes(
     page: int = Query(1, ge=1, description="1-based page number"),
-    limit: Literal[25, 50, 75, 100] = Query(
-        25,
-        description="Page size. Supported values: 25, 50, 75, 100.",
-    ),
+    limit: int = Query(25, ge=1, description="Page size (integer)."),
 ) -> dict[str, Any]:
     col = get_promo_codes_collection()
     skip = (page - 1) * int(limit)

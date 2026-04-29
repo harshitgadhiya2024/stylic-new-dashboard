@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -57,10 +57,7 @@ async def _user_by_id(user_id: str) -> dict:
 )
 async def list_users(
     page: int = Query(1, ge=1, description="1-based page number"),
-    limit: Literal[25, 50, 75, 100] = Query(
-        25,
-        description="Page size. Supported values: 25, 50, 75, 100.",
-    ),
+    limit: int = Query(25, ge=1, description="Page size (integer)."),
     _viewer: dict = Depends(require_user_management_read()),
 ) -> dict[str, Any]:
     _ = _viewer
