@@ -74,6 +74,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(promo_codes.admin_router)
 app.include_router(admins.router)
 app.include_router(admin_mail.router)
 app.include_router(admin_dashboard_analytics.router)
@@ -92,7 +93,6 @@ app.include_router(payment.router)
 app.include_router(contact_sales.router)
 app.include_router(blogs.public_router)
 app.include_router(blogs.admin_router)
-app.include_router(promo_codes.admin_router)
 app.include_router(promo_codes.user_router)
 
 

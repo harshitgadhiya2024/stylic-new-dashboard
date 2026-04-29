@@ -330,12 +330,12 @@ async def create_admin(
     summary="Change an admin's role (superadmin only); request body: { role }",
 )
 async def change_admin_role(
+    body: AdminChangeRoleRequest,
     admin_id: str = Path(
         ...,
         pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
         description="Admin UUID",
     ),
-    body: AdminChangeRoleRequest,
     _me: dict = Depends(require_admin_roles("superadmin")),
 ):
     col = get_admins_collection()
@@ -373,12 +373,12 @@ async def change_admin_role(
     summary="Update an admin's name and/or email (superadmin only)",
 )
 async def update_admin(
+    body: AdminUpdateRequest,
     admin_id: str = Path(
         ...,
         pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
         description="Admin UUID",
     ),
-    body: AdminUpdateRequest,
     _me: dict = Depends(require_admin_roles("superadmin")),
 ):
     if body.name is None and body.email is None:
