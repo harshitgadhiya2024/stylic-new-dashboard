@@ -38,6 +38,8 @@ from app.utils.user_response import user_dict_for_api_with_credit_metrics
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
+_BLOCKED_ACCOUNT_MESSAGE = "Your account is deleted or blocked so contact administrator."
+
 
 # ─────────────────────────── Helpers ──────────────────────────────────────
 
@@ -58,6 +60,14 @@ async def _build_token_response(user: dict) -> dict:
 def _generate_username(first_name: str, last_name: str, phone_number: str) -> str:
     suffix = phone_number[-5:] if len(phone_number) >= 5 else phone_number
     return f"{first_name}_{last_name}_{suffix}".lower()
+
+
+def _raise_if_inactive_user(user: dict | None) -> None:
+    if user and not bool(user.get("is_active", True)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=_BLOCKED_ACCOUNT_MESSAGE,
+        )
 
 
 def _new_user_doc(
@@ -114,8 +124,10 @@ def _new_user_doc(
 )
 async def register(body: RegisterRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
+    existing = await col.find_one({"email": body.email})
+    _raise_if_inactive_user(existing)
 
-    if await col.find_one({"email": body.email}):
+    if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="An account with this email already exists.",
@@ -155,8 +167,10 @@ async def register_verify_otp(body: VerifyOTPRequest, background_tasks: Backgrou
 
     hashed_password = record.get("hashed_password", "")
     col = get_users_collection()
+    existing = await col.find_one({"email": body.email})
+    _raise_if_inactive_user(existing)
 
-    if await col.find_one({"email": body.email}):
+    if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Account already exists.",
@@ -188,7 +202,9 @@ async def register_verify_otp(body: VerifyOTPRequest, background_tasks: Backgrou
 )
 async def register_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
-    if await col.find_one({"email": body.email}):
+    existing = await col.find_one({"email": body.email})
+    _raise_if_inactive_user(existing)
+    if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Account already exists. Please log in.",
@@ -232,7 +248,9 @@ async def register_resend_otp(body: ResendOTPRequest, background_tasks: Backgrou
 )
 async def login(body: LoginRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
-    user = await col.find_one({"email": body.email, "is_active": True})
+    user_any = await col.find_one({"email": body.email})
+    _raise_if_inactive_user(user_any)
+    user = user_any if user_any and user_any.get("is_active", True) else None
 
     if not user:
         raise HTTPException(
@@ -271,7 +289,9 @@ async def login_verify_otp(body: VerifyOTPRequest):
     await verify_otp(email=body.email, otp=body.otp, purpose="login")
 
     col = get_users_collection()
-    user = await col.find_one({"email": body.email, "is_active": True})
+    user_any = await col.find_one({"email": body.email})
+    _raise_if_inactive_user(user_any)
+    user = user_any if user_any and user_any.get("is_active", True) else None
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found.")
 
@@ -286,7 +306,9 @@ async def login_verify_otp(body: VerifyOTPRequest):
 )
 async def login_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
-    if not await col.find_one({"email": body.email, "is_active": True}):
+    user_any = await col.find_one({"email": body.email})
+    _raise_if_inactive_user(user_any)
+    if not (user_any and user_any.get("is_active", True)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
     otp = generate_otp()
@@ -328,7 +350,9 @@ async def refresh_token(body: RefreshTokenRequest):
 )
 async def forgot_password(body: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
-    user = await col.find_one({"email": body.email, "is_active": True})
+    user_any = await col.find_one({"email": body.email})
+    _raise_if_inactive_user(user_any)
+    user = user_any if user_any and user_any.get("is_active", True) else None
 
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email.")
@@ -356,7 +380,9 @@ async def forgot_password(body: ForgotPasswordRequest, background_tasks: Backgro
 )
 async def forgot_password_resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
     col = get_users_collection()
-    if not await col.find_one({"email": body.email, "is_active": True}):
+    user_any = await col.find_one({"email": body.email})
+    _raise_if_inactive_user(user_any)
+    if not (user_any and user_any.get("is_active", True)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email.")
 
     otp = generate_otp()
@@ -394,6 +420,8 @@ async def forgot_password_reset(body: ResetPasswordRequest):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=err)
 
     col = get_users_collection()
+    user_any = await col.find_one({"email": body.email})
+    _raise_if_inactive_user(user_any)
     result = await col.update_one(
         {"email": body.email, "is_active": True},
         {
@@ -448,6 +476,7 @@ async def google_sign_in(body: GoogleSignInRequest, background_tasks: Background
 
     col = get_users_collection()
     user = await col.find_one({"email": email})
+    _raise_if_inactive_user(user)
 
     if user:
         user.pop("_id", None)
