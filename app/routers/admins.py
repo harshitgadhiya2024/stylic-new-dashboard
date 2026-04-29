@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Path, status
 
 from app.config import settings
 from app.database import get_admins_collection
@@ -330,7 +330,11 @@ async def create_admin(
     summary="Change an admin's role (superadmin only); request body: { role }",
 )
 async def change_admin_role(
-    admin_id: str,
+    admin_id: str = Path(
+        ...,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        description="Admin UUID",
+    ),
     body: AdminChangeRoleRequest,
     _me: dict = Depends(require_admin_roles("superadmin")),
 ):
@@ -369,7 +373,11 @@ async def change_admin_role(
     summary="Update an admin's name and/or email (superadmin only)",
 )
 async def update_admin(
-    admin_id: str,
+    admin_id: str = Path(
+        ...,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        description="Admin UUID",
+    ),
     body: AdminUpdateRequest,
     _me: dict = Depends(require_admin_roles("superadmin")),
 ):
