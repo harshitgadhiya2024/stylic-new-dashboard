@@ -32,7 +32,10 @@ from app.models.photoshoot import (
     ColorChangeRequest,
     ColorPhotoshootRequest,
 )
-from app.tasks.photoshoot_tasks import run_photoshoot_task
+from app.tasks.photoshoot_tasks import (
+    run_catalogue_recolor_then_photoshoot_task,
+    run_photoshoot_task,
+)
 from app.services.photoshoot_service import merge_photoshoot_batch_configs, count_poses_in_merged_config
 
 router = APIRouter(prefix="/api/v1/photoshoots", tags=["Photoshoots"])
@@ -317,8 +320,9 @@ async def create_multiple_photoshoots(
     description=(
         "Runs one single-photoshoot job per entry in ``garments``. "
         "Rows with ``front_garment_image`` use that flat-lay (and optional back) directly. "
-        "Rows with only color fields recolor the **most recent** prior flat-lay row using the same kie flow "
-        "as ``/change-color``, then enqueue that row with the new URLs. "
+        "Rows with only color fields enqueue background work: the worker recolors the **most recent** "
+        "prior flat-lay (same KIE flow as ``/change-color``), uploads to R2, then runs the normal pipeline — "
+        "the HTTP response returns immediately with ``status=catalogue_preparing`` for those rows. "
         "Shared body fields may include ``footwear_type`` and ``footwear_specification``; each item in "
         "``garments`` can optionally set those to override the shared values for that row. "
         "Credits: len(poses_ids) × the standard single-photoshoot rate, summed across all rows. "
@@ -329,9 +333,6 @@ async def create_catalogue_photoshoots(
     body: CataloguePhotoshootRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    from app.services.fabric_service import change_garment_upper_lower_colors
-    from app.services.r2_service import upload_bytes_to_r2
-
     user_id   = current_user["user_id"]
     total_poses_one = len(body.poses_ids)
     if total_poses_one == 0:
@@ -395,24 +396,13 @@ async def create_catalogue_photoshoots(
         f = (g.front_garment_image or "").strip()
         b = (g.back_garment_image or "").strip()
 
+        deferred_recolor = False
         if f:
             ref_front, ref_back = f, b
             use_front, use_back = f, b
         else:
-            u = g.upper_garment_color
-            l = g.lower_garment_color if g.lower_garment_color is not None else u
-            u_tag = u.lstrip("#")
-            l_tag = l.lstrip("#")
-            tag   = f"u{u_tag}_l{l_tag}_{uuid.uuid4().hex[:8]}"
-            front_bytes = await change_garment_upper_lower_colors(ref_front, u, l)
-            f_key = f"photoshoots/catalogue/{catalogue_photoshoot_id}/{idx}/front_{tag}.png"
-            use_front = await upload_bytes_to_r2(front_bytes, f_key, content_type="image/png")
-            if ref_back:
-                back_bytes = await change_garment_upper_lower_colors(ref_back, u, l)
-                b_key = f"photoshoots/catalogue/{catalogue_photoshoot_id}/{idx}/back_{tag}.png"
-                use_back = await upload_bytes_to_r2(back_bytes, b_key, content_type="image/png")
-            else:
-                use_back = ""
+            deferred_recolor = True
+            use_front, use_back = "", ""
 
         row_sku = (g.sku_id or "").strip() or (body.sku_id or "")
         merged: dict = {
@@ -440,6 +430,19 @@ async def create_catalogue_photoshoots(
         photoshoot_id = str(uuid.uuid4())
         this_credit  = total_poses_one * _CREDIT_SINGLE_PHOTOSHOOT
 
+        u_color = g.upper_garment_color
+        l_color = g.lower_garment_color if g.lower_garment_color is not None else u_color
+        catalogue_recolor: dict | None = None
+        if deferred_recolor:
+            catalogue_recolor = {
+                "ref_front": ref_front,
+                "ref_back":  ref_back or "",
+                "upper_garment_color": u_color,
+                "lower_garment_color": l_color,
+            }
+
+        row_status = "catalogue_preparing" if deferred_recolor else "queue"
+
         doc = {
             "photoshoot_id":           photoshoot_id,
             "user_id":                 user_id,
@@ -447,6 +450,7 @@ async def create_catalogue_photoshoots(
             "batch_index":             idx,
             "catalogue_photoshoot":   True,
             "sku_id":                 row_sku,
+            **({"catalogue_recolor": catalogue_recolor} if catalogue_recolor else {}),
             "input_parameter":        {
                 "front_garment_image":             row_req.front_garment_image,
                 "back_garment_image":              row_req.back_garment_image or "",
@@ -482,7 +486,7 @@ async def create_catalogue_photoshoots(
             "total_credit":            this_credit,
             "is_credit_deducted":     False,
             "is_completed":            False,
-            "status":                  "queue",
+            "status":                  row_status,
             "error":                    None,
             "regeneration_type":       row_req.regeneration_type or "",
             "regenerate_photoshoot_id": row_req.regenerate_photoshoot_id or "",
@@ -493,11 +497,17 @@ async def create_catalogue_photoshoots(
 
         await col.insert_one(doc)
 
-        job_payload = {**doc["input_parameter"], "user_id": user_id}
-        task = run_photoshoot_task.apply_async(
-            args=[photoshoot_id, job_payload],
-            queue="photoshoots",
-        )
+        if deferred_recolor:
+            task = run_catalogue_recolor_then_photoshoot_task.apply_async(
+                args=[photoshoot_id],
+                queue="photoshoots",
+            )
+        else:
+            job_payload = {**doc["input_parameter"], "user_id": user_id}
+            task = run_photoshoot_task.apply_async(
+                args=[photoshoot_id, job_payload],
+                queue="photoshoots",
+            )
         results.append(
             {
                 "catalogue_index":  idx,
@@ -505,7 +515,7 @@ async def create_catalogue_photoshoots(
                 "task_id":         task.id,
                 "total_poses":     total_poses_one,
                 "total_credit":    this_credit,
-                "status":          "queue",
+                "status":          row_status,
                 "source":         "image_urls" if f else "recolor",
             }
         )

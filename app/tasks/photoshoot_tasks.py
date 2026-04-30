@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from celery import Task
@@ -147,3 +148,107 @@ def get_queue_length() -> int:
         return r.llen("photoshoots")
     except Exception:
         return -1  # Redis unavailable — return -1 to signal unknown
+
+
+# ---------------------------------------------------------------------------
+# Catalogue colorway — KIE recolor + R2 in worker, then same agentic pipeline.
+# ---------------------------------------------------------------------------
+
+
+async def _catalogue_recolor_then_run_pipeline(photoshoot_id: str) -> None:
+    """Recolor flat-lays from ``catalogue_recolor``, persist URLs, run ``run_photoshoot_job``."""
+    from app.config import settings
+    from app.database import make_motor_client
+    from app.services.fabric_service import change_garment_upper_lower_colors
+    from app.services.photoshoot_service import run_photoshoot_job
+    from app.services.r2_service import upload_bytes_to_r2
+
+    client = make_motor_client()
+    try:
+        col = client[settings.MONGO_DB_NAME]["photoshoots"]
+        doc = await col.find_one({"photoshoot_id": photoshoot_id})
+        if not doc:
+            raise ValueError(f"Photoshoot not found: {photoshoot_id}")
+
+        cr = doc.get("catalogue_recolor")
+        if not cr:
+            st = doc.get("status")
+            if st in ("processing", "completed"):
+                logger.info(
+                    "[catalogue-recolor] skip duplicate — id=%s status=%s",
+                    photoshoot_id,
+                    st,
+                )
+                return
+            raise ValueError(
+                f"Photoshoot {photoshoot_id} has no catalogue_recolor payload "
+                f"(status={doc.get('status')!r})"
+            )
+
+        ref_front = (cr.get("ref_front") or "").strip()
+        ref_back = (cr.get("ref_back") or "").strip()
+        u = cr.get("upper_garment_color")
+        l = cr.get("lower_garment_color")
+        if l is None:
+            l = u
+        if not ref_front or u is None:
+            raise ValueError("catalogue_recolor requires ref_front and upper_garment_color")
+
+        u_tag = str(u).lstrip("#")
+        l_tag = str(l).lstrip("#")
+        tag = f"u{u_tag}_l{l_tag}_{uuid.uuid4().hex[:8]}"
+        catalogue_id = doc.get("batch_photoshoot_id") or "catalogue"
+        idx = int(doc.get("batch_index") if doc.get("batch_index") is not None else 0)
+
+        front_bytes = await change_garment_upper_lower_colors(ref_front, u, l)
+        f_key = f"photoshoots/catalogue/{catalogue_id}/{idx}/front_{tag}.png"
+        use_front = await upload_bytes_to_r2(front_bytes, f_key, content_type="image/png")
+
+        if ref_back:
+            back_bytes = await change_garment_upper_lower_colors(ref_back, u, l)
+            b_key = f"photoshoots/catalogue/{catalogue_id}/{idx}/back_{tag}.png"
+            use_back = await upload_bytes_to_r2(back_bytes, b_key, content_type="image/png")
+        else:
+            use_back = ""
+
+        user_id = doc.get("user_id") or ""
+        ip = dict(doc.get("input_parameter") or {})
+        ip["front_garment_image"] = use_front
+        ip["back_garment_image"] = use_back or ""
+
+        await col.update_one(
+            {"photoshoot_id": photoshoot_id},
+            {
+                "$set": {
+                    "input_parameter": ip,
+                    "updated_at": datetime.now(timezone.utc),
+                },
+                "$unset": {"catalogue_recolor": ""},
+            },
+        )
+
+        req = {**ip, "user_id": user_id}
+        await run_photoshoot_job(photoshoot_id, req, motor_client=client)
+    finally:
+        client.close()
+
+
+@celery_app.task(
+    bind=True,
+    base=_PhotoshootTask,
+    name="app.tasks.photoshoot_tasks.run_catalogue_recolor_then_photoshoot_task",
+    queue="photoshoots",
+    max_retries=2,
+    default_retry_delay=60,
+    acks_late=True,
+)
+def run_catalogue_recolor_then_photoshoot_task(self, photoshoot_id: str) -> dict:
+    """KIE upper/lower recolor + R2 upload, then the standard LangGraph photoshoot job."""
+    logger.info("[catalogue-recolor] Starting — photoshoot_id=%s", photoshoot_id)
+    try:
+        asyncio.run(_catalogue_recolor_then_run_pipeline(photoshoot_id))
+        logger.info("[catalogue-recolor] Completed — photoshoot_id=%s", photoshoot_id)
+        return {"photoshoot_id": photoshoot_id, "status": "completed"}
+    except Exception as exc:
+        logger.error("[catalogue-recolor] Error — photoshoot_id=%s | %s", photoshoot_id, exc)
+        raise self.retry(exc=exc)
