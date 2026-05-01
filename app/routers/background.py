@@ -7,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from fastapi.responses import StreamingResponse
 
 from app.database import get_backgrounds_collection
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin_roles
 from app.models.background import (
     BackgroundSchema,
     CreateBackgroundRequest,
@@ -16,9 +16,15 @@ from app.models.background import (
 )
 from app.services.background_service import generate_background_stream, generate_background_with_ai_stream
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
+from app.services.r2_service import delete_object_by_key, public_url_to_object_key
 from app.utils.streaming_errors import custom_input_policy_error_payload
 
 router = APIRouter(prefix="/api/v1/backgrounds", tags=["Backgrounds"])
+
+admin_router = APIRouter(
+    prefix="/api/v1/admins/backgrounds",
+    tags=["Admin — Backgrounds"],
+)
 
 # Stored in Mongo as lowercase; query accepts labels (any case / spaces ok).
 _ALLOWED_BACKGROUND_TYPE_DB_VALUES = frozenset({"indoor", "outdoor", "studio"})
@@ -567,3 +573,88 @@ async def delete_background(
     )
 
     return {"message": "Background deleted successfully.", "background_id": background_id}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Admin (dashboard JWT)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@admin_router.get(
+    "/defaults",
+    summary="List default backgrounds (paginated)",
+    description=(
+        "Returns background documents with ``is_default=True``, sorted by ``updated_at`` descending, "
+        "with page-based pagination. Requires a dashboard admin access JWT (``Authorization: Bearer``)."
+    ),
+)
+async def admin_list_all_default_backgrounds(
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: int = Query(10, ge=1, le=100, description="Items per page"),
+    _admin: dict = Depends(
+        require_admin_roles("superadmin", "admin", "developer", "blogger")
+    ),
+):
+    col = get_backgrounds_collection()
+    query = {"is_default": True}
+    total = await col.count_documents(query)
+    total_pages = max(1, (total + limit - 1) // limit) if total else 1
+    skip = (page - 1) * limit
+    cursor = (
+        col.find(query)
+        .sort([("updated_at", -1)])
+        .skip(skip)
+        .limit(limit)
+    )
+    docs = await cursor.to_list(length=limit)
+    return {
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "total_pages": total_pages,
+        "data": [serialize_background_response(d, viewer_user_id=None) for d in docs],
+    }
+
+
+@admin_router.delete(
+    "/{background_id}",
+    summary="Hard-delete a background",
+    description=(
+        "Removes the object from Cloudflare R2 when ``background_url`` is under the configured "
+        "``R2_PUBLIC_URL``, then permanently deletes the MongoDB row by ``background_id``. "
+        "If the URL is external (not R2), only the database record is removed. "
+        "Requires dashboard admin JWT; restricted to **superadmin** and **admin**."
+    ),
+)
+async def admin_hard_delete_background(
+    background_id: str,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    col = get_backgrounds_collection()
+    doc = await col.find_one({"background_id": background_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Background not found.",
+        )
+
+    url = (doc.get("background_url") or "").strip()
+    if url:
+        try:
+            key = public_url_to_object_key(url)
+            await delete_object_by_key(key)
+        except ValueError:
+            pass
+
+    result = await col.delete_one({"background_id": background_id})
+    if result.deleted_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Background not found.",
+        )
+
+    return {
+        "success": True,
+        "message": "Background deleted.",
+        "background_id": background_id,
+    }
