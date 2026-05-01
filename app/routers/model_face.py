@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, List, Literal, Optional
@@ -8,8 +9,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from fastapi.responses import StreamingResponse
 
 from app.database import get_model_faces_collection
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin_roles
 from app.models.model_face import (
+    AdminCreateDefaultModelFaceRequest,
+    AdminUpdateModelFaceRequest,
     CreateModelFaceRequest,
     CreateModelFaceWithAIRequest,
     DeleteModelFacesRequest,
@@ -18,6 +21,7 @@ from app.models.model_face import (
 from app.services.ai_face_service import coerce_age_to_int, generate_and_upload_face_stream
 from app.services.face_to_model_service import generate_model_face_from_reference_stream
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
+from app.services.r2_service import delete_object_by_key, public_url_to_object_key
 from app.utils.streaming_errors import custom_input_policy_error_payload
 from app.utils.ethnicity_normalization import (
     ethnicity_canonical_label,
@@ -25,6 +29,13 @@ from app.utils.ethnicity_normalization import (
 )
 
 router = APIRouter(prefix="/api/v1/model-faces", tags=["Model Faces"])
+
+_logger = logging.getLogger(__name__)
+
+admin_router = APIRouter(
+    prefix="/api/v1/admins/model-faces",
+    tags=["Admin — Model Faces"],
+)
 
 # Stored in Mongo as snake_case; API accepts spaced or snake_case labels (any case).
 _MODEL_CATEGORY_DB_VALUES = frozenset(
@@ -817,3 +828,303 @@ async def delete_model_face(
     )
 
     return {"message": "Model face deleted successfully.", "model_id": model_id}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Admin (dashboard JWT)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@admin_router.post(
+    "/",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create default model face",
+    description=(
+        "Creates a platform default model face (``is_default=True``). "
+        "Stores ``model_configuration`` with age, gender, and ethnicity plus mirrored top-level fields. "
+        "Requires dashboard admin JWT; restricted to **superadmin** and **admin**."
+    ),
+)
+async def admin_create_default_model_face(
+    body: AdminCreateDefaultModelFaceRequest,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    stored_age = coerce_age_to_int(body.age)
+    if stored_age is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid age; supply an integer or a string starting with digits (e.g. 28 or '28 years').",
+        )
+
+    eth_label = ethnicity_canonical_label(body.ethnicity)
+    eth_stored = eth_label if eth_label else body.ethnicity
+
+    now = datetime.now(timezone.utc)
+    mid = str(uuid.uuid4())
+    cfg = {
+        "age":       stored_age,
+        "gender":    body.gender,
+        "ethnicity": eth_stored,
+    }
+    doc_db = {
+        "model_id":            mid,
+        "model_name":          body.model_name,
+        "model_category":      body.model_category,
+        "model_configuration": cfg,
+        "age":                 stored_age,
+        "ethnicity":           eth_stored,
+        "gender":              body.gender,
+        "face_url":            body.face_url,
+        "tags":                [],
+        "notes":               "",
+        "model_used_count":    0,
+        "favorite_list":       [],
+        "plan":                "silver",
+        "reference_face_url":  None,
+        "is_default":          True,
+        "is_active":           True,
+        "created_at":          now,
+        "updated_at":          now,
+    }
+
+    col = get_model_faces_collection()
+    await col.insert_one(doc_db)
+    saved = await col.find_one({"model_id": mid})
+
+    return {
+        "success": True,
+        "message": "Model face created.",
+        "data": serialize_model_face_response(saved or doc_db, viewer_user_id=None),
+    }
+
+
+@admin_router.get(
+    "/defaults",
+    summary="List default model faces (paginated)",
+    description=(
+        "Returns documents with ``is_default=True``, sorted by ``updated_at`` descending. "
+        "Requires dashboard admin JWT (**superadmin**, **admin**, **developer**, **blogger**)."
+    ),
+)
+async def admin_list_default_model_faces(
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: int = Query(10, ge=1, le=100, description="Items per page"),
+    _admin: dict = Depends(
+        require_admin_roles("superadmin", "admin", "developer", "blogger")
+    ),
+):
+    col = get_model_faces_collection()
+    query = {"is_default": True}
+    total = await col.count_documents(query)
+    total_pages = max(1, (total + limit - 1) // limit) if total else 1
+    skip = (page - 1) * limit
+    cursor = (
+        col.find(query)
+        .sort([("updated_at", -1)])
+        .skip(skip)
+        .limit(limit)
+    )
+    docs = await cursor.to_list(length=limit)
+    return {
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "total_pages": total_pages,
+        "data": [serialize_model_face_response(d, viewer_user_id=None) for d in docs],
+    }
+
+
+@admin_router.patch(
+    "/{model_id}",
+    summary="Update model face",
+    description=(
+        "Partial update by ``model_id``. Age / ethnicity / gender updates also refresh "
+        "``model_configuration``. When ``face_url`` changes, the previous image may be removed "
+        "from R2 if it matches ``R2_PUBLIC_URL``. "
+        "**Superadmin** and **admin** only."
+    ),
+)
+async def admin_update_model_face(
+    model_id: str,
+    body: AdminUpdateModelFaceRequest,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    col = get_model_faces_collection()
+    doc = await col.find_one({"model_id": model_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model face not found.",
+        )
+
+    patch = body.model_dump(exclude_unset=True)
+    if not patch:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields provided to update.",
+        )
+
+    had_face_patch = "face_url" in patch
+    prior_face_url = (doc.get("face_url") or "").strip()
+
+    updates: dict[str, Any] = {}
+    cfg = dict(doc.get("model_configuration") or {})
+    cfg_changed = False
+
+    if "model_name" in patch:
+        updates["model_name"] = patch["model_name"]
+    if "model_category" in patch:
+        updates["model_category"] = patch["model_category"]
+    if "tags" in patch:
+        updates["tags"] = patch["tags"]
+    if "notes" in patch:
+        updates["notes"] = patch["notes"]
+    if "model_used_count" in patch:
+        updates["model_used_count"] = patch["model_used_count"]
+    if "is_active" in patch:
+        updates["is_active"] = patch["is_active"]
+
+    if "age" in patch:
+        stored_age = coerce_age_to_int(patch["age"])
+        if stored_age is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid age.",
+            )
+        updates["age"] = stored_age
+        cfg["age"] = stored_age
+        cfg_changed = True
+
+    if "ethnicity" in patch:
+        eth_label = ethnicity_canonical_label(patch["ethnicity"])
+        eth_stored = eth_label if eth_label else patch["ethnicity"]
+        updates["ethnicity"] = eth_stored
+        cfg["ethnicity"] = eth_stored
+        cfg_changed = True
+
+    if "gender" in patch:
+        updates["gender"] = patch["gender"]
+        cfg["gender"] = patch["gender"]
+        cfg_changed = True
+
+    if "face_url" in patch:
+        updates["face_url"] = patch["face_url"]
+
+    if cfg_changed:
+        updates["model_configuration"] = cfg
+
+    now = datetime.now(timezone.utc)
+    updates["updated_at"] = now
+
+    result = await col.update_one({"model_id": model_id}, {"$set": updates})
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model face not found.",
+        )
+
+    saved = await col.find_one({"model_id": model_id})
+
+    if had_face_patch:
+        new_url = ((saved or {}).get("face_url") or "").strip()
+        if prior_face_url and new_url and prior_face_url != new_url:
+            try:
+                pk = public_url_to_object_key(prior_face_url)
+                nk = public_url_to_object_key(new_url)
+                if pk != nk:
+                    await delete_object_by_key(pk)
+            except ValueError:
+                pass
+            except HTTPException as exc:
+                _logger.warning(
+                    "Admin update model face: could not delete previous face R2 object: %s",
+                    exc.detail,
+                )
+
+    return {
+        "success": True,
+        "message": "Model face updated.",
+        "data": serialize_model_face_response(saved or doc, viewer_user_id=None),
+    }
+
+
+@admin_router.patch(
+    "/{model_id}/toggle-active",
+    summary="Toggle model face active state",
+    description=(
+        "Flips ``is_active``. Missing field on document is treated as active (``True``). "
+        "**Superadmin** and **admin** only."
+    ),
+)
+async def admin_toggle_model_face_active(
+    model_id: str,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    col = get_model_faces_collection()
+    doc = await col.find_one({"model_id": model_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model face not found.",
+        )
+
+    currently_active = bool(doc.get("is_active", True))
+    new_active = not currently_active
+    now = datetime.now(timezone.utc)
+
+    await col.update_one(
+        {"model_id": model_id},
+        {"$set": {"is_active": new_active, "updated_at": now}},
+    )
+    fresh = await col.find_one({"model_id": model_id})
+    msg = "Model face activated." if new_active else "Model face deactivated."
+
+    return {
+        "success": True,
+        "message": msg,
+        "model_id": model_id,
+        "is_active": new_active,
+        "data": serialize_model_face_response(fresh or doc, viewer_user_id=None),
+    }
+
+
+@admin_router.delete(
+    "/{model_id}",
+    summary="Hard-delete model face",
+    description=(
+        "Deletes the face image from R2 when ``face_url`` matches ``R2_PUBLIC_URL``, "
+        "then removes the MongoDB document. **Superadmin** and **admin** only."
+    ),
+)
+async def admin_hard_delete_model_face(
+    model_id: str,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    col = get_model_faces_collection()
+    doc = await col.find_one({"model_id": model_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model face not found.",
+        )
+
+    url = (doc.get("face_url") or "").strip()
+    if url:
+        try:
+            key = public_url_to_object_key(url)
+            await delete_object_by_key(key)
+        except ValueError:
+            pass
+
+    result = await col.delete_one({"model_id": model_id})
+    if result.deleted_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model face not found.",
+        )
+
+    return {
+        "success": True,
+        "message": "Model face deleted.",
+        "model_id": model_id,
+    }

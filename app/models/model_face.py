@@ -1,7 +1,37 @@
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from datetime import datetime
+
+_ALLOWED_ADMIN_MODEL_CATEGORIES = frozenset(
+    {
+        "baby",
+        "kid_boy",
+        "kid_girl",
+        "young_boy",
+        "young_girl",
+        "adult_male",
+        "adult_female",
+        "senior_male",
+        "senior_female",
+    }
+)
+
+
+def normalize_model_category_value(value) -> str:
+    """Map labels or snake_case to stored ``model_category``."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError("model_category is required")
+    key = str(value).strip().lower().replace(" ", "_").replace("-", "_")
+    while "__" in key:
+        key = key.replace("__", "_")
+    if key in _ALLOWED_ADMIN_MODEL_CATEGORIES:
+        return key
+    raise ValueError(
+        "model_category must be one of: baby, kid_boy, kid_girl, young_boy, young_girl, "
+        "adult_male, adult_female, senior_male, senior_female "
+        "(any spacing or casing)."
+    )
 
 
 class FaceConfiguration(BaseModel):
@@ -64,6 +94,60 @@ class ModelFaceSchema(BaseModel):
     is_favorite: bool = False
     created_at: datetime
     updated_at: datetime
+
+
+class AdminCreateDefaultModelFaceRequest(BaseModel):
+    """Admin create platform default model face (see testing.txt)."""
+
+    model_name: str = Field(..., min_length=1)
+    model_category: str = Field(...)
+    age: Union[int, str]
+    ethnicity: str = Field(..., min_length=1)
+    gender: str = Field(..., min_length=1)
+    face_url: str = Field(..., min_length=1)
+
+    @field_validator("model_name", "ethnicity", "gender", "face_url", mode="before")
+    @classmethod
+    def _strip_strings(cls, v):
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
+    @field_validator("model_category", mode="before")
+    @classmethod
+    def _v_category(cls, v):
+        return normalize_model_category_value(v)
+
+
+class AdminUpdateModelFaceRequest(BaseModel):
+    """Admin partial update for any model face."""
+
+    model_name: Optional[str] = Field(None, min_length=1)
+    model_category: Optional[str] = None
+    age: Optional[Union[int, str]] = None
+    ethnicity: Optional[str] = Field(None, min_length=1)
+    gender: Optional[str] = Field(None, min_length=1)
+    face_url: Optional[str] = Field(None, min_length=1)
+    tags: Optional[list[str]] = None
+    notes: Optional[str] = None
+    model_used_count: Optional[int] = Field(None, ge=0)
+    is_active: Optional[bool] = None
+
+    @field_validator("model_name", "ethnicity", "gender", "face_url", mode="before")
+    @classmethod
+    def _strip_optional(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
+    @field_validator("model_category", mode="before")
+    @classmethod
+    def _v_cat_opt(cls, v):
+        if v is None:
+            return None
+        return normalize_model_category_value(v)
 
 
 class ModelFaceApiItem(BaseModel):
