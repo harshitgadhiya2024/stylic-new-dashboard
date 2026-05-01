@@ -616,6 +616,48 @@ async def admin_list_all_default_backgrounds(
     }
 
 
+@admin_router.patch(
+    "/{background_id}/toggle-active",
+    summary="Toggle background active state",
+    description=(
+        "Sets ``is_active`` to the opposite of its current value "
+        "(``True`` → ``False``, ``False`` → ``True``). "
+        "Missing ``is_active`` on the document is treated as active (``True``). "
+        "Requires dashboard admin JWT; restricted to **superadmin** and **admin**."
+    ),
+)
+async def admin_toggle_background_active(
+    background_id: str,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    col = get_backgrounds_collection()
+    doc = await col.find_one({"background_id": background_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Background not found.",
+        )
+
+    currently_active = bool(doc.get("is_active", True))
+    new_active = not currently_active
+    now = datetime.now(timezone.utc)
+
+    await col.update_one(
+        {"background_id": background_id},
+        {"$set": {"is_active": new_active, "updated_at": now}},
+    )
+    fresh = await col.find_one({"background_id": background_id})
+    msg = "Background activated." if new_active else "Background deactivated."
+
+    return {
+        "success": True,
+        "message": msg,
+        "background_id": background_id,
+        "is_active": new_active,
+        "data": serialize_background_response(fresh or doc, viewer_user_id=None),
+    }
+
+
 @admin_router.delete(
     "/{background_id}",
     summary="Hard-delete a background",
