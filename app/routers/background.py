@@ -11,6 +11,7 @@ from app.database import get_backgrounds_collection
 from app.dependencies import get_current_user, require_admin_roles
 from app.models.background import (
     AdminCreateDefaultBackgroundRequest,
+    AdminUpdateBackgroundRequest,
     BackgroundSchema,
     CreateBackgroundRequest,
     CreateBackgroundWithAIRequest,
@@ -647,6 +648,99 @@ async def admin_create_default_background(
         "success": True,
         "message": "Background created.",
         "data": serialize_background_response(saved or doc_db, viewer_user_id=None),
+    }
+
+
+@admin_router.patch(
+    "/{background_id}",
+    summary="Update background",
+    description=(
+        "Partially updates a background document identified by ``background_id``. "
+        "Send only fields to change. When ``background_url`` is provided, the image is "
+        "downloaded, converted to WebP, uploaded under ``backgrounds/defaults/``, and the "
+        "stored URL is replaced (same behavior as admin create). After a successful save, "
+        "the previous DB image and the ingest URL may be removed from R2 when they match "
+        "``R2_PUBLIC_URL``. "
+        "Requires dashboard admin JWT; restricted to **superadmin** and **admin**."
+    ),
+)
+async def admin_update_background(
+    background_id: str,
+    body: AdminUpdateBackgroundRequest,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    col = get_backgrounds_collection()
+    doc = await col.find_one({"background_id": background_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Background not found.",
+        )
+
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields provided to update.",
+        )
+
+    had_url_patch = "background_url" in updates
+    input_source_url: str | None = None
+    prior_db_url = (doc.get("background_url") or "").strip()
+
+    if had_url_patch:
+        input_source_url = updates["background_url"]
+        updates["background_url"] = await admin_default_background_download_webp_upload(
+            input_source_url
+        )
+
+    now = datetime.now(timezone.utc)
+    updates["updated_at"] = now
+
+    result = await col.update_one({"background_id": background_id}, {"$set": updates})
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Background not found.",
+        )
+
+    saved = await col.find_one({"background_id": background_id})
+
+    if had_url_patch:
+        final_url = (saved or {}).get("background_url") or ""
+
+        if input_source_url:
+            try:
+                sk = public_url_to_object_key(input_source_url)
+                nk = public_url_to_object_key(final_url)
+                if sk != nk:
+                    await delete_object_by_key(sk)
+            except ValueError:
+                pass
+            except HTTPException as exc:
+                _logger.warning(
+                    "Admin update background: could not delete ingest source R2 object: %s",
+                    exc.detail,
+                )
+
+        if prior_db_url and prior_db_url != final_url:
+            try:
+                pk = public_url_to_object_key(prior_db_url)
+                nk = public_url_to_object_key(final_url)
+                if pk != nk:
+                    await delete_object_by_key(pk)
+            except ValueError:
+                pass
+            except HTTPException as exc:
+                _logger.warning(
+                    "Admin update background: could not delete previous R2 object: %s",
+                    exc.detail,
+                )
+
+    return {
+        "success": True,
+        "message": "Background updated.",
+        "data": serialize_background_response(saved or doc, viewer_user_id=None),
     }
 
 

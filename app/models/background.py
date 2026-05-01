@@ -41,6 +41,34 @@ class CreateBackgroundRequest(BaseModel):
         return normalize_background_type_value(v)
 
 
+class AdminUpdateBackgroundRequest(BaseModel):
+    """Admin-only: partial update of any background by ``background_id``."""
+
+    background_name: Optional[str] = Field(None, min_length=1)
+    background_type: Optional[str] = None
+    background_url: Optional[str] = Field(None, min_length=1)
+    tags: Optional[List[str]] = None
+    notes: Optional[str] = None
+    count: Optional[int] = Field(None, ge=0)
+    is_active: Optional[bool] = None
+
+    @field_validator("background_name", "background_url", mode="before")
+    @classmethod
+    def _strip_optional_strings(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
+    @field_validator("background_type", mode="before")
+    @classmethod
+    def _validate_optional_background_type(cls, v):
+        if v is None:
+            return None
+        return normalize_background_type_value(v)
+
+
 class AdminCreateDefaultBackgroundRequest(BaseModel):
     """Admin-only: create a platform default background (``is_default=True``)."""
 
