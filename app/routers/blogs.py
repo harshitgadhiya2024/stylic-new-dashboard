@@ -17,6 +17,7 @@ from pymongo import ReturnDocument
 from app.database import get_blogs_collection
 from app.dependencies import require_admin_roles
 from app.models.blog import (
+    AdminBlogListResponse,
     BlogRecord,
     CreateBlogRequest,
     UpdateBlogRequest,
@@ -80,9 +81,12 @@ async def admin_create_blog(body: CreateBlogRequest) -> dict[str, Any]:
 
 @admin_router.get(
     "",
-    response_model=list[BlogRecord],
+    response_model=AdminBlogListResponse,
     summary="List blogs (admin)",
-    description="Returns blogs for admin panel. Optional `status` filter supports draft/published/archived.",
+    description=(
+        "Returns blogs for admin panel with page-based pagination. "
+        "Optional `status` filter supports draft, published, or archived."
+    ),
 )
 async def admin_list_blogs(
     status_filter: str | None = Query(
@@ -90,9 +94,9 @@ async def admin_list_blogs(
         alias="status",
         description="Optional status filter: draft, published, archived.",
     ),
-    skip: int = Query(0, ge=0, le=1_000_000),
-    limit: int = Query(30, ge=1, le=100),
-) -> list[dict[str, Any]]:
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: int = Query(30, ge=1, le=100, description="Items per page"),
+) -> dict[str, Any]:
     query: dict[str, Any] = {}
     if status_filter is not None:
         normalized_status = status_filter.strip().lower()
@@ -104,6 +108,9 @@ async def admin_list_blogs(
         query["status"] = normalized_status
 
     col = get_blogs_collection()
+    total = await col.count_documents(query)
+    total_pages = max(1, (total + limit - 1) // limit) if total else 1
+    skip = (page - 1) * limit
     cur = (
         col.find(query)
         .sort(
@@ -118,7 +125,13 @@ async def admin_list_blogs(
     out: list[dict[str, Any]] = []
     async for doc in cur:
         out.append(_doc_to_record(doc))
-    return out
+    return {
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "total_pages": total_pages,
+        "data": out,
+    }
 
 
 @admin_router.get(

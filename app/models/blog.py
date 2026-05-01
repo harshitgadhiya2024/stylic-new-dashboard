@@ -82,3 +82,13 @@ class BlogRecord(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+
+
+class AdminBlogListResponse(BaseModel):
+    """Paginated admin blog list."""
+
+    page: int
+    limit: int
+    total: int
+    total_pages: int
+    data: list[BlogRecord]
