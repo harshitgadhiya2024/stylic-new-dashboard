@@ -59,6 +59,50 @@ async def _download_image(image_url: str) -> bytes:
             await asyncio.sleep(3)
 
 
+def _encode_image_bytes_to_webp(image_bytes: bytes, *, quality: int = 88) -> bytes:
+    """Decode raster image bytes and return lossy WebP bytes."""
+    try:
+        im = Image.open(io.BytesIO(image_bytes))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid or unsupported image data: {exc}",
+        ) from exc
+
+    if getattr(im, "n_frames", 1) > 1:
+        im.seek(0)
+
+    if im.mode == "P":
+        im = im.convert("RGBA")
+    elif im.mode == "CMYK":
+        im = im.convert("RGB")
+    elif im.mode not in ("RGB", "RGBA", "L", "LA"):
+        im = im.convert("RGB")
+
+    out = io.BytesIO()
+    try:
+        im.save(out, format="WEBP", quality=quality, method=4)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Could not encode image as WebP: {exc}",
+        ) from exc
+    return out.getvalue()
+
+
+async def admin_default_background_download_webp_upload(source_url: str) -> str:
+    """
+    Download ``source_url``, encode as WebP, upload to R2 under ``backgrounds/defaults/``.
+
+    Returns the new public HTTPS URL for the WebP object. Callers may delete the source
+    object from R2 after persisting this URL (e.g. after a successful DB insert).
+    """
+    raw = await _download_image(source_url)
+    webp_bytes = _encode_image_bytes_to_webp(raw)
+    key = f"backgrounds/defaults/{uuid.uuid4().hex}.webp"
+    return await upload_bytes_to_r2(webp_bytes, key, content_type="image/webp")
+
+
 # ---------------------------------------------------------------------------
 # Public async streaming generator
 # ---------------------------------------------------------------------------

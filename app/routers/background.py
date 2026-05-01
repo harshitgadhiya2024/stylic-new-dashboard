@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Literal, Optional
@@ -15,12 +16,18 @@ from app.models.background import (
     CreateBackgroundWithAIRequest,
     DeleteBackgroundsRequest,
 )
-from app.services.background_service import generate_background_stream, generate_background_with_ai_stream
+from app.services.background_service import (
+    admin_default_background_download_webp_upload,
+    generate_background_stream,
+    generate_background_with_ai_stream,
+)
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
 from app.services.r2_service import delete_object_by_key, public_url_to_object_key
 from app.utils.streaming_errors import custom_input_policy_error_payload
 
 router = APIRouter(prefix="/api/v1/backgrounds", tags=["Backgrounds"])
+
+_logger = logging.getLogger(__name__)
 
 admin_router = APIRouter(
     prefix="/api/v1/admins/backgrounds",
@@ -588,7 +595,11 @@ async def delete_background(
     description=(
         "Creates a platform default background (``is_default=True``). "
         "Supply ``background_name``, ``background_type`` (indoor / outdoor / studio), "
-        "and ``background_url`` (typically the public URL from the upload-file endpoint). "
+        "and ``background_url`` (image URL to ingest — often from upload-file). "
+        "The image is **downloaded**, converted to **WebP**, uploaded to R2 at "
+        "``backgrounds/defaults/{uuid}.webp``, and the stored ``background_url`` is that new URL. "
+        "If the source URL points at this app’s R2 bucket (``R2_PUBLIC_URL``), the **original object is deleted** "
+        "after the database row is saved. "
         "Requires dashboard admin JWT; restricted to **superadmin** and **admin**."
     ),
 )
@@ -596,13 +607,15 @@ async def admin_create_default_background(
     body: AdminCreateDefaultBackgroundRequest,
     _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
 ):
+    background_url = await admin_default_background_download_webp_upload(body.background_url)
+
     now = datetime.now(timezone.utc)
     bid = str(uuid.uuid4())
     doc_db = {
         "background_id":   bid,
         "background_type": body.background_type,
         "background_name": body.background_name,
-        "background_url":  body.background_url,
+        "background_url":  background_url,
         "count":           0,
         "tags":            [],
         "notes":           "",
@@ -616,6 +629,19 @@ async def admin_create_default_background(
     col = get_backgrounds_collection()
     await col.insert_one(doc_db)
     saved = await col.find_one({"background_id": bid})
+
+    try:
+        old_key = public_url_to_object_key(body.background_url)
+        new_key = public_url_to_object_key(background_url)
+        if old_key != new_key:
+            await delete_object_by_key(old_key)
+    except ValueError:
+        pass
+    except HTTPException as exc:
+        _logger.warning(
+            "Admin create default background: could not delete source R2 object: %s",
+            exc.detail,
+        )
 
     return {
         "success": True,
