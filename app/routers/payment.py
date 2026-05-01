@@ -13,13 +13,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.database import get_credit_history_collection, get_payment_history_collection, get_users_collection
 from app.dependencies import get_current_user
 from app.models.payment import CreateRazorpayOrderRequest, VerifyRazorpayPaymentRequest
+from app.services.email_service import send_payment_receipt_email
 from app.services.payment_fulfillment import apply_successful_payment, mark_payment_failed
 from app.services.razorpay_api import (
     convert_usd_to_order_amount,
@@ -37,6 +38,63 @@ router = APIRouter(prefix="/api/v1/payments/razorpay", tags=["Payments — Razor
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _format_invoice_dt(dt: Any) -> str:
+    if dt is None:
+        return ""
+    if isinstance(dt, str):
+        return dt
+    try:
+        return dt.strftime("%b %d, %Y %H:%M UTC")
+    except Exception:
+        return str(dt)
+
+
+async def _send_payment_receipt_safe(payment_history_id: str) -> None:
+    """Best-effort: load the paid payment_history + user and dispatch a receipt email."""
+    try:
+        ph_col = get_payment_history_collection()
+        users_col = get_users_collection()
+        ph = await ph_col.find_one({"payment_history_id": payment_history_id})
+        if not ph or ph.get("status") != "paid":
+            return
+        user = await users_col.find_one({"user_id": ph.get("user_id")})
+        if not user or not user.get("email"):
+            return
+
+        amount_usd = ph.get("amount_usd")
+        try:
+            paid_amount = f"{float(amount_usd):.2f}"
+        except (TypeError, ValueError):
+            paid_amount = str(amount_usd or "")
+        currency = (ph.get("currency") or "USD").upper()
+
+        is_plan = ph.get("credit_type") == "plan"
+        purchase_type = "Plan purchase" if is_plan else "Credit purchase"
+        plan_name = (ph.get("plan_type") or "").strip().title() or ("—" if not is_plan else "")
+        timeperiod = (ph.get("timeperiod") or "").strip().title()
+        plan_validity = f"{plan_name} ({timeperiod})" if (is_plan and timeperiod) else ("—" if not is_plan else plan_name or "—")
+
+        invoice = {
+            "invoice_id":      ph.get("payment_history_id"),
+            "transaction_id":  ph.get("razorpay_payment_id"),
+            "payment_date":    _format_invoice_dt(ph.get("updated_at") or ph.get("created_at")),
+            "purchase_type":   purchase_type,
+            "plan_name":       plan_name or "—",
+            "credits_added":   str(ph.get("credit") or 0),
+            "current_credits": str(round(float(user.get("credits", 0) or 0), 4)),
+            "plan_validity":   plan_validity,
+            "currency":        currency,
+            "paid_amount":     paid_amount,
+        }
+        await send_payment_receipt_email(
+            to_email=user["email"],
+            first_name=user.get("first_name", ""),
+            invoice=invoice,
+        )
+    except Exception as exc:  # noqa: BLE001 — never break the API on receipt mail
+        logger.warning("payment receipt mail failed for %s: %s", payment_history_id, exc)
 
 
 @router.post(
@@ -315,9 +373,13 @@ async def _complete_verified_intent(
 )
 async def verify_payment(
     body: VerifyRazorpayPaymentRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
 ):
-    return await _complete_verified_intent(body, current_user["user_id"])
+    result = await _complete_verified_intent(body, current_user["user_id"])
+    if not result.get("idempotent"):
+        background_tasks.add_task(_send_payment_receipt_safe, body.stylic_payment_id)
+    return result
 
 
 @router.post(
@@ -328,7 +390,7 @@ async def verify_payment(
     "Idempotent with ``/verify``.",
     include_in_schema=True,
 )
-async def razorpay_webhook(request: Request):
+async def razorpay_webhook(request: Request, background_tasks: BackgroundTasks):
     wh_secret = (getattr(settings, "RAZORPAY_WEBHOOK_SECRET", "") or "").strip()
     if not wh_secret:
         return JSONResponse(
@@ -439,6 +501,7 @@ async def razorpay_webhook(request: Request):
         )
         return {"ok": True, "error": str(exc)}
 
+    background_tasks.add_task(_send_payment_receipt_safe, ph["payment_history_id"])
     return {"ok": True, "fulfilled": True, "credits": out.get("credits")}
 
 

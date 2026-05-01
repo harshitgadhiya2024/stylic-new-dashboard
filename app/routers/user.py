@@ -30,7 +30,12 @@ from app.models.user import (
     VerifyEmailChangeRequest,
 )
 from app.routers.auth import _generate_username
-from app.services.email_service import send_otp_email
+from app.services.email_service import (
+    send_email_change_alert_to_old_address,
+    send_otp_email,
+    send_password_changed_email,
+    send_subscription_cancelled_email,
+)
 from app.services.otp_service import generate_otp, save_otp, verify_otp, consume_otp
 from app.services.r2_service import upload_file_to_r2
 from app.utils.password import hash_password, verify_password, validate_password_strength
@@ -186,6 +191,7 @@ async def request_delete_account(
 )
 async def cancel_subscription(
     body: CancelSubscriptionRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["user_id"]
@@ -226,6 +232,15 @@ async def cancel_subscription(
     }
     await cancel_col.insert_one(cancel_doc)
     cancel_doc.pop("_id", None)
+
+    if current_user.get("email"):
+        background_tasks.add_task(
+            send_subscription_cancelled_email,
+            to_email=current_user["email"],
+            first_name=current_user.get("first_name", ""),
+            old_plan=old_plan,
+            current_credits=current_credit,
+        )
 
     return {
         "success": True,
@@ -444,7 +459,11 @@ async def delete_me(current_user: dict = Depends(get_current_user)):
     response_model=MessageResponse,
     summary="Change Password",
 )
-async def change_password(body: ChangePasswordRequest, current_user: dict = Depends(get_current_user)):
+async def change_password(
+    body: ChangePasswordRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
     if current_user.get("auth_provider") == "google":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -473,6 +492,14 @@ async def change_password(body: ChangePasswordRequest, current_user: dict = Depe
             }
         },
     )
+
+    if current_user.get("email"):
+        background_tasks.add_task(
+            send_password_changed_email,
+            to_email=current_user["email"],
+            first_name=current_user.get("first_name", ""),
+        )
+
     return {"success": True, "message": "Password updated successfully."}
 
 
@@ -563,6 +590,7 @@ async def change_email_resend_otp(
 )
 async def change_email_verify_otp(
     body: VerifyEmailChangeRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
 ):
     record = await verify_otp(email=body.new_email, otp=body.otp, purpose="change_email")
@@ -581,11 +609,21 @@ async def change_email_verify_otp(
             detail="This email is already in use by another account.",
         )
 
+    old_email = (current_user.get("email") or "").strip()
+
     await col.update_one(
         {"user_id": current_user["user_id"]},
         {"$set": {"email": body.new_email, "updated_at": datetime.now(timezone.utc)}},
     )
     await consume_otp(body.new_email, "change_email")
+
+    if old_email and old_email.lower() != str(body.new_email).strip().lower():
+        background_tasks.add_task(
+            send_email_change_alert_to_old_address,
+            old_email=old_email,
+            first_name=current_user.get("first_name", ""),
+            new_email=body.new_email,
+        )
 
     updated = await col.find_one({"user_id": current_user["user_id"]})
     return await _clean_user(updated)
@@ -598,19 +636,19 @@ async def change_email_verify_otp(
 @router.post(
     "/upload-file",
     summary="Upload File to Cloudflare R2",
-    description="Upload a file (image, PDF, video) and receive a public URL.",
+    description=(
+        "Public endpoint: no authentication required. "
+        "Upload a file (image, PDF, video) and receive a public URL. "
+        "Objects are stored under the ``public/`` prefix in R2."
+    ),
 )
-async def upload_file(
-    file: UploadFile = File(...),
-    current_user: dict = Depends(get_current_user),
-):
+async def upload_file(file: UploadFile = File(...)):
     if file.content_type not in _ALLOWED_MIME_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=f"Unsupported file type: {file.content_type}. Allowed: {', '.join(_ALLOWED_MIME_TYPES)}",
         )
 
-    user_id = current_user["user_id"]
-    url = await upload_file_to_r2(file, folder=f"users/{user_id}")
+    url = await upload_file_to_r2(file, folder="public")
 
     return {"success": True, "url": url}

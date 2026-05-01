@@ -1,5 +1,6 @@
 import html
 import logging
+from typing import Any
 import aiosmtplib
 from email.mime.multipart import MIMEMultipart
 from urllib.parse import urlparse
@@ -385,3 +386,225 @@ async def send_welcome_email(to_email: str, first_name: str = "") -> None:
             logger.warning("Welcome email skipped: no Resend or SMTP configured.")
     except (aiosmtplib.SMTPException, httpx.HTTPError, RuntimeError, OSError) as exc:
         logger.warning("Could not send welcome email to %s: %s", to_email, exc)
+
+
+async def _dispatch_safe(to_email: str, subject: str, html_body: str, *, label: str) -> None:
+    """Try Resend then SMTP; swallow + log failures so callers never break."""
+    try:
+        if settings.RESEND_API_KEY and settings.RESEND_FROM_EMAIL:
+            await _send_via_resend(to_email=to_email.strip().lower(), subject=subject, html_body=html_body)
+        elif settings.SMTP_SERVER and settings.SMTP_EMAIL and settings.SMTP_PASSWORD:
+            await _send_via_smtp(to_email=to_email.strip().lower(), subject=subject, html_body=html_body)
+        else:
+            logger.warning("%s email skipped: no Resend or SMTP configured.", label)
+    except (aiosmtplib.SMTPException, httpx.HTTPError, RuntimeError, OSError) as exc:
+        logger.warning("Could not send %s email to %s: %s", label, to_email, exc)
+
+
+def _mask_email(email: str) -> str:
+    """Mask the local part for safe display: ``a***@example.com``."""
+    e = (email or "").strip()
+    if "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    if len(local) <= 1:
+        return f"{local}***@{domain}"
+    return f"{local[0]}***@{domain}"
+
+
+def _build_password_changed_email_html(safe_first_name: str) -> str:
+    s = settings
+    name = html.escape(str(s.APP_NAME), quote=True)
+    tpc = (s.STYLIC_EMAIL_TEXT_PRIMARY or "#e8e8ed").strip()
+    contact = html.escape(
+        (getattr(s, "STYLIC_EMAIL_FOOTER_CONTACT", None) or "contact@stylic.ai").strip(),
+        quote=True,
+    )
+    return f"""{_st_email_layout_open()}{_html_email_header_logo()}{_st_email_card_open()}
+        <h1 style="margin: 0 0 8px; font-size: 22px; font-weight: 600; color: {tpc}; letter-spacing: 0.02em;">Your password was changed</h1>
+        <p style="margin: 0 0 18px; font-size: 15px; line-height: 1.6; color: #a8a8b2;">Hi {safe_first_name},</p>
+        <p style="margin: 0 0 18px; font-size: 15px; line-height: 1.7; color: #c4c4cc;">This is a confirmation that the password for your <strong>{name}</strong> account was just changed.</p>
+        <p style="margin: 0 0 16px; font-size: 14px; line-height: 1.65; color: #a8a8b2;">If you made this change, no further action is required.</p>
+        <div style="margin: 16px 0; padding: 14px; border-radius: 12px; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.08);">
+          <p style="margin: 0; font-size: 13px; line-height: 1.55; color: #d6d6dd;"><strong style="color: #f0b0c8;">Didn't change it?</strong> Reset your password right away and contact <a href="mailto:{contact}" style="color: #a8b8ff; text-decoration: none;">{contact}</a>.</p>
+        </div>
+      </div>
+      {_html_transactional_email_footer()}{_st_email_layout_close()}"""
+
+
+async def send_password_changed_email(to_email: str, first_name: str = "") -> None:
+    """Security alert sent after a successful password change. Fire-and-forget."""
+    if not to_email or not str(to_email).strip():
+        return
+    safe = html.escape((first_name or "").strip() or "there", quote=True)
+    subj = f"{settings.APP_NAME} — your password was changed"
+    body = _build_password_changed_email_html(safe)
+    await _dispatch_safe(to_email, subj, body, label="password-changed")
+
+
+def _build_email_change_alert_html(safe_first_name: str, masked_new_email: str) -> str:
+    s = settings
+    name = html.escape(str(s.APP_NAME), quote=True)
+    tpc = (s.STYLIC_EMAIL_TEXT_PRIMARY or "#e8e8ed").strip()
+    contact = html.escape(
+        (getattr(s, "STYLIC_EMAIL_FOOTER_CONTACT", None) or "contact@stylic.ai").strip(),
+        quote=True,
+    )
+    safe_new = html.escape(masked_new_email, quote=True)
+    return f"""{_st_email_layout_open()}{_html_email_header_logo()}{_st_email_card_open()}
+        <h1 style="margin: 0 0 8px; font-size: 22px; font-weight: 600; color: {tpc}; letter-spacing: 0.02em;">Your email address was changed</h1>
+        <p style="margin: 0 0 18px; font-size: 15px; line-height: 1.6; color: #a8a8b2;">Hi {safe_first_name},</p>
+        <p style="margin: 0 0 18px; font-size: 15px; line-height: 1.7; color: #c4c4cc;">The email address on your <strong>{name}</strong> account was just changed to <strong style="color: #eceaf4;">{safe_new}</strong>. Future sign-in OTPs and notifications will go to the new address.</p>
+        <div style="margin: 16px 0; padding: 14px; border-radius: 12px; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.08);">
+          <p style="margin: 0; font-size: 13px; line-height: 1.55; color: #d6d6dd;"><strong style="color: #f0b0c8;">Didn't make this change?</strong> Reach us right away at <a href="mailto:{contact}" style="color: #a8b8ff; text-decoration: none;">{contact}</a> so we can secure your account.</p>
+        </div>
+      </div>
+      {_html_transactional_email_footer()}{_st_email_layout_close()}"""
+
+
+async def send_email_change_alert_to_old_address(
+    old_email: str,
+    first_name: str = "",
+    new_email: str = "",
+) -> None:
+    """Anti-hijack alert sent to the OLD email address after an email change. Fire-and-forget."""
+    if not old_email or not str(old_email).strip():
+        return
+    safe = html.escape((first_name or "").strip() or "there", quote=True)
+    body = _build_email_change_alert_html(safe, _mask_email(new_email))
+    subj = f"{settings.APP_NAME} — your email address was changed"
+    await _dispatch_safe(old_email, subj, body, label="email-change-alert")
+
+
+def _build_subscription_cancelled_html(
+    safe_first_name: str,
+    *,
+    old_plan_label: str,
+    current_credits_label: str,
+) -> str:
+    s = settings
+    name = html.escape(str(s.APP_NAME), quote=True)
+    tpc = (s.STYLIC_EMAIL_TEXT_PRIMARY or "#e8e8ed").strip()
+    base = _app_base_url().rstrip("/")
+    cta_g = (s.STYLIC_EMAIL_CTA_GRADIENT or "linear-gradient(90deg, #f7e6a0 0%, #f0b0c8 45%, #a8b8ff 100%)").strip()
+    cta_lbl_c = (s.STYLIC_EMAIL_CTA_LABEL_COLOR or "#0f0f12").strip()
+    cta_href = html.escape(f"{base}/", quote=True)
+    safe_plan = html.escape(old_plan_label, quote=True)
+    safe_cred = html.escape(current_credits_label, quote=True)
+    return f"""{_st_email_layout_open()}{_html_email_header_logo()}{_st_email_card_open()}
+        <h1 style="margin: 0 0 8px; font-size: 22px; font-weight: 600; color: {tpc}; letter-spacing: 0.02em;">Your subscription has been cancelled</h1>
+        <p style="margin: 0 0 18px; font-size: 15px; line-height: 1.6; color: #a8a8b2;">Hi {safe_first_name},</p>
+        <p style="margin: 0 0 18px; font-size: 15px; line-height: 1.7; color: #c4c4cc;">We've cancelled your <strong style="color: #eceaf4;">{safe_plan}</strong> subscription on <strong>{name}</strong> and moved your account to the free plan. Your remaining credits ({safe_cred}) are still yours to use.</p>
+        <p style="margin: 0 0 16px; font-size: 14px; line-height: 1.65; color: #a8a8b2;">Changed your mind? You can resubscribe any time from your dashboard.</p>
+        <div style="text-align: center; margin: 22px 0 6px;">
+          <a href="{cta_href}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 13px 26px; border-radius: 999px; text-decoration: none; font-weight: 600; font-size: 15px; color: {cta_lbl_c}; background: {cta_g};">Open Stylic Studio</a>
+        </div>
+      </div>
+      {_html_transactional_email_footer()}{_st_email_layout_close()}"""
+
+
+async def send_subscription_cancelled_email(
+    to_email: str,
+    first_name: str = "",
+    *,
+    old_plan: str = "",
+    current_credits: float = 0.0,
+) -> None:
+    """Confirmation that a subscription was cancelled and the account downgraded. Fire-and-forget."""
+    if not to_email or not str(to_email).strip():
+        return
+    safe = html.escape((first_name or "").strip() or "there", quote=True)
+    plan_label = (old_plan or "premium").strip().title() or "Premium"
+    try:
+        cred_num = round(float(current_credits or 0), 4)
+    except (TypeError, ValueError):
+        cred_num = 0.0
+    cred_label = f"{cred_num} credits"
+    body = _build_subscription_cancelled_html(
+        safe,
+        old_plan_label=plan_label,
+        current_credits_label=cred_label,
+    )
+    subj = f"{settings.APP_NAME} — your subscription has been cancelled"
+    await _dispatch_safe(to_email, subj, body, label="subscription-cancelled")
+
+
+def _build_payment_receipt_html(safe_first_name: str, *, invoice: dict[str, Any]) -> str:
+    s = settings
+    name = html.escape(str(s.APP_NAME), quote=True)
+    tpc = (s.STYLIC_EMAIL_TEXT_PRIMARY or "#e8e8ed").strip()
+    base = _app_base_url().rstrip("/")
+    cta_href = html.escape(f"{base}/", quote=True)
+    cta_g = (s.STYLIC_EMAIL_CTA_GRADIENT or "linear-gradient(90deg, #f7e6a0 0%, #f0b0c8 45%, #a8b8ff 100%)").strip()
+    cta_lbl_c = (s.STYLIC_EMAIL_CTA_LABEL_COLOR or "#0f0f12").strip()
+    contact = html.escape(
+        (getattr(s, "STYLIC_EMAIL_FOOTER_CONTACT", None) or "contact@stylic.ai").strip(),
+        quote=True,
+    )
+
+    inv_id = html.escape(str(invoice.get("invoice_id") or ""), quote=True)
+    pay_date = html.escape(str(invoice.get("payment_date") or ""), quote=True)
+    txn = html.escape(str(invoice.get("transaction_id") or ""), quote=True)
+    purchase_type = html.escape(str(invoice.get("purchase_type") or ""), quote=True)
+    plan_name = html.escape(str(invoice.get("plan_name") or "—"), quote=True)
+    credits_added = html.escape(str(invoice.get("credits_added") or "0"), quote=True)
+    current_credits = html.escape(str(invoice.get("current_credits") or "0"), quote=True)
+    plan_validity = html.escape(str(invoice.get("plan_validity") or "—"), quote=True)
+    currency = html.escape(str(invoice.get("currency") or "USD"), quote=True)
+    paid_amount = html.escape(str(invoice.get("paid_amount") or ""), quote=True)
+
+    rows: list[tuple[str, str]] = [
+        ("Payment Date",    pay_date),
+        ("Transaction ID",  txn),
+        ("Purchase Type",   purchase_type),
+        ("Plan",            plan_name),
+        ("Credits Added",   credits_added),
+        ("Current Credits", current_credits),
+        ("Plan Validity",   plan_validity),
+    ]
+    rows_html = ""
+    for k, v in rows:
+        if not v:
+            continue
+        rows_html += (
+            "<tr>"
+            f"<td style=\"padding: 8px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.08); font-size: 13px; color: #9a9aa8;\">{k}</td>"
+            f"<td align=\"right\" style=\"padding: 8px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.08); font-size: 13px; color: #d6d6dd; font-weight: 600;\">{v}</td>"
+            "</tr>"
+        )
+
+    return f"""{_st_email_layout_open()}{_html_email_header_logo()}{_st_email_card_open()}
+        <h1 style="margin: 0 0 8px; font-size: 22px; font-weight: 600; color: {tpc}; letter-spacing: 0.02em;">Payment received</h1>
+        <p style="margin: 0 0 18px; font-size: 15px; line-height: 1.6; color: #a8a8b2;">Hi {safe_first_name}, your payment to <strong>{name}</strong> is confirmed and your credits have been added.</p>
+        <div style="margin: 0 0 18px; padding: 14px 14px; border-radius: 12px; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.08);">
+          <p style="margin: 0 0 4px; font-size: 12px; color: #9a9aa8;">Invoice ID</p>
+          <p style="margin: 0; font-size: 16px; color: #eceaf4; font-weight: 700; letter-spacing: 0.02em;">{inv_id}</p>
+        </div>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse: collapse; margin: 0 0 18px;">
+          {rows_html}
+          <tr>
+            <td style="padding: 10px 0 0; font-size: 14px; color: #c4c4cc; font-weight: 600;">Total Paid</td>
+            <td align="right" style="padding: 10px 0 0; font-size: 16px; color: #eceaf4; font-weight: 700;">{currency} {paid_amount}</td>
+          </tr>
+        </table>
+        <div style="text-align: center; margin: 18px 0 4px;">
+          <a href="{cta_href}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 13px 26px; border-radius: 999px; text-decoration: none; font-weight: 600; font-size: 15px; color: {cta_lbl_c}; background: {cta_g};">Open Dashboard</a>
+        </div>
+        <p style="margin: 14px 0 0; font-size: 12px; line-height: 1.55; color: #7a7a85;">This is an official invoice email from {name}. Questions? <a href="mailto:{contact}" style="color: #a8b8ff; text-decoration: none;">{contact}</a></p>
+      </div>
+      {_html_transactional_email_footer()}{_st_email_layout_close()}"""
+
+
+async def send_payment_receipt_email(
+    to_email: str,
+    first_name: str = "",
+    *,
+    invoice: dict[str, Any],
+) -> None:
+    """Itemized invoice receipt after a successful Razorpay payment. Fire-and-forget."""
+    if not to_email or not str(to_email).strip():
+        return
+    safe = html.escape((first_name or "").strip() or "there", quote=True)
+    body = _build_payment_receipt_html(safe, invoice=invoice)
+    subj = f"{settings.APP_NAME} — payment receipt"
+    await _dispatch_safe(to_email, subj, body, label="payment-receipt")
