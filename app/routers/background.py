@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from app.database import get_backgrounds_collection
 from app.dependencies import get_current_user, require_admin_roles
 from app.models.background import (
+    AdminCreateDefaultBackgroundRequest,
     BackgroundSchema,
     CreateBackgroundRequest,
     CreateBackgroundWithAIRequest,
@@ -578,6 +579,49 @@ async def delete_background(
 # ══════════════════════════════════════════════════════════════════════════
 # Admin (dashboard JWT)
 # ══════════════════════════════════════════════════════════════════════════
+
+
+@admin_router.post(
+    "/",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create default background",
+    description=(
+        "Creates a platform default background (``is_default=True``). "
+        "Supply ``background_name``, ``background_type`` (indoor / outdoor / studio), "
+        "and ``background_url`` (typically the public URL from the upload-file endpoint). "
+        "Requires dashboard admin JWT; restricted to **superadmin** and **admin**."
+    ),
+)
+async def admin_create_default_background(
+    body: AdminCreateDefaultBackgroundRequest,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    now = datetime.now(timezone.utc)
+    bid = str(uuid.uuid4())
+    doc_db = {
+        "background_id":   bid,
+        "background_type": body.background_type,
+        "background_name": body.background_name,
+        "background_url":  body.background_url,
+        "count":           0,
+        "tags":            [],
+        "notes":           "",
+        "favorite_list":   [],
+        "is_default":      True,
+        "is_active":       True,
+        "created_at":      now,
+        "updated_at":      now,
+    }
+
+    col = get_backgrounds_collection()
+    await col.insert_one(doc_db)
+    saved = await col.find_one({"background_id": bid})
+
+    return {
+        "success": True,
+        "message": "Background created.",
+        "data": serialize_background_response(saved or doc_db, viewer_user_id=None),
+    }
 
 
 @admin_router.get(

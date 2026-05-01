@@ -41,6 +41,29 @@ class CreateBackgroundRequest(BaseModel):
         return normalize_background_type_value(v)
 
 
+class AdminCreateDefaultBackgroundRequest(BaseModel):
+    """Admin-only: create a platform default background (``is_default=True``)."""
+
+    background_name: str = Field(..., min_length=1)
+    background_url: str = Field(..., min_length=1, description="Public URL, e.g. from upload-file.")
+    background_type: str = Field(
+        ...,
+        description="Indoor, Outdoor, or Studio (any case). Stored in lowercase.",
+    )
+
+    @field_validator("background_name", "background_url", mode="before")
+    @classmethod
+    def _strip_ws(cls, v):
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
+    @field_validator("background_type", mode="before")
+    @classmethod
+    def _validate_background_type_admin(cls, v):
+        return normalize_background_type_value(v)
+
+
 class CreateBackgroundWithAIRequest(BaseModel):
     background_name:          str
     background_configuration: str
