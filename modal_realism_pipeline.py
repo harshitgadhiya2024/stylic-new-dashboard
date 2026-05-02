@@ -2178,7 +2178,7 @@ try:
         volumes={WEIGHTS_PATH: weights_volume},
         # Auto-scale: spin up to 10 L40S containers when demand is high,
         # scale back to 0 when idle.
-        concurrency_limit=10,
+        max_containers=10,
         # Each container processes one image at a time (GPU-bound workload).
         allow_concurrent_inputs=1,
     )
@@ -2200,7 +2200,7 @@ try:
         secrets=[hf_secret],
         volumes={WEIGHTS_PATH: weights_volume},
         # Auto-scale: spin up to 5 A100-40GB containers (premium GPU, keep lower cap).
-        concurrency_limit=5,
+        max_containers=5,
         allow_concurrent_inputs=1,
     )
     class FashionRealismL4:

@@ -83,10 +83,10 @@ def _tensor_to_pil(t_nchw: Any) -> Any:
 @app.cls(
     image=image,
     gpu="T4",
-    timeout=900,
+    timeout=2000,
     memory=16384,
-    concurrency_limit=20,
-    allow_concurrent_inputs=4,
+    max_containers=20,
+    allow_concurrent_inputs=10,
 )
 class KieDownsampleT4:
     """
