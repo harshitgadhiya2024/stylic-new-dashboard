@@ -88,6 +88,7 @@ def _tensor_to_pil(t_nchw: Any) -> Any:
     max_containers=20,
     allow_concurrent_inputs=10,
 )
+@modal.concurrent(max_inputs=10)
 class KieDownsampleT4:
     """
     Bicubic downscale on CUDA (torch), encode with Pillow — same size ladder as the API server.
