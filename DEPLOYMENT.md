@@ -34,10 +34,26 @@ This guide targets an **Ubuntu 22.04 LTS** **Vultr Cloud Compute** instance (VPS
 16. [CI/CD — GitHub Actions](#16-cicd--github-actions)
 17. [Operations cheat sheet](#17-operations-cheat-sheet)
 18. [Troubleshooting](#18-troubleshooting)
+19. [Modal GPU workers (deploy off the VPS)](#19-modal-gpu-workers-deploy-off-the-vps)
 
 ---
 
 ## 1. Architecture & sizing
+
+### 1.0 What runs on the VPS vs Modal
+
+| Piece | Runs on **this Ubuntu server** | Runs on **Modal.com** (cloud GPU) |
+|-------|-------------------------------|-------------------------------------|
+| FastAPI (Gunicorn) | Yes — `stylicai-api.service` | — |
+| Celery worker (`photoshoots` queue) | Yes — `stylicai-celery.service` | — |
+| Flower UI | Yes — `stylicai-flower.service` (proxied by Nginx) | — |
+| Redis | Yes — broker + KIE rate limiter | — |
+| **After KIE Topaz:** 8K → 8K/4K/2K/1K encode | Only if Modal fails or is disabled (Pillow on server) | **Default:** `modal_kie_downsample.py` → T4 (`KieDownsampleT4`) |
+| Optional realism upscale (`WHICH_UPSCALE=modal`) | — | `modal_realism_pipeline.py` → `FashionRealismT4` / `L4` |
+
+Install **`modal`** on the server (`requirements.txt`) so the app can call `modal.Cls.from_name(...)`. **Deploy** Modal apps from any machine with the Modal CLI (`modal deploy …`); that step is **not** done on the VPS unless you choose to.
+
+---
 
 ### 1.1 The flow — one photoshoot job
 
@@ -49,7 +65,7 @@ This guide targets an **Ubuntu 22.04 LTS** **Vultr Cloud Compute** instance (VPS
                         │                                                          │
                 KIE nano-banana-2  →  Vertex nb-2  →  Vertex nb-pro  →  Evolink   │  (per-pose
                                                                                    │   fallback chain)
-                        └─► Topaz upscale (KIE) ─► PIL 8K/4K/2K/1K encode ─► R2  ◄┘
+                        └─► Topaz upscale (KIE) ─► Modal T4 downsample (fallback: PIL on VPS) ─► R2  ◄┘
 ```
 
 Everything photoshoot-related runs on **one Vultr instance**; MongoDB (Atlas) and Cloudflare R2 are external.
@@ -291,6 +307,10 @@ Fill in the real values. Mandatory keys:
 | `KIE_RATE_LIMIT_WINDOW_S=10`| KIE's window. Do not change. |
 | `KIE_RATE_LIMIT_429_SLEEP_S=5` | Cool-down when a 429 slips through. |
 | `FLOWER_BASIC_AUTH`         | `user:strong_password` — credentials for flower.stylic.ai. |
+| `MODAL_KIE_DOWNSAMPLE_ENABLED` | `true` (default): 8K→variants on Modal T4 after Topaz. `false`: Pillow on the API host only. |
+| `MODAL_KIE_DOWNSAMPLE_APP_NAME` | Must match deployed Modal app — default `stylic-kie-downsample`. |
+| `MODAL_KIE_DOWNSAMPLE_CLS` | Must match deployed class — default `KieDownsampleT4`. |
+| `WHICH_UPSCALE` | `kie` = Topaz on KIE (typical prod). `modal` = full realism pipeline on Modal (requires `modal deploy modal_realism_pipeline.py` + HF secret). |
 
 Lock it down:
 
@@ -455,6 +475,8 @@ sudo systemctl status stylicai-flower --no-pager
 ```
 
 Flower is now on `127.0.0.1:5555`. Nginx (§12) publishes it on `https://flower.stylic.ai`.
+
+> **systemd + `${FLOWER_BASIC_AUTH}`:** Some systemd versions do not expand variables inside `ExecStart`. If Flower fails to start, replace the `ExecStart` line with an explicit password or use a small wrapper script that sources `.env` and runs `celery … flower --basic_auth=…`.
 
 ---
 
@@ -734,3 +756,83 @@ dig +short flower.stylic.ai
 ```
 
 If these don't return the Vultr IP, fix the A records at your DNS provider and wait for TTL (usually 60–300 s).
+
+---
+
+## 19. Modal GPU workers (deploy off the VPS)
+
+Modal **does not** run as a systemd unit on the Vultr box. GPU work runs on [Modal](https://modal.com). The API and Celery workers call Modal over the internet using the `modal` Python package (`pip install -r requirements.txt` includes it).
+
+### 19.1 One-time: Modal account and CLI (laptop or CI)
+
+```bash
+pip install modal
+modal setup    # browser login, or: modal token new --source NEW
+```
+
+### 19.2 Deploy or update Modal apps (after changing `modal_*.py`)
+
+From a clone of this repo (match the revision you deploy on the server):
+
+```bash
+# Default KIE path: Topaz 8K → 8K/4K/2K/1K variants on Modal T4
+modal deploy modal_kie_downsample.py
+
+# Only if WHICH_UPSCALE=modal (FashionRealism pipeline — large image + HF weights)
+modal deploy modal_realism_pipeline.py
+```
+
+Confirm in the [Modal dashboard](https://modal.com/apps): `stylic-kie-downsample` (and optionally `fashion-realism`).
+
+### 19.3 Hugging Face secret (realism pipeline only)
+
+`modal_realism_pipeline.py` uses `modal.Secret.from_name("huggingface-secret")`. In Modal **Secrets**, create **`huggingface-secret`** with your Hugging Face token. **Not** required for `modal_kie_downsample.py`.
+
+### 19.4 VPS `.env` (names must match deployed apps)
+
+```env
+MODAL_KIE_DOWNSAMPLE_ENABLED=true
+MODAL_KIE_DOWNSAMPLE_APP_NAME=stylic-kie-downsample
+MODAL_KIE_DOWNSAMPLE_CLS=KieDownsampleT4
+
+WHICH_UPSCALE=kie
+MODAL_APP_NAME=fashion-realism
+MODAL_CLS_PRIMARY=FashionRealismT4
+MODAL_CLS_FALLBACK=FashionRealismL4
+```
+
+If Modal downsample fails, API logs: `Modal downsample failed … falling back to local Pillow`. Fix Modal auth/deploy or set `MODAL_KIE_DOWNSAMPLE_ENABLED=false`.
+
+### 19.5 Operations
+
+```bash
+modal app list
+modal app logs stylic-kie-downsample
+modal deploy modal_kie_downsample.py   # after editing that file
+```
+
+Redeploying Modal apps does **not** require `systemctl restart` on the VPS unless you changed server code or `.env`.
+
+---
+
+## 20. Full stack checklist (first deploy or new server)
+
+Do in order:
+
+1. **DNS:** `api.*` and `flower.*` A records → VPS IP (§2).
+2. **Baseline:** swap, sysctl, deploy user (§3–4).
+3. **Packages + Redis** with password; set `REDIS_URL` in `.env` (§5–6).
+4. **Clone repo, venv,** `pip install -r requirements.txt` (§7).
+5. **`.env`** — Mongo, JWT, R2, KIE keys, Redis, Flower auth, Modal keys (§8).
+6. **Modal (off-server):** `modal deploy modal_kie_downsample.py` (§19).
+7. **systemd:** `stylicai-api` → `stylicai-celery` → `stylicai-flower` (§9–11).
+8. **Nginx + Certbot** for API and Flower (§12–13).
+9. **Firewall** (§14).
+
+Verify:
+
+```bash
+sudo systemctl status redis-server stylicai-api stylicai-celery stylicai-flower nginx --no-pager
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/docs
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:5555/
+```

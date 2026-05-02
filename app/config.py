@@ -131,6 +131,13 @@ class Settings(BaseSettings):
     # Hard wall-clock ceiling for a single upscale job (including wait + download).
     KIE_UPSCALE_MAX_WAIT_S: float = 900.0      # 15 min
 
+    # After KIE Topaz returns 8K bytes, build 8K/4K/2K/1K variants. When True, run
+    # resize+encode on Modal T4 (``modal deploy modal_kie_downsample.py``). On Modal
+    # failure or False, fall back to in-process Pillow (asyncio threads).
+    MODAL_KIE_DOWNSAMPLE_ENABLED: bool = True
+    MODAL_KIE_DOWNSAMPLE_APP_NAME: str = "stylic-kie-downsample"
+    MODAL_KIE_DOWNSAMPLE_CLS: str = "KieDownsampleT4"
+
     # Multi-provider photoshoot generation pipeline (see pipeline.py architecture).
     # KIE is shared with SEEDDREAM_API_KEY; Vertex uses GOOGLE_CLOUD_API_KEY; Evolink uses EVOLINK_API_KEY.
     KIE_API_KEY: str = ""

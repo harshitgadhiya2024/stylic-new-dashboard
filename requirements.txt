@@ -57,3 +57,6 @@ opencv-python-headless
 # ── Queue management (Celery + Redis) ─────────────────────────────────────
 celery[redis]
 redis
+
+# ── Modal (API/Celery call remote GPU: KIE 8K downsample, optional realism upscale)
+modal

@@ -2,8 +2,9 @@
 Enhancement service with switchable upscale provider.
 
 Providers:
-  - modal: existing Modal GPU enhancement pipeline
-  - kie:   kie.ai topaz/image-upscale (4K public URL -> 8K), then downsample to 4K/2K/1K
+  - modal: existing Modal GPU enhancement pipeline (FashionRealism*)
+  - kie:   kie.ai topaz/image-upscale (4K public URL -> 8K), then downsample to 8K/4K/2K/1K
+           (Modal T4 when ``MODAL_KIE_DOWNSAMPLE_ENABLED``; else Pillow on the API host)
 """
 
 import asyncio
@@ -128,9 +129,9 @@ async def _downsample_from_8k_bytes(img_bytes: bytes) -> dict[str, bytes]:
 
     sizes = {
         "8k": (w, h),
-        "4k": (w // 2, h // 2),
-        "2k": (w // 4, h // 4),
-        "1k": (w // 8, h // 8),
+        "4k": (max(1, w // 2), max(1, h // 2)),
+        "2k": (max(1, w // 4), max(1, h // 4)),
+        "1k": (max(1, w // 8), max(1, h // 8)),
     }
 
     results_list = await asyncio.gather(*[
@@ -138,6 +139,27 @@ async def _downsample_from_8k_bytes(img_bytes: bytes) -> dict[str, bytes]:
         for sz in sizes.values()
     ])
     return dict(zip(sizes.keys(), results_list))
+
+
+async def _downsample_from_8k_bytes_modal(img_bytes: bytes) -> dict[str, bytes]:
+    """
+    Same outputs as ``_downsample_from_8k_bytes``, executed on Modal T4 (GPU bicubic).
+    """
+    import modal  # noqa: E402
+
+    app_name = (getattr(settings, "MODAL_KIE_DOWNSAMPLE_APP_NAME", "") or "").strip()
+    cls_name = (getattr(settings, "MODAL_KIE_DOWNSAMPLE_CLS", "") or "").strip()
+    if not app_name or not cls_name:
+        raise RuntimeError("MODAL_KIE_DOWNSAMPLE_APP_NAME / MODAL_KIE_DOWNSAMPLE_CLS not set")
+
+    fmt = _normalized_format()
+    jpeg_q = int(settings.KIE_VARIANT_JPEG_QUALITY or 95)
+
+    cls = modal.Cls.from_name(app_name, cls_name)
+    out = await cls().run.remote.aio(img_bytes, fmt, jpeg_q)
+    if not isinstance(out, dict) or not all(k in out for k in ("8k", "4k", "2k", "1k")):
+        raise RuntimeError(f"Modal downsample returned invalid payload keys={type(out)}")
+    return out
 
 
 def variant_content_type() -> str:
@@ -402,6 +424,24 @@ async def _run_kie_upscale(
     )
 
     bytes_8k = await _stream_download(result_url, image_id)
+
+    use_modal = bool(getattr(settings, "MODAL_KIE_DOWNSAMPLE_ENABLED", True))
+    if use_modal:
+        try:
+            t0 = time.monotonic()
+            out = await _downsample_from_8k_bytes_modal(bytes_8k)
+            logger.info(
+                "[kie-upscale] Modal T4 downsample done image_id=%s in %.1fs",
+                image_id,
+                time.monotonic() - t0,
+            )
+            return out
+        except Exception as exc:
+            logger.warning(
+                "[kie-upscale] Modal downsample failed (%s: %s) — falling back to local Pillow",
+                type(exc).__name__,
+                exc,
+            )
     return await _downsample_from_8k_bytes(bytes_8k)
 
 
