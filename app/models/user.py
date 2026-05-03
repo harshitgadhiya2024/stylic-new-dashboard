@@ -4,6 +4,7 @@ from typing import Any, Literal, Optional, Union
 from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.utils.phone_validation import (
+    normalize_phone_optional,
     normalize_phone_profile_field,
     normalize_phone_to_e164,
 )
@@ -26,6 +27,7 @@ class OnboardingData(BaseModel):
     customer_type: Literal["solo", "business"]
     country: str
     city: str
+    phone_number: Optional[str] = None
     business_name: Optional[str] = None
     gst_no: Optional[str] = None
     team_size: Optional[str] = None
@@ -50,6 +52,11 @@ class StoreOnboardingRequest(BaseModel):
     )
     team_size: Optional[str] = Field(default=None, description="Optional team size (free text, e.g. a range or number).")
     choices: list[str] = Field(default_factory=list, description="List of string choices (e.g. use-case tags).")
+    phone_number: Optional[str] = Field(
+        default=None,
+        max_length=24,
+        description="Optional; international format (+country …) validated via libphonenumber (E.164 stored).",
+    )
 
     @field_validator("customer_type", mode="before")
     @classmethod
@@ -60,6 +67,11 @@ class StoreOnboardingRequest(BaseModel):
         if s in ("solo", "business"):
             return s
         raise ValueError("customer_type must be 'solo' or 'business'.")
+
+    @field_validator("phone_number", mode="after")
+    @classmethod
+    def _validate_onboarding_phone(cls, v: Optional[str]) -> Optional[str]:
+        return normalize_phone_optional(v)
 
 
 # ─────────────────────────── User schema (response) ───────────────────────

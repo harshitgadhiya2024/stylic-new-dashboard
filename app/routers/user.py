@@ -104,7 +104,8 @@ def _feature_percentages(feature_counts: dict[str, int]) -> dict[str, float]:
     summary="Store onboarding data",
     description=(
         "Persists onboarding answers on the authenticated user document (`onboarding` subdocument). "
-        "Requires a valid access token; `user_id` is taken from the token."
+        "Optional `phone_number` is validated (international / E.164) and also updates top-level "
+        "`users.phone_number` when provided. Requires a valid access token; `user_id` is taken from the token."
     ),
 )
 async def store_onboarding(
@@ -116,9 +117,14 @@ async def store_onboarding(
     onboarding["stored_at"] = now
 
     col = get_users_collection()
+    set_fields: dict = {"onboarding": onboarding, "updated_at": now}
+    pn = onboarding.get("phone_number")
+    if isinstance(pn, str) and pn.strip():
+        set_fields["phone_number"] = pn.strip()
+
     await col.update_one(
         {"user_id": current_user["user_id"]},
-        {"$set": {"onboarding": onboarding, "updated_at": now}},
+        {"$set": set_fields},
     )
     updated = await col.find_one({"user_id": current_user["user_id"]})
     if not updated:
