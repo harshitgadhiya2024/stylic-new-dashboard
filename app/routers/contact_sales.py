@@ -1,15 +1,25 @@
 """
 Public contact / sales form — no auth. Heavily validated, rate-limited, spam-resistant.
+
+Admin routes (dashboard JWT): list, status update, hard delete by ``submission_id``.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 
-from app.models.contact_sales import ContactSalesRequest, ContactSalesResponse
+from app.database import get_contact_sales_collection
+from app.dependencies import require_admin_roles, require_user_management_read
+from app.models.contact_sales import (
+    AdminContactSalesStatusUpdate,
+    ContactSalesRequest,
+    ContactSalesResponse,
+)
 from app.services.contact_rate_limit import enforce_rate_limits_for_contact
 from app.services.contact_sanitize import should_block_honeypot
 from app.services.contact_sales_service import process_contact_sales_submission
@@ -17,6 +27,11 @@ from app.services.contact_sales_service import process_contact_sales_submission
 logger = logging.getLogger("contact_sales.router")
 
 router = APIRouter(prefix="/api/v1", tags=["Contact / Sales"])
+
+admin_router = APIRouter(
+    prefix="/api/v1/admins/contact-sales",
+    tags=["Admin — Contact sales"],
+)
 
 
 def _format_validation_errors(exc: ValidationError) -> list[dict[str, str]]:
@@ -89,3 +104,122 @@ async def post_contact_sales(request: Request) -> ContactSalesResponse:
         ) from exc
 
     return ContactSalesResponse(ok=True, message=_ok_msg)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Admin (dashboard JWT)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _strip_contact_sales_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    out = dict(doc)
+    out.pop("_id", None)
+    return out
+
+
+@admin_router.get(
+    "/",
+    summary="List contact sales submissions (paginated)",
+    description=(
+        "Returns rows from the ``contact_sales`` collection, newest first, with pagination. "
+        "Requires dashboard admin JWT with user-management **read** "
+        "(**superadmin**, **admin**, **developer**)."
+    ),
+)
+async def admin_list_contact_sales(
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=500,
+        description="Items per page (max 500).",
+    ),
+    _viewer: dict = Depends(require_user_management_read()),
+) -> dict[str, Any]:
+    _ = _viewer
+    col = get_contact_sales_collection()
+    query: dict[str, Any] = {}
+    skip = (page - 1) * int(limit)
+    total = await col.count_documents(query)
+    lim = int(limit)
+    total_pages = max(1, (total + lim - 1) // lim) if total else 1
+
+    cursor = (
+        col.find(query)
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(lim)
+    )
+    rows = await cursor.to_list(length=lim)
+    items = [_strip_contact_sales_doc(r) for r in rows]
+
+    return {
+        "total": total,
+        "page": page,
+        "limit": lim,
+        "total_pages": total_pages,
+        "contact_sales_data": items,
+    }
+
+
+@admin_router.patch(
+    "/{submission_id}/status",
+    summary="Update contact sales status",
+    description=(
+        "Sets ``status`` to one of: **pending**, **processing**, **completed**. "
+        "Requires dashboard admin JWT (**superadmin**, **admin** only)."
+    ),
+)
+async def admin_update_contact_sales_status(
+    submission_id: str,
+    body: AdminContactSalesStatusUpdate,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+) -> dict[str, Any]:
+    _ = _admin
+    col = get_contact_sales_collection()
+    doc = await col.find_one({"submission_id": submission_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Contact sales submission not found.",
+        )
+
+    now = datetime.now(timezone.utc)
+    await col.update_one(
+        {"submission_id": submission_id},
+        {"$set": {"status": body.status, "updated_at": now}},
+    )
+    fresh = await col.find_one({"submission_id": submission_id})
+    return {
+        "success": True,
+        "message": "Status updated.",
+        "submission_id": submission_id,
+        "data": _strip_contact_sales_doc(fresh or doc),
+    }
+
+
+@admin_router.delete(
+    "/{submission_id}",
+    summary="Hard-delete contact sales submission",
+    description=(
+        "Permanently removes the MongoDB document for ``submission_id``. "
+        "Requires dashboard admin JWT (**superadmin**, **admin** only)."
+    ),
+)
+async def admin_hard_delete_contact_sales(
+    submission_id: str,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+) -> dict[str, Any]:
+    _ = _admin
+    col = get_contact_sales_collection()
+    result = await col.delete_one({"submission_id": submission_id})
+    if result.deleted_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Contact sales submission not found.",
+        )
+    return {
+        "success": True,
+        "message": "Submission deleted.",
+        "submission_id": submission_id,
+    }

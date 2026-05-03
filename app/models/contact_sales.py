@@ -4,7 +4,7 @@ Public contact-sales form (no authentication).
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic import EmailStr
@@ -59,3 +59,11 @@ class ContactSalesRequest(BaseModel):
 class ContactSalesResponse(BaseModel):
     ok:      bool
     message: str
+
+
+class AdminContactSalesStatusUpdate(BaseModel):
+    """Admin-only: set workflow status on a contact-sales row."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    status: Literal["pending", "processing", "completed"]

@@ -14,7 +14,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.config import settings
-from app.database import get_credit_history_collection, get_users_collection
+from app.database import (
+    get_cancel_subscription_collection,
+    get_credit_history_collection,
+    get_payment_history_collection,
+    get_users_collection,
+)
 from app.dependencies import require_user_management_read, require_user_management_write
 from app.models.admin_user_management import (
     AddUserCreditsRequest,
@@ -79,6 +84,56 @@ async def list_users(
 
 
 @router.get(
+    "/cancel-subscription-data",
+    summary="Get cancel subscription data (admin, paginated)",
+    description=(
+        "Returns rows from the ``cancel_subscription`` collection (no query filters), "
+        "sorted by ``created_at`` descending, with page-based pagination. "
+        "Each document omits ``_id``. "
+        "Requires dashboard admin JWT with user-management **read** "
+        "(**superadmin**, **admin**, **developer**)."
+    ),
+)
+async def admin_get_all_cancel_subscription_data(
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=500,
+        description="Items per page (max 500).",
+    ),
+    _viewer: dict = Depends(require_user_management_read()),
+) -> dict[str, Any]:
+    _ = _viewer
+    col = get_cancel_subscription_collection()
+    query: dict[str, Any] = {}
+    skip = (page - 1) * int(limit)
+    total = await col.count_documents(query)
+    lim = int(limit)
+    total_pages = max(1, (total + lim - 1) // lim) if total else 1
+
+    cursor = (
+        col.find(query)
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(lim)
+    )
+    rows = await cursor.to_list(length=lim)
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        doc = dict(row)
+        doc.pop("_id", None)
+        items.append(doc)
+    return {
+        "total": total,
+        "page": page,
+        "limit": lim,
+        "total_pages": total_pages,
+        "cancel_subscription_data": items,
+    }
+
+
+@router.get(
     "/users/{user_id}",
     summary="Get one end user by user_id",
 )
@@ -89,6 +144,114 @@ async def get_user(
     _ = _viewer
     u = await _user_by_id(user_id)
     return user_dict_for_api(u)
+
+
+@router.get(
+    "/users/{user_id}/credit-history",
+    summary="Get credit history for a user (admin)",
+    description=(
+        "Returns ``credit_history`` collection rows for ``user_id``, newest first. "
+        "Each item is the full stored document (``_id`` omitted). "
+        "Requires dashboard admin JWT with user-management **read** "
+        "(**superadmin**, **admin**, **developer**)."
+    ),
+)
+async def admin_get_user_credit_history(
+    user_id: str,
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=500,
+        description="Items per page (max 500).",
+    ),
+    _viewer: dict = Depends(require_user_management_read()),
+) -> dict[str, Any]:
+    _ = _viewer
+    await _user_by_id(user_id)
+
+    col = get_credit_history_collection()
+    skip = (page - 1) * int(limit)
+    query = {"user_id": user_id}
+    total = await col.count_documents(query)
+    lim = int(limit)
+    total_pages = max(1, (total + lim - 1) // lim) if total else 1
+
+    cursor = (
+        col.find(query)
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(lim)
+    )
+    rows = await cursor.to_list(length=lim)
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        doc = dict(row)
+        doc.pop("_id", None)
+        items.append(doc)
+
+    return {
+        "user_id": user_id,
+        "total": total,
+        "page": page,
+        "limit": lim,
+        "total_pages": total_pages,
+        "credit_history": items,
+    }
+
+
+@router.get(
+    "/users/{user_id}/payment-history",
+    summary="Get payment history for a user (admin)",
+    description=(
+        "Returns ``payment_history`` collection rows for ``user_id``, newest first. "
+        "Each item is the full stored document (``_id`` omitted). "
+        "Requires dashboard admin JWT with user-management **read** "
+        "(**superadmin**, **admin**, **developer**)."
+    ),
+)
+async def admin_get_user_payment_history(
+    user_id: str,
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=500,
+        description="Items per page (max 500).",
+    ),
+    _viewer: dict = Depends(require_user_management_read()),
+) -> dict[str, Any]:
+    _ = _viewer
+    await _user_by_id(user_id)
+
+    col = get_payment_history_collection()
+    skip = (page - 1) * int(limit)
+    query = {"user_id": user_id}
+    total = await col.count_documents(query)
+    lim = int(limit)
+    total_pages = max(1, (total + lim - 1) // lim) if total else 1
+
+    cursor = (
+        col.find(query)
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(lim)
+    )
+    rows = await cursor.to_list(length=lim)
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        doc = dict(row)
+        doc.pop("_id", None)
+        items.append(doc)
+
+    return {
+        "user_id": user_id,
+        "total": total,
+        "page": page,
+        "limit": lim,
+        "total_pages": total_pages,
+        "payment_history": items,
+    }
 
 
 @router.patch(

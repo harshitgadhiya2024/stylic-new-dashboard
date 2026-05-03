@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import (
     admins,
+    admin_delete_account_requests,
     admin_mail,
     admin_dashboard_analytics,
     admin_user_management,
@@ -79,6 +80,7 @@ app.include_router(admins.router)
 app.include_router(admin_mail.router)
 app.include_router(admin_dashboard_analytics.router)
 app.include_router(admin_user_management.router)
+app.include_router(admin_delete_account_requests.router)
 app.include_router(user.router)
 app.include_router(tickets.router)
 app.include_router(model_face.router)
@@ -94,6 +96,7 @@ app.include_router(remove_background.router)
 app.include_router(user_upscale.router)
 app.include_router(payment.router)
 app.include_router(contact_sales.router)
+app.include_router(contact_sales.admin_router)
 app.include_router(blogs.public_router)
 app.include_router(blogs.admin_router)
 app.include_router(promo_codes.user_router)
