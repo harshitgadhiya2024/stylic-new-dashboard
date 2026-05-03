@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Literal, Optional
@@ -8,8 +9,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from fastapi.responses import StreamingResponse
 
 from app.database import get_poses_collection
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin_roles
 from app.models.pose import (
+    AdminCreateDefaultPoseRequest,
+    AdminUpdatePoseRequest,
     CreatePoseFromImageRequest,
     CreatePoseFromPromptRequest,
     DeletePosesRequest,
@@ -17,9 +20,17 @@ from app.models.pose import (
 )
 from app.services.credit_service import check_sufficient_credits, deduct_credits_and_record
 from app.services.pose_mannequin_service import stream_pose_from_image_url, stream_pose_from_text_prompt
+from app.services.r2_service import delete_object_by_key, public_url_to_object_key
 from app.utils.streaming_errors import custom_input_policy_error_payload
 
 router = APIRouter(prefix="/api/v1/poses", tags=["Poses"])
+
+_logger = logging.getLogger(__name__)
+
+admin_router = APIRouter(
+    prefix="/api/v1/admins/poses",
+    tags=["Admin — Poses"],
+)
 
 _POSE_TYPE_DB = frozenset({"front", "back", "side"})
 
@@ -599,3 +610,238 @@ async def delete_pose(
         {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}},
     )
     return {"message": "Pose deleted successfully.", "pose_id": pose_id}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Admin (dashboard JWT) — default poses (``is_default=True``)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+async def _get_default_pose_or_404(col, pose_id: str) -> dict:
+    doc = await col.find_one({"pose_id": pose_id, "is_default": True})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Default pose not found.",
+        )
+    return doc
+
+
+@admin_router.get(
+    "/defaults",
+    summary="List default poses (all platform defaults)",
+    description=(
+        "Returns pose documents with ``is_default=True`` (all default poses data), "
+        "sorted by ``updated_at`` descending, with page-based pagination. "
+        "Requires dashboard admin JWT (**superadmin**, **admin**, **developer**, **blogger**)."
+    ),
+)
+async def admin_list_default_poses(
+    page: int = Query(1, ge=1, description="1-based page number"),
+    limit: int = Query(10, ge=1, le=100, description="Items per page"),
+    _admin: dict = Depends(
+        require_admin_roles("superadmin", "admin", "developer", "blogger")
+    ),
+):
+    col = get_poses_collection()
+    query = {"is_default": True}
+    total = await col.count_documents(query)
+    total_pages = max(1, (total + limit - 1) // limit) if total else 1
+    skip = (page - 1) * limit
+    cursor = (
+        col.find(query)
+        .sort([("updated_at", -1)])
+        .skip(skip)
+        .limit(limit)
+    )
+    docs = await cursor.to_list(length=limit)
+    return {
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "total_pages": total_pages,
+        "data": [serialize_pose_response(d, viewer_user_id=None) for d in docs],
+    }
+
+
+@admin_router.post(
+    "/",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create default pose",
+    description=(
+        "Creates a platform default pose (``is_default=True``) with the supplied "
+        "``pose_name``, ``pose_type`` (front / back / side), ``garment_type`` "
+        "(upper_body / full_body), ``pose_prompt``, and ``image_url``. "
+        "Requires dashboard admin JWT; restricted to **superadmin** and **admin**."
+    ),
+)
+async def admin_create_default_pose(
+    body: AdminCreateDefaultPoseRequest,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    now = datetime.now(timezone.utc)
+    pid = str(uuid.uuid4())
+    doc_db = {
+        "pose_id":       pid,
+        "pose_name":     body.pose_name,
+        "garment_type":  body.garment_type,
+        "pose_type":     body.pose_type,
+        "pose_prompt":   body.pose_prompt,
+        "image_url":     body.image_url,
+        "count":         0,
+        "favorite_list": [],
+        "notes":         "",
+        "tags":          [],
+        "is_default":    True,
+        "is_active":     True,
+        "created_at":    now,
+        "updated_at":    now,
+    }
+
+    col = get_poses_collection()
+    await col.insert_one(doc_db)
+    saved = await col.find_one({"pose_id": pid})
+
+    return {
+        "success": True,
+        "message": "Pose created.",
+        "data": serialize_pose_response(saved or doc_db, viewer_user_id=None),
+    }
+
+
+@admin_router.patch(
+    "/{pose_id}",
+    summary="Update default pose",
+    description=(
+        "Partially updates a **default** pose (``is_default=True``) by ``pose_id``. "
+        "When ``image_url`` changes, the previous image may be removed from R2 if it "
+        "matches ``R2_PUBLIC_URL``. **Superadmin** and **admin** only."
+    ),
+)
+async def admin_update_default_pose(
+    pose_id: str,
+    body: AdminUpdatePoseRequest,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    col = get_poses_collection()
+    doc = await _get_default_pose_or_404(col, pose_id)
+
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields provided to update.",
+        )
+
+    had_image_patch = "image_url" in updates
+    prior_image_url = (doc.get("image_url") or "").strip()
+
+    now = datetime.now(timezone.utc)
+    updates["updated_at"] = now
+
+    result = await col.update_one(
+        {"pose_id": pose_id, "is_default": True},
+        {"$set": updates},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Default pose not found.",
+        )
+
+    saved = await col.find_one({"pose_id": pose_id})
+
+    if had_image_patch:
+        new_url = ((saved or {}).get("image_url") or "").strip()
+        if prior_image_url and new_url and prior_image_url != new_url:
+            try:
+                pk = public_url_to_object_key(prior_image_url)
+                nk = public_url_to_object_key(new_url)
+                if pk != nk:
+                    await delete_object_by_key(pk)
+            except ValueError:
+                pass
+            except HTTPException as exc:
+                _logger.warning(
+                    "Admin update pose: could not delete previous image R2 object: %s",
+                    exc.detail,
+                )
+
+    return {
+        "success": True,
+        "message": "Pose updated.",
+        "data": serialize_pose_response(saved or doc, viewer_user_id=None),
+    }
+
+
+@admin_router.patch(
+    "/{pose_id}/toggle-active",
+    summary="Toggle default pose active state",
+    description=(
+        "Flips ``is_active`` for a **default** pose. Missing field is treated as active (``True``). "
+        "**Superadmin** and **admin** only."
+    ),
+)
+async def admin_toggle_pose_active(
+    pose_id: str,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    col = get_poses_collection()
+    doc = await _get_default_pose_or_404(col, pose_id)
+
+    currently_active = bool(doc.get("is_active", True))
+    new_active = not currently_active
+    now = datetime.now(timezone.utc)
+
+    await col.update_one(
+        {"pose_id": pose_id, "is_default": True},
+        {"$set": {"is_active": new_active, "updated_at": now}},
+    )
+    fresh = await col.find_one({"pose_id": pose_id})
+    msg = "Pose activated." if new_active else "Pose deactivated."
+
+    return {
+        "success": True,
+        "message": msg,
+        "pose_id": pose_id,
+        "is_active": new_active,
+        "data": serialize_pose_response(fresh or doc, viewer_user_id=None),
+    }
+
+
+@admin_router.delete(
+    "/{pose_id}",
+    summary="Hard-delete default pose",
+    description=(
+        "Deletes the pose image from R2 when ``image_url`` is under ``R2_PUBLIC_URL``, "
+        "then removes the MongoDB document. Only **default** poses (``is_default=True``). "
+        "**Superadmin** and **admin** only."
+    ),
+)
+async def admin_hard_delete_default_pose(
+    pose_id: str,
+    _admin: dict = Depends(require_admin_roles("superadmin", "admin")),
+):
+    col = get_poses_collection()
+    doc = await _get_default_pose_or_404(col, pose_id)
+
+    url = (doc.get("image_url") or "").strip()
+    if url:
+        try:
+            key = public_url_to_object_key(url)
+            await delete_object_by_key(key)
+        except ValueError:
+            pass
+
+    result = await col.delete_one({"pose_id": pose_id, "is_default": True})
+    if result.deleted_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Default pose not found.",
+        )
+
+    return {
+        "success": True,
+        "message": "Pose deleted.",
+        "pose_id": pose_id,
+    }
