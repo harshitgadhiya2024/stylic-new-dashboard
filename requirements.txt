@@ -7,6 +7,7 @@ python-multipart
 # ── Data validation ────────────────────────────────────────────────────────
 pydantic[email]
 pydantic-settings
+phonenumbers
 
 # ── Database (MongoDB async) ───────────────────────────────────────────────
 motor[srv]

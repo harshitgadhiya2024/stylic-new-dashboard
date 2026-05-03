@@ -34,6 +34,7 @@ from app.services.otp_service import (
     get_pending_otp,
 )
 from app.utils.password import hash_password, verify_password, validate_password_strength
+from app.utils.phone_validation import coerce_loose_phone_to_e164_or_empty
 from app.utils.user_response import user_dict_for_api_with_credit_metrics
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
@@ -57,8 +58,16 @@ async def _build_token_response(user: dict) -> dict:
     }
 
 
+def _phone_suffix_for_username(phone_number: str) -> str:
+    """Last up to 5 digits from E.164 (ignore + and country code for display suffix)."""
+    digits = "".join(c for c in (phone_number or "") if c.isdigit())
+    if len(digits) >= 5:
+        return digits[-5:]
+    return digits or "user"
+
+
 def _generate_username(first_name: str, last_name: str, phone_number: str) -> str:
-    suffix = phone_number[-5:] if len(phone_number) >= 5 else phone_number
+    suffix = _phone_suffix_for_username(phone_number)
     return f"{first_name}_{last_name}_{suffix}".lower()
 
 
@@ -469,7 +478,7 @@ async def google_sign_in(body: GoogleSignInRequest, background_tasks: Background
     email = decoded.get("email")
     full_name = decoded.get("name", "")
     picture = decoded.get("picture", "")
-    phone_number = decoded.get("phone_number", "")
+    phone_number = coerce_loose_phone_to_e164_or_empty(decoded.get("phone_number"))
     parts = (full_name or "").strip().split(" ", 1)
     first_name = parts[0] if parts else ""
     last_name = parts[1] if len(parts) > 1 else ""

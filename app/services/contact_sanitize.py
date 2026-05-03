@@ -21,8 +21,7 @@ _SUSPICIOUS = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# Phone: optional, digits, spaces, common punctuation
-_PHONE_OK = re.compile(r"^[\d\s\-\+\(\)]+$")
+# Phone: validated with libphonenumber in ``app.utils.phone_validation`` (E.164 output).
 
 # Normal field: letters, numbers, space, and a small set of punctuation (names, job titles)
 _PLAIN_NAME_OK = re.compile(
@@ -52,14 +51,15 @@ def sanitize_plain_line(s: str, max_len: int) -> str:
 
 
 def sanitize_optional_phone(s: Optional[str]) -> Optional[str]:
+    """Normalize optional phone to E.164 (same rules as API models)."""
+    from app.utils.phone_validation import normalize_phone_optional
+
     if s is None or not str(s).strip():
         return None
-    t = _nfc(s)[:32]
+    t = _nfc(s)[:24]
     if "<" in t or ">" in t or _SUSPICIOUS.search(t):
         raise ValueError("Invalid phone value")
-    if not _PHONE_OK.match(t):
-        raise ValueError("Invalid phone format")
-    return t
+    return normalize_phone_optional(t)
 
 
 def sanitize_message(s: str, max_len: int) -> str:

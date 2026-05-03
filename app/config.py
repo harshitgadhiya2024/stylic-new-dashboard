@@ -194,6 +194,10 @@ class Settings(BaseSettings):
     # Flower dashboard basic auth (format: user:password)
     FLOWER_BASIC_AUTH: str = ""
 
+    # Optional ISO 3166-1 alpha-2 region (e.g. IN, US, GB) for parsing national-format
+    # numbers that omit the leading +country code. Empty = require +… international input.
+    PHONE_DEFAULT_REGION: str = ""
+
     # Public contact / sales form (unauthenticated, rate-limited, strict validation)
     CONTACT_SALES_MAX_PER_IP: int = 5
     CONTACT_SALES_IP_WINDOW_S: int = 3600

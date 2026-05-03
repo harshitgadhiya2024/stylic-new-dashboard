@@ -1,7 +1,12 @@
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+from app.utils.phone_validation import (
+    normalize_phone_profile_field,
+    normalize_phone_to_e164,
+)
 
 
 # ─────────────────────────── Shared sub-schemas ───────────────────────────
@@ -89,11 +94,18 @@ class UserSchema(BaseModel):
 # ─────────────────────────── Auth request models ──────────────────────────
 
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     first_name: str
     last_name: str
     email: EmailStr
     password: str
-    phone_number: str
+    phone_number: str = Field(..., min_length=1, max_length=24)
+
+    @field_validator("phone_number", mode="after")
+    @classmethod
+    def _validate_register_phone(cls, v: str) -> str:
+        return normalize_phone_to_e164(v)
 
 
 class VerifyOTPRequest(BaseModel):
@@ -136,10 +148,12 @@ class PartialNotificationPreferences(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     user_name: Optional[str] = None
-    phone_number: Optional[str] = None
+    phone_number: Optional[str] = Field(default=None, max_length=24)
     bio: Optional[str] = None
     profile_picture: Optional[str] = None
     is_public_to_explore: Optional[bool] = None
@@ -147,6 +161,13 @@ class UpdateUserRequest(BaseModel):
     time_zone: Optional[str] = None
     plan: Optional[str] = None
     notifications: Optional[PartialNotificationPreferences] = None
+
+    @field_validator("phone_number", mode="before")
+    @classmethod
+    def _validate_update_phone(cls, v: object) -> Union[str, None]:
+        if v is None:
+            return None
+        return normalize_phone_profile_field(v)  # type: ignore[arg-type]
 
 
 class ChangePasswordRequest(BaseModel):
