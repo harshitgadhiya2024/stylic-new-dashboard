@@ -207,26 +207,30 @@ def _generate_pose_prompt_from_png(
     *,
     pose_type: str | None = None,
 ) -> tuple[str, str, str]:
-    instruction = POSE_PROMPT_INSTRUCTION_TEMPLATE.format(
-        pose_type_instruction=_build_pose_type_instruction(pose_type)
-    )
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    parts = [
-        gtypes.Part.from_bytes(mime_type="image/png", data=png_bytes),
-        gtypes.Part.from_text(text=instruction),
-    ]
-    response = client.models.generate_content(
-        model=settings.GEMINI_VISION_MODEL,
-        contents=[gtypes.Content(role="user", parts=parts)],
-        config=gtypes.GenerateContentConfig(
-            response_modalities=["TEXT"],
-            temperature=0.2,
-        ),
-    )
-    for part in response.candidates[0].content.parts:
-        if part.text:
-            return _split_pose_prompt_and_metadata(part.text)
-    raise RuntimeError("Gemini returned no pose prompt.")
+    try:
+        instruction = POSE_PROMPT_INSTRUCTION_TEMPLATE.format(
+            pose_type_instruction=_build_pose_type_instruction(pose_type)
+        )
+        client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        parts = [
+            gtypes.Part.from_bytes(mime_type="image/png", data=png_bytes),
+            gtypes.Part.from_text(text=instruction),
+        ]
+        response = client.models.generate_content(
+            model=settings.GEMINI_VISION_MODEL,
+            contents=[gtypes.Content(role="user", parts=parts)],
+            config=gtypes.GenerateContentConfig(
+                response_modalities=["TEXT"],
+                temperature=0.2,
+            ),
+        )
+        for part in response.candidates[0].content.parts:
+            if part.text:
+                return _split_pose_prompt_and_metadata(part.text)
+        raise RuntimeError("Gemini returned no pose prompt.")
+    except:
+        logger.error("Failed to generate pose prompt", exc_info=True)
+        return "", "full_body", "front"
 
 
 def _with_retry_sync(fn, label: str):
