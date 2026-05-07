@@ -4,8 +4,8 @@ Face-to-Model service (reference photo upload).
 Pipeline:
   1. Vision — validate a clear human face and extract structured attributes for DB storage only.
   2. build_configuration — merge vision overrides with category defaults (persisted; not sent to image).
-  3. SeedDream 5.0 Lite image-to-image — user's reference photo URL + passport / black t-shirt prompt
-     to preserve identity while standardizing framing and clothing.
+  3. KIE — nano-banana-2 (retries) then gpt-image-1.5-image-to-image (retries) with user's photo URL +
+     passport / black t-shirt prompt to preserve identity while standardizing framing and clothing.
   4. Download result, upload to R2.
 """
 
@@ -21,6 +21,21 @@ from app.config import settings
 from app.services.ai_face_service import build_configuration
 from app.services.kie_image_fallback_service import generate_image_with_model_fallback
 from app.services.r2_service import upload_bytes_to_r2
+
+def _reference_face_kie_model_chain() -> list[str]:
+    primary = (
+        getattr(settings, "MODEL_FACE_REFERENCE_KIE_PRIMARY_MODEL", "") or "nano-banana-2"
+    ).strip()
+    fb = (
+        getattr(settings, "MODEL_FACE_REFERENCE_KIE_FALLBACK_MODEL", "")
+        or "gpt-image-1.5-image-to-image"
+    ).strip()
+    out: list[str] = []
+    for m in (primary, fb):
+        if m and m not in out:
+            out.append(m)
+    return out
+
 
 _ALLOWED_VISION_OVERRIDE_KEYS: FrozenSet[str] = frozenset(
     {
@@ -241,7 +256,7 @@ No watermark, no text, no illustration, no CGI or plastic skin.
 async def generate_model_face_from_reference(image_url: str, model_category: str) -> str:
     """
     Validate reference photo, merge vision attributes into config for storage semantics,
-    run SeedDream image-to-image (reference URL + passport prompt), upload to R2.
+    run KIE portrait chain (reference URL + passport prompt), upload to R2.
     """
     parsed = await validate_face(image_url)
     config = build_configuration(model_category, parsed["overrides"])
@@ -251,6 +266,7 @@ async def generate_model_face_from_reference(image_url: str, model_category: str
             _REFERENCE_PASSPORT_IMG2IMG_PROMPT,
             image_urls=[image_url],
             label="custom_face_reference_img2img",
+            model_chain=_reference_face_kie_model_chain(),
         )
     except Exception as exc:
         raise HTTPException(
@@ -308,6 +324,7 @@ async def generate_model_face_from_reference_stream(
             _REFERENCE_PASSPORT_IMG2IMG_PROMPT,
             image_urls=[image_url],
             label="custom_face_reference_stream",
+            model_chain=_reference_face_kie_model_chain(),
         )
     except Exception as exc:
         raise HTTPException(

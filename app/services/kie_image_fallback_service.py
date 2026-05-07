@@ -1,9 +1,11 @@
 """
 Shared KIE image generation/edit fallback:
-1) nano-banana-2 (N retries)
-2) gpt-image-2 (N retries)
+1) primary model (default nano-banana-2, N retries)
+2) fallback model (default gpt-image-2, N retries)
 
-Used by custom-pose, custom-face, custom-background, and garment edit features.
+GPT-family image-to-image models use ``input_urls`` (same shape as photoshoot KIE).
+
+Used by custom-pose, custom-face, custom-background, garment edit, and reference model-face upload.
 """
 
 from __future__ import annotations
@@ -45,6 +47,16 @@ def _model_chain() -> list[str]:
     return out
 
 
+def _is_kie_gpt_image_i2i(model: str) -> bool:
+    """KIE GPT image-to-image tasks use ``input_urls`` (not ``image_input``)."""
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    if m == "gpt-image-2":
+        return True
+    return "gpt-image" in m and "image-to-image" in m
+
+
 def _build_input_payload(
     model: str,
     prompt: str,
@@ -53,11 +65,12 @@ def _build_input_payload(
     aspect = (getattr(settings, "KIE_FEATURE_ASPECT_RATIO", "") or "3:4").strip()
     res = (getattr(settings, "KIE_FEATURE_RESOLUTION", "") or "1K").strip()
     images = [u for u in (image_urls or []) if u]
-    if model == "gpt-image-2":
+    if _is_kie_gpt_image_i2i(model):
         payload: dict[str, Any] = {
             "prompt": prompt,
             "aspect_ratio": aspect,
             "resolution": res,
+            "nsfw_checker": False,
         }
         if images:
             payload["input_urls"] = images
@@ -148,13 +161,26 @@ async def generate_image_with_model_fallback(
     image_urls: Optional[list[str]] = None,
     *,
     label: str = "feature",
+    model_chain: Optional[list[str]] = None,
 ) -> bytes:
     """
     Run configured model chain with retries per model and return image bytes.
+
+    ``model_chain``: when set, replaces the global primary/fallback settings chain
+    (deduped, empties dropped).
     """
     retries = int(getattr(settings, "KIE_FEATURE_MODEL_RETRIES", 3) or 3)
     errors: list[str] = []
-    for model in _model_chain():
+    raw_chain = model_chain if model_chain is not None else _model_chain()
+    chain: list[str] = []
+    for m in raw_chain:
+        s = (m or "").strip()
+        if s and s not in chain:
+            chain.append(s)
+    if not chain:
+        chain = _model_chain()
+
+    for model in chain:
         for attempt in range(1, retries + 1):
             try:
                 logger.info("[%s] model=%s attempt=%d/%d", label, model, attempt, retries)

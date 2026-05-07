@@ -59,7 +59,11 @@ class Settings(BaseSettings):
     MODEL_FACE_GENERATE_ASPECT: str = "4:5"
     MODEL_FACE_GENERATE_RESOLUTION: str = "1K"
 
-    # Reference-photo model face — SeedDream 5.0 Lite (upload flow uses image-to-image + user photo URL)
+    # Reference-photo upload portrait — KIE primary/fallback (see face_to_model_service); retries via KIE_FEATURE_MODEL_RETRIES
+    MODEL_FACE_REFERENCE_KIE_PRIMARY_MODEL: str = "nano-banana-2"
+    MODEL_FACE_REFERENCE_KIE_FALLBACK_MODEL: str = "gpt-image-1.5-image-to-image"
+
+    # Reference-photo model face — SeedDream 5.0 Lite (legacy env name; upload flow uses KIE chain above)
     MODEL_FACE_REFERENCE_SEEDREAM_IMG2IMG_MODEL: str = "seedream/5-lite-image-to-image"
     # Legacy text-to-image id (unused by reference upload; kept for env / tooling compatibility)
     MODEL_FACE_REFERENCE_SEEDREAM_MODEL: str = "seedream/5-lite-text-to-image"
