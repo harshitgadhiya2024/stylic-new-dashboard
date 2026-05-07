@@ -335,13 +335,19 @@ async def stream_pose_from_image_url(
 
     yield ("progress", "Deriving pose description…")
     loop = asyncio.get_running_loop()
-    pose_prompt, garment_type, pose_type_ai = await loop.run_in_executor(
-        None,
-        lambda: _with_retry_sync(
-            lambda: _generate_pose_prompt_from_png(png_bytes, "pose_prompt", pose_type=pose_type),
-            "pose prompt",
-        ),
-    )
+    try:
+        pose_prompt, garment_type, pose_type_ai = await loop.run_in_executor(
+            None,
+            lambda: _with_retry_sync(
+                lambda: _generate_pose_prompt_from_png(png_bytes, "pose_prompt", pose_type=pose_type),
+                "pose prompt",
+            ),
+        )
+    except:
+        pose_prompt = ""
+        garment_type = "full_body"
+        pose_type_ai = "front"
+        logger.error("Failed to derive pose description, using defaults", exc_info=True)
 
     yield ("progress", "Uploading mannequin to R2…")
     url = await upload_mannequin_png(png_bytes)
