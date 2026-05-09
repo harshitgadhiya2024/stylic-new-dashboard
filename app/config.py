@@ -161,6 +161,16 @@ class Settings(BaseSettings):
     # materially increasing API load.
     PHOTOSHOOT_KIE_POLL_INTERVAL_S: float = 2.0
 
+    # Free-plan photoshoot watermark (applied before storing output variants).
+    FREE_PLAN_WATERMARK_TEXT: str = "STYLIC"
+    FREE_PLAN_WATERMARK_OPACITY: int = 76
+    FREE_PLAN_WATERMARK_ROTATION: float = -30.0
+    # Relative scale against min(image_width, image_height): 0.09 -> 9%.
+    FREE_PLAN_WATERMARK_FONT_SCALE: float = 0.09
+    # Tile spacing as ratio of image size (x against width, y against height).
+    FREE_PLAN_WATERMARK_SPACING_X_RATIO: float = 0.28
+    FREE_PLAN_WATERMARK_SPACING_Y_RATIO: float = 0.22
+
     # --- KIE account-wide rate limiter (cross-worker, Redis sliding window) ---
     # KIE.ai enforces ~20 createTask / 10 s per account. We pin submissions at
     # KIE_RATE_LIMIT_MAX per KIE_RATE_LIMIT_WINDOW_S so every Celery worker and

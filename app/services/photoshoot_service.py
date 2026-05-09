@@ -55,7 +55,7 @@ from urllib.parse import urlparse
 
 import httpx
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger("photoshoot")
 
@@ -77,6 +77,7 @@ from app.services.body_prompt_terms import (
     raw_weight_from_req,
 )
 from app.services.modal_enhance_service import enhance_and_upload
+from app.services.photoshoot_events_service import publish_photoshoot_event
 from app.services.r2_service import upload_bytes_to_r2
 
 # Optional SDKs — only required for the providers you enable.
@@ -203,6 +204,7 @@ class PipelineContext:
     model_faces_col: Any = None
     poses_col: Any = None
     pose_ids: List[str] = field(default_factory=list)
+    is_free_plan: bool = False
 
 
 def _pose_ids_for_usage_from_req(req: dict) -> List[str]:
@@ -1156,6 +1158,46 @@ def _resize_image(original_bytes: bytes, max_dimension: int) -> bytes:
     return _encode_variant(img, new_size, fmt, jpeg_q)
 
 
+def _apply_stylic_watermark(original_bytes: bytes) -> bytes:
+    """
+    Apply a repeated diagonal ``STYLIC`` watermark across the full image.
+    Used for free-plan outputs before persisting variants.
+    """
+    base = Image.open(io.BytesIO(original_bytes)).convert("RGBA")
+    w, h = base.size
+
+    watermark_text = (settings.FREE_PLAN_WATERMARK_TEXT or "STYLIC").strip() or "STYLIC"
+    opacity = max(0, min(255, int(settings.FREE_PLAN_WATERMARK_OPACITY or 76)))
+    rotation = float(settings.FREE_PLAN_WATERMARK_ROTATION or -30.0)
+    font_scale = max(0.02, min(0.5, float(settings.FREE_PLAN_WATERMARK_FONT_SCALE or 0.09)))
+    spacing_x_ratio = max(0.05, min(1.0, float(settings.FREE_PLAN_WATERMARK_SPACING_X_RATIO or 0.28)))
+    spacing_y_ratio = max(0.05, min(1.0, float(settings.FREE_PLAN_WATERMARK_SPACING_Y_RATIO or 0.22)))
+
+    # Build a transparent overlay and stamp repeated text.
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    font_size = max(18, int(min(w, h) * font_scale))
+    try:
+        font = ImageFont.truetype("Arial.ttf", font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    spacing_x = max(80, int(w * spacing_x_ratio))
+    spacing_y = max(60, int(h * spacing_y_ratio))
+    fill = (255, 255, 255, opacity)
+
+    for y in range(-h, h * 2, spacing_y):
+        row_offset = 0 if ((y // spacing_y) % 2 == 0) else spacing_x // 2
+        for x in range(-w, w * 2, spacing_x):
+            draw.text((x + row_offset, y), watermark_text, font=font, fill=fill)
+
+    rotated = overlay.rotate(rotation, resample=Image.Resampling.BICUBIC, expand=False)
+    stamped = Image.alpha_composite(base, rotated).convert("RGB")
+    buf = io.BytesIO()
+    stamped.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # GENERATOR AGENTS (sync — invoked via asyncio.to_thread)
 # ---------------------------------------------------------------------------
@@ -1535,6 +1577,11 @@ async def _materialize_and_upscale(pose: PoseRuntime, ctx: PipelineContext) -> N
         else:
             raise RuntimeError(f"[{pose.label}] no generated image available")
 
+        if ctx.is_free_plan:
+            loop = asyncio.get_running_loop()
+            bytes_4k = await loop.run_in_executor(None, _apply_stylic_watermark, bytes_4k)
+            logger.info("[%s] Free plan watermark applied", pose.label)
+
         # 2) Re-encode 4K (from generator's PNG to target format) + resize to 2K/1K,
         #    all three in parallel in a thread pool so the event loop stays free.
         loop = asyncio.get_running_loop()
@@ -1557,18 +1604,23 @@ async def _materialize_and_upscale(pose: PoseRuntime, ctx: PipelineContext) -> N
         )
         effective_source_url = source_image_url or url_4k
 
-        # 4) Configured upscaler (this also inserts the upscaling_data doc)
-        upscale_result = await enhance_and_upload(
-            image_bytes=bytes_4k,
-            photoshoot_id=ctx.photoshoot_id,
-            image_id=image_id,
-            seeddream_4k_url=url_4k,
-            seeddream_2k_url=url_2k,
-            seeddream_1k_url=url_1k,
-            source_image_url=effective_source_url,
-            upscaling_col=ctx.upscaling_col,
-        )
-        display_image = upscale_result.get("2k_upscaled") or url_2k
+        # 4) Paid plan: run configured upscaler (Topaz flow).
+        #    Free plan: skip upscaler and store watermarked output directly.
+        if ctx.is_free_plan:
+            display_image = url_2k
+            logger.info("[%s] Free plan — skipped Topaz upscale", pose.label)
+        else:
+            upscale_result = await enhance_and_upload(
+                image_bytes=bytes_4k,
+                photoshoot_id=ctx.photoshoot_id,
+                image_id=image_id,
+                seeddream_4k_url=url_4k,
+                seeddream_2k_url=url_2k,
+                seeddream_1k_url=url_1k,
+                source_image_url=effective_source_url,
+                upscaling_col=ctx.upscaling_col,
+            )
+            display_image = upscale_result.get("2k_upscaled") or url_2k
 
         output_image = {
             "image_id":       image_id,
@@ -1837,6 +1889,18 @@ async def _node_finalize(state: PipelineState) -> PipelineState:
             ctx.model_faces_col,
             ctx.poses_col,
         )
+        await publish_photoshoot_event(
+            {
+                "event": "photoshoot_completed",
+                "photoshoot_id": ctx.photoshoot_id,
+                "user_id": str(ctx.req.get("user_id") or ""),
+                "status": final_status,
+                "successful_count": ok,
+                "failed_count": failed,
+                "total_poses": len(ctx.poses),
+                "is_completed": True,
+            }
+        )
     logger.info(
         "[graph] finalize done photoshoot=%s ok=%d/%d status=%s",
         ctx.photoshoot_id, ok, len(ctx.poses), final_status,
@@ -1960,6 +2024,19 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
             )
             for i, pd in enumerate(pose_data_list, 1)
         ]
+        user_plan = ""
+        try:
+            user_doc = await users_col.find_one(
+                {"user_id": req.get("user_id")},
+                {"plan": 1},
+            )
+            user_plan = str((user_doc or {}).get("plan") or "").strip().lower()
+        except Exception as exc:
+            logger.warning("[job] Could not resolve user plan; defaulting to paid flow: %s", exc)
+
+        is_free_plan = user_plan == "free"
+        logger.info("[job] user plan resolved: %s (free=%s)", user_plan or "unknown", is_free_plan)
+
         ctx = PipelineContext(
             photoshoot_id=photoshoot_id,
             req=req,
@@ -1977,6 +2054,7 @@ async def run_photoshoot_job(photoshoot_id: str, req: dict, motor_client=None) -
             model_faces_col=model_faces_col,
             poses_col=poses_col,
             pose_ids=_pose_ids_for_usage_from_req(req),
+            is_free_plan=is_free_plan,
         )
 
         # Reset output_images/failed_poses so repeated runs don't duplicate.

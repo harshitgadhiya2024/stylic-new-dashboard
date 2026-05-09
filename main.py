@@ -24,6 +24,7 @@ from app.routers import (
     contact_sales,
     blogs,
     promo_codes,
+    photoshoot_ws,
 )
 from app.firebase_config import get_firebase_app
 from app.config import settings
@@ -88,6 +89,7 @@ app.include_router(model_face.admin_router)
 app.include_router(background.router)
 app.include_router(background.admin_router)
 app.include_router(photoshoot.router)
+app.include_router(photoshoot_ws.router)
 app.include_router(poses.router)
 app.include_router(poses.admin_router)
 app.include_router(branding_template.router)
