@@ -360,6 +360,85 @@ def _clean_text(v: Any) -> str:
     return str(v or "").strip()
 
 
+def _garment_signals_blob(req: dict) -> str:
+    """Lowercased concatenation of garment-type fields for traditional-outfit detection."""
+    parts = (
+        req.get("one_piece_garment_type"),
+        req.get("one_piece_garment_specification"),
+        req.get("upper_garment_type"),
+        req.get("upper_garment_specification"),
+        req.get("lower_garment_type"),
+        req.get("lower_garment_specification"),
+        req.get("fitting"),
+    )
+    return " ".join(str(p or "") for p in parts).lower()
+
+
+def _is_traditional_ethnic_outfit_prompt(req: dict) -> bool:
+    """
+    True for saree, salwar/kameez/kurta sets, lehenga, three-piece, dupatta-bearing outfits, etc.
+    Plain western \"dress\" alone is excluded unless paired with ethnic/dupatta/three-piece cues.
+    """
+    blob = _garment_signals_blob(req)
+    if not blob.strip():
+        return False
+    if any(k in blob for k in ("saree", "sari", "lehenga", "anarkali", "sharara", "gharara", "ghagra")):
+        return True
+    if any(k in blob for k in ("dupatta", "pallu", "odhani", "chunni", "chunari", "chunri")):
+        return True
+    if "three-piece" in blob or "3-piece" in blob or "three piece" in blob:
+        return True
+    if any(k in blob for k in ("salwar", "kameez", "kurta", "churidar", "patiala", "kurti")):
+        return True
+    if any(k in blob for k in ("ethnic", "traditional indian", "indian wear", "festive wear", "traditional wear")):
+        return True
+    if "dress" in blob and any(
+        k in blob
+        for k in (
+            "ethnic",
+            "traditional",
+            "indian",
+            "salwar",
+            "kameez",
+            "kurta",
+            "dupatta",
+            "three",
+            "3-piece",
+            "anarkali",
+            "three-piece",
+        )
+    ):
+        return True
+    return False
+
+
+def _traditional_garment_fidelity_and_layering_block() -> str:
+    """Extra PRIORITY-2 instructions for traditional wear (prompt-only)."""
+    return (
+        "\n"
+        "TRADITIONAL / ETHNIC INDIAN OUTFIT (saree, salwar-kameez with dupatta, three-piece dress/set, "
+        "lehenga, anarkali, or similar):\n"
+        "- Replicate ALL visible embroidery, border bands, motifs, print scale, thread colours, "
+        "bead/sequin density, fabric weave, surface sheen, and drape from the garment reference "
+        "image(s) with EXACT fidelity — no generic floral substitution, no softened or simplified "
+        "patterns, no invented trims.\n"
+        "- When a dupatta, pallu, odhani/chunni, or other overlay is present in the reference: render "
+        "it as a physically DISTINCT layer from the opaque base (kurta/kameez/blouse/lehenga/saree "
+        "body). It must NEVER read as painted onto the same surface as the dress — avoid "
+        "same-hue \"melting\" where the dupatta disappears into the bodice.\n"
+        "- Enforce true material contrast: sheer or semi-sheer organza/chiffon/net dupatta vs opaque "
+        "silk/cotton/viscose/crepe base when the reference implies it. Use correct light transmission "
+        "through sheer zones, softer edge highlights on gauze, and tighter specular on opaque weave.\n"
+        "- Add micro-separation cues: narrow contact shadow + ambient occlusion where the overlay lifts "
+        "slightly off shoulder/torso/arm; crisp fold corners; visible border edges crossing the base "
+        "garment; pleat depth that reads in 3D.\n"
+        "- If dupatta and base share a similar colour, preserve separation with lighting, fold relief, "
+        "transparency, ruffle edges, and micro-shadows — do NOT average the colours into one flat region.\n"
+        "- Follow the reference drape geometry (pleats, pallu fall, shoulder sweep); do not invent a "
+        "cleaner symmetric re-drape unless the flat-lay is symmetric.\n"
+    )
+
+
 def _first_non_empty(*values: Any) -> str:
     for v in values:
         s = _clean_text(v)
@@ -745,6 +824,12 @@ def _garment_description(req: dict) -> str:
 
     if fitting:
         parts.append(f"Overall fitting: {fitting}.")
+    if _is_traditional_ethnic_outfit_prompt(req):
+        parts.append(
+            "Traditional / ethnic outfit: render dupatta, pallu, or sheer overlay as its own layer "
+            "with fold edges, micro-shadow, and correct sheer-vs-opaque behavior vs the base garment; "
+            "match embroidery, borders, and prints exactly to the reference images."
+        )
     return " ".join(parts)
 
 
@@ -787,6 +872,12 @@ def _core_prompt(pose: PoseRuntime, req: dict) -> str:
         "same shoulder tilt, same elbow and wrist bend, same finger spread/curl, same pelvis/hip angle, "
         "same knee and ankle bend, same foot direction and weight distribution. No pose beautification, "
         "no symmetry correction, no reposing, no limb repositioning."
+    )
+
+    trad_garment_extra = (
+        _traditional_garment_fidelity_and_layering_block()
+        if _is_traditional_ethnic_outfit_prompt(req)
+        else ""
     )
 
     return f"""
@@ -837,7 +928,7 @@ with an 85mm prime lens at f/2.0. Output a single photorealistic image.
   sandals/jutti; western casual -> coordinated shoes/heels/sneakers). Footwear must be realistic,
   proportionate, and naturally integrated with pose, lighting, contact shadows, and perspective.
   {footwear_hint}
-
+{trad_garment_extra}
 [PRIORITY 3 — POSE / BODY POSTURE]
 - Copy the body posture from the MANNEQUIN POSE reference EXACTLY:
   hand position, finger placement, arm angles, shoulder tilt, hip sway, leg stance,
@@ -1029,6 +1120,11 @@ def _evolink_compact_prompt(
     body = _evolink_compact_body(req)
     garment = _evolink_compact_garment(req)
     curve_focus = _curve_focus_instruction_compact(req)
+    if _is_traditional_ethnic_outfit_prompt(req):
+        garment = (
+            f"{garment} Ethnic: dupatta/pallu separate sheer layer vs opaque base; micro-shadow at folds; "
+            "exact ref embroidery/print/borders."
+        )
     # Hard-trim user fields as a last line of defense. These limits are
     # generous enough that nothing useful is lost in normal operation.
     if len(body) > 120:
