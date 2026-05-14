@@ -34,48 +34,18 @@ class Settings(BaseSettings):
     # Firebase (Google Sign-In)
     FIREBASE_SERVICE_ACCOUNT_KEY: str = "./stylic-ai-d1ee0-firebase-adminsdk-fbsvc-a4a36772f6.json"
 
-    # Gemini AI
+    # Gemini AI (vision / analysis; image gen uses KIE in app services)
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-flash-image"
     GEMINI_VISION_MODEL: str = "gemini-2.5-flash"
 
-    # SeedDream / kie.ai
+    # SeedDream / kie.ai — API key + shared poll tuning (KIE upscale wait loops)
     SEEDDREAM_API_KEY: str = ""
-    SEEDDREAM_MODEL: str = "seedream/4.5-edit"
-    # Legacy — kept for backward compatibility; photoshoot pipeline now uses SEEDDREAM_MODEL only.
-    PHOTOSHOOT_GENERATE_MODEL: str = "nano-banana-pro"
-    SEEDDREAM_QUALITY: str = "high"
-    SEEDDREAM_ASPECT: str = "9:16"
     SEEDDREAM_MAX_RETRIES: int = 120
     SEEDDREAM_RETRY_DELAY: int = 5
 
-    # Realism pass — nano-banana-pro (runs after SeedDream, before Modal)
-    REALISM_MODEL: str = "nano-banana-pro"
-    REALISM_QUALITY: str = "4K"
-    REALISM_ASPECT: str = "9:16"
-
-    # Model face generation (kie.ai) — same model family as scripts/generate_model_faces.py (Gemini 3 Pro Image via Kie)
-    MODEL_FACE_GENERATE_MODEL: str = "nano-banana-pro"
-    MODEL_FACE_GENERATE_ASPECT: str = "4:5"
-    MODEL_FACE_GENERATE_RESOLUTION: str = "1K"
-
-    # Reference-photo upload portrait — KIE primary/fallback (see face_to_model_service); retries via KIE_FEATURE_MODEL_RETRIES
+    # Reference-photo model-face upload — KIE model chain (face_to_model_service)
     MODEL_FACE_REFERENCE_KIE_PRIMARY_MODEL: str = "nano-banana-2"
     MODEL_FACE_REFERENCE_KIE_FALLBACK_MODEL: str = "gpt-image-1.5-image-to-image"
-
-    # Reference-photo model face — SeedDream 5.0 Lite (legacy env name; upload flow uses KIE chain above)
-    MODEL_FACE_REFERENCE_SEEDREAM_IMG2IMG_MODEL: str = "seedream/5-lite-image-to-image"
-    # Legacy text-to-image id (unused by reference upload; kept for env / tooling compatibility)
-    MODEL_FACE_REFERENCE_SEEDREAM_MODEL: str = "seedream/5-lite-text-to-image"
-    # kie 5-lite enum: 1:1, 4:3, 3:4, 16:9, 9:16, 2:3, 3:2, 21:9 (no 4:5 — 3:4 is portrait)
-    MODEL_FACE_REFERENCE_SEEDREAM_ASPECT: str = "3:4"
-    MODEL_FACE_REFERENCE_SEEDREAM_QUALITY: str = "basic"
-
-    # Pose mannequin (create pose from image / from prompt) — SeedDream 5.0 Lite
-    POSE_MANNEQUIN_SEEDREAM_TEXT_MODEL: str = "seedream/5-lite-text-to-image"
-    POSE_MANNEQUIN_SEEDREAM_IMG2IMG_MODEL: str = "seedream/5-lite-image-to-image"
-    POSE_MANNEQUIN_SEEDREAM_ASPECT: str = "9:16"
-    POSE_MANNEQUIN_SEEDREAM_QUALITY: str = "basic"
 
     # App defaults
     APP_NAME: str = "Stylic AI"
@@ -170,6 +140,15 @@ class Settings(BaseSettings):
     # Tile spacing as ratio of image size (x against width, y against height).
     FREE_PLAN_WATERMARK_SPACING_X_RATIO: float = 0.28
     FREE_PLAN_WATERMARK_SPACING_Y_RATIO: float = 0.22
+    # Optional absolute path to a .ttf/.otf (VPS / Docker bind-mount). Overrides download.
+    FREE_PLAN_WATERMARK_FONT_PATH: str = ""
+    # When no system font exists, download this URL once and cache (Roboto Apache-2.0).
+    FREE_PLAN_WATERMARK_FONT_URL: str = (
+        "https://cdn.jsdelivr.net/gh/googlefonts/roboto@v2.138/src/hinted/TTF/Roboto-Regular.ttf"
+    )
+    # Directory for cached font; empty = ~/.cache/stylicai
+    FREE_PLAN_WATERMARK_FONT_CACHE_DIR: str = ""
+    FREE_PLAN_WATERMARK_FONT_DOWNLOAD_TIMEOUT_S: float = 45.0
 
     # --- KIE account-wide rate limiter (cross-worker, Redis sliding window) ---
     # KIE.ai enforces ~20 createTask / 10 s per account. We pin submissions at

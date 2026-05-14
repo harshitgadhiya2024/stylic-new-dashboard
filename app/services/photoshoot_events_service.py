@@ -19,7 +19,14 @@ async def publish_photoshoot_event(payload: dict[str, Any]) -> None:
     """
     client = redis.from_url(settings.REDIS_URL, decode_responses=True)
     try:
-        await client.publish(PHOTOSHOOT_EVENTS_CHANNEL, json.dumps(payload))
+        n = await client.publish(PHOTOSHOOT_EVENTS_CHANNEL, json.dumps(payload))
+        logger.info(
+            "Photoshoot event published channel=%s receivers=%s event=%s photoshoot_id=%s",
+            PHOTOSHOOT_EVENTS_CHANNEL,
+            n,
+            payload.get("event"),
+            payload.get("photoshoot_id"),
+        )
     except Exception as exc:
         logger.warning("Failed to publish photoshoot event: %s", exc)
     finally:
