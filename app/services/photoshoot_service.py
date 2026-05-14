@@ -45,7 +45,6 @@ import logging
 import mimetypes
 import os
 import random
-import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -53,11 +52,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, List, Optional, TypedDict
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
 import httpx
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 logger = logging.getLogger("photoshoot")
 
@@ -436,6 +434,26 @@ def _traditional_garment_fidelity_and_layering_block() -> str:
         "transparency, ruffle edges, and micro-shadows — do NOT average the colours into one flat region.\n"
         "- Follow the reference drape geometry (pleats, pallu fall, shoulder sweep); do not invent a "
         "cleaner symmetric re-drape unless the flat-lay is symmetric.\n"
+    )
+
+
+def _garment_color_fidelity_block() -> str:
+    """Extra PRIORITY-2 instructions: hue/saturation/value match vs garment refs (prompt-only)."""
+    return (
+        "\n"
+        "GARMENT COLOR / CHROMA FIDELITY (NON-NEGOTIABLE):\n"
+        "- Match the garment reference perceptually: same hue, saturation/chroma depth, lightness/value, "
+        "and undertone (warm vs cool, magenta vs olive bias) on every fabric panel, trim, piping, lining, "
+        "lace, elastic, zipper tape, embroidery thread, print ink, and contrast stripe — as if the outfit "
+        "were sampled from the flat-lay under neutral viewing.\n"
+        "- Forbidden: beautify re-color, \"punched\" saturation, hue twists toward trend palettes, swapping "
+        "for a cleaner/brighter dye, global desaturation to grey mud, or white-balance drift that replaces "
+        "the garment's native chroma with a different colorway.\n"
+        "- Allowed: physically correct scene lighting on the garment (specular highlights, soft bounced "
+        "tints in folds/shadows, viewing-angle sheen) — but diffuse cloth color in midtones must still read "
+        "as the SAME garment as the reference, not a recoloured version.\n"
+        "- Multi-color prints, gradients, stripes, checks, and brand marks: preserve each discrete color; "
+        "no palette merging, simplification, or invented graphics.\n"
     )
 
 
@@ -824,6 +842,10 @@ def _garment_description(req: dict) -> str:
 
     if fitting:
         parts.append(f"Overall fitting: {fitting}.")
+    parts.append(
+        "Color lock: match the reference garment's hue, saturation, lightness, and undertone exactly — "
+        "no beautify recolor or alternate dye; scene light may modulate highlights/shadows and speculars only."
+    )
     if _is_traditional_ethnic_outfit_prompt(req):
         parts.append(
             "Traditional / ethnic outfit: render dupatta, pallu, or sheer overlay as its own layer "
@@ -879,6 +901,7 @@ def _core_prompt(pose: PoseRuntime, req: dict) -> str:
         if _is_traditional_ethnic_outfit_prompt(req)
         else ""
     )
+    color_garment_extra = _garment_color_fidelity_block()
 
     return f"""
 You are generating a hyper-realistic studio fashion photograph shot on a full-frame DSLR
@@ -921,7 +944,7 @@ with an 85mm prime lens at f/2.0. Output a single photorealistic image.
   embroidery, prints, waistband, hems, cuffs, collar EXACTLY as in the reference.
 - Fabric micro-texture must be visible: weave/knit direction, thread highlights, seam puckers,
   subtle fuzz on wool/cotton, specular roll-off on silk/satin, light scatter through sheer fabric.
-- No color shift, no pattern drift, no invented logos or extra details.
+{color_garment_extra}
 - Footwear rule (strict): if the mannequin pose is full-body or feet are visible, footwear is
   REQUIRED. Never output barefoot feet unless explicitly requested. Choose footwear that matches
   the worn garment style, color harmony, and context (e.g., ethnic outfit -> matching
@@ -1160,7 +1183,7 @@ def _evolink_compact_prompt(
         "Hyper-realistic studio fashion photo, full-frame DSLR, 85mm f/2.0. "
         "Single photorealistic subject.\n"
         "PRIORITY: (1) EXACT face identity from face ref; "
-        "(2) garment fabric/print/seams/trims/color EXACT from ref; "
+        "(2) garment EXACT: ref hue/sat/brightness/undertone + fabric/print/seams/trims; "
         "(3) copy mannequin posture exactly (ignore its face/skin/clothes/bg); "
         "(4) subject INSIDE scene light (no cutout/halo/float).\n"
         f"{framing_rule}\n"
@@ -1256,160 +1279,13 @@ def _resize_image(original_bytes: bytes, max_dimension: int) -> bytes:
     return _encode_variant(img, new_size, fmt, jpeg_q)
 
 
-_WATERMARK_FONT_CANDIDATES = (
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-    "/Library/Fonts/Arial.ttf",
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-    "/System/Library/Fonts/Helvetica.ttc",
-    "C:\\Windows\\Fonts\\arial.ttf",
-    "Arial.ttf",
-)
-
-_DEFAULT_WATERMARK_FONT_FILENAME = "Roboto-Regular.ttf"
-_watermark_font_fetch_lock = threading.Lock()
-
-
-def _watermark_font_cache_path() -> Path:
-    raw = (getattr(settings, "FREE_PLAN_WATERMARK_FONT_CACHE_DIR", "") or "").strip()
-    if raw:
-        return Path(raw) / _DEFAULT_WATERMARK_FONT_FILENAME
-    return Path.home() / ".cache" / "stylicai" / _DEFAULT_WATERMARK_FONT_FILENAME
-
-
-def _download_watermark_font_to_path(dest: Path, url: str, timeout_s: float) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.parent / f"{dest.name}.{uuid.uuid4().hex}.part"
-    try:
-        req = Request(url, headers={"User-Agent": "StylicAI-photoshoot-watermark-font/1.0"})
-        with urlopen(req, timeout=timeout_s) as resp:
-            data = resp.read()
-        if len(data) < 10_000:
-            raise RuntimeError(f"downloaded font too small ({len(data)} bytes)")
-        tmp.write_bytes(data)
-        os.replace(tmp, dest)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-
-
-def _ensure_watermark_truetype_file() -> Path | None:
-    """
-    Resolve a TTF path: explicit env path → common OS paths → cached download from HTTPS.
-    """
-    explicit = (getattr(settings, "FREE_PLAN_WATERMARK_FONT_PATH", "") or "").strip()
-    if explicit:
-        p = Path(os.path.expanduser(explicit))
-        if p.is_file():
-            return p
-        logger.warning("[watermark] FREE_PLAN_WATERMARK_FONT_PATH set but not a file: %s", p)
-
-    for raw in _WATERMARK_FONT_CANDIDATES:
-        p = Path(os.path.expanduser(raw))
-        if p.is_file():
-            return p
-
-    cache_path = _watermark_font_cache_path()
-    if cache_path.is_file() and cache_path.stat().st_size >= 10_000:
-        return cache_path
-
-    url = (getattr(settings, "FREE_PLAN_WATERMARK_FONT_URL", "") or "").strip()
-    if not url:
-        logger.warning("[watermark] No font URL configured and no system font found")
-        return None
-
-    timeout_s = float(getattr(settings, "FREE_PLAN_WATERMARK_FONT_DOWNLOAD_TIMEOUT_S", 45.0) or 45.0)
-    with _watermark_font_fetch_lock:
-        if cache_path.is_file() and cache_path.stat().st_size >= 10_000:
-            return cache_path
-        try:
-            logger.info("[watermark] Downloading font from %s → %s", url, cache_path)
-            _download_watermark_font_to_path(cache_path, url, timeout_s=timeout_s)
-        except Exception as exc:
-            logger.error("[watermark] Font download failed: %s", exc, exc_info=True)
-            return cache_path if cache_path.is_file() else None
-
-    return cache_path if cache_path.is_file() else None
-
-
-def _watermark_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """Resolve a scalable TTF; falls back to Pillow default bitmap if nothing else works."""
-    ttf = _ensure_watermark_truetype_file()
-    if ttf is not None:
-        try:
-            return ImageFont.truetype(str(ttf), size)
-        except Exception as exc:
-            logger.warning("[watermark] truetype load failed (%s): %s", ttf, exc)
-
-    try:
-        return ImageFont.load_default(size=max(10, min(size, 96)))  # Pillow 10+
-    except TypeError:
-        return ImageFont.load_default()
-
-
-def _draw_watermark_text(
-    draw: ImageDraw.ImageDraw,
-    xy: tuple[float, float],
-    text: str,
-    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
-    fill: tuple[int, int, int, int],
-) -> None:
-    """Draw text with a dark outline so it stays visible on light and dark regions."""
-    x, y = xy
-    outline = (0, 0, 0, min(255, fill[3] + 40))
-    for ox, oy in (
-        (-2, 0),
-        (2, 0),
-        (0, -2),
-        (0, 2),
-        (-2, -2),
-        (2, -2),
-        (-2, 2),
-        (2, 2),
-    ):
-        draw.text((x + ox, y + oy), text, font=font, fill=outline)
-    draw.text((x, y), text, font=font, fill=fill)
-
-
 def _apply_stylic_watermark(original_bytes: bytes) -> bytes:
     """
-    Apply a repeated diagonal ``STYLIC`` watermark across the full image.
-    Used for free-plan outputs before persisting variants.
+    Apply the free-plan tiled diagonal watermark (same pipeline as ``testing.py``).
     """
-    base = Image.open(io.BytesIO(original_bytes)).convert("RGBA")
-    w, h = base.size
+    from app.services.free_plan_watermark import apply_tile_watermark_png_bytes
 
-    watermark_text = (settings.FREE_PLAN_WATERMARK_TEXT or "STYLIC").strip() or "STYLIC"
-    opacity = max(0, min(255, int(settings.FREE_PLAN_WATERMARK_OPACITY or 76)))
-    rotation = float(settings.FREE_PLAN_WATERMARK_ROTATION or -30.0)
-    font_scale = max(0.02, min(0.5, float(settings.FREE_PLAN_WATERMARK_FONT_SCALE or 0.09)))
-    spacing_x_ratio = max(0.05, min(1.0, float(settings.FREE_PLAN_WATERMARK_SPACING_X_RATIO or 0.28)))
-    spacing_y_ratio = max(0.05, min(1.0, float(settings.FREE_PLAN_WATERMARK_SPACING_Y_RATIO or 0.22)))
-
-    # Build a transparent overlay and stamp repeated text.
-    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    font_size = max(22, int(min(w, h) * font_scale))
-    font = _watermark_font(font_size)
-
-    spacing_x = max(80, int(w * spacing_x_ratio))
-    spacing_y = max(60, int(h * spacing_y_ratio))
-    fill = (255, 255, 255, opacity)
-
-    for y in range(-h, h * 2, spacing_y):
-        row_offset = 0 if ((y // spacing_y) % 2 == 0) else spacing_x // 2
-        for x in range(-w, w * 2, spacing_x):
-            _draw_watermark_text(draw, (float(x + row_offset), float(y)), watermark_text, font, fill)
-
-    rotated = overlay.rotate(rotation, resample=Image.Resampling.BICUBIC, expand=False)
-    stamped = Image.alpha_composite(base, rotated).convert("RGB")
-    buf = io.BytesIO()
-    stamped.save(buf, format="PNG")
-    return buf.getvalue()
+    return apply_tile_watermark_png_bytes(original_bytes)
 
 
 def _effective_user_plan_from_doc(user_doc: dict | None) -> str:

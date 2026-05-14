@@ -131,22 +131,19 @@ class Settings(BaseSettings):
     # materially increasing API load.
     PHOTOSHOOT_KIE_POLL_INTERVAL_S: float = 2.0
 
-    # Free-plan photoshoot watermark (applied before storing output variants).
-    FREE_PLAN_WATERMARK_TEXT: str = "STYLIC"
-    FREE_PLAN_WATERMARK_OPACITY: int = 76
+    # Free-plan photoshoot watermark — tiled diagonal layer (``testing.py`` / Poppins Bold from npm).
+    FREE_PLAN_WATERMARK_TEXT: str = "Stylic"
+    FREE_PLAN_WATERMARK_OPACITY: int = 95
     FREE_PLAN_WATERMARK_ROTATION: float = -30.0
-    # Relative scale against min(image_width, image_height): 0.09 -> 9%.
-    FREE_PLAN_WATERMARK_FONT_SCALE: float = 0.09
-    # Tile spacing as ratio of image size (x against width, y against height).
-    FREE_PLAN_WATERMARK_SPACING_X_RATIO: float = 0.28
-    FREE_PLAN_WATERMARK_SPACING_Y_RATIO: float = 0.22
-    # Optional absolute path to a .ttf/.otf (VPS / Docker bind-mount). Overrides download.
-    FREE_PLAN_WATERMARK_FONT_PATH: str = ""
-    # When no system font exists, download this URL once and cache (Roboto Apache-2.0).
-    FREE_PLAN_WATERMARK_FONT_URL: str = (
-        "https://cdn.jsdelivr.net/gh/googlefonts/roboto@v2.138/src/hinted/TTF/Roboto-Regular.ttf"
-    )
-    # Directory for cached font; empty = ~/.cache/stylicai
+    FREE_PLAN_WATERMARK_TILE_FONT_SIZE: int = 52
+    FREE_PLAN_WATERMARK_TILE_SPACING_X: int = 280
+    FREE_PLAN_WATERMARK_TILE_SPACING_Y: int = 200
+    FREE_PLAN_WATERMARK_TILE_R: int = 255
+    FREE_PLAN_WATERMARK_TILE_G: int = 255
+    FREE_PLAN_WATERMARK_TILE_B: int = 255
+    # Optional: absolute path to a .ttf for the tile (overrides Poppins npm download).
+    FREE_PLAN_WATERMARK_TILE_FONT_PATH: str = ""
+    # Cache directory for Poppins-Bold.ttf from npm; empty = ~/.cache/stylicai/watermark_fonts
     FREE_PLAN_WATERMARK_FONT_CACHE_DIR: str = ""
     FREE_PLAN_WATERMARK_FONT_DOWNLOAD_TIMEOUT_S: float = 45.0
 
