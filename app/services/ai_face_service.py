@@ -191,10 +191,10 @@ async def generate_and_upload_face_stream(
     yield ("initialize", "Initializing face generation process", None, None)
     await asyncio.sleep(1)
 
-    yield ("validating_config", "Validating face configurations", None, None)
+    yield ("building_configuration", "Building face configuration", None, None)
     config = build_configuration(category, overrides)
     await asyncio.sleep(0.5)
-    yield ("validating_config_done", "Face configurations validated", None, None)
+    yield ("building_configuration_done", "Face configuration ready", None, None)
     await asyncio.sleep(1)
 
     yield ("starting_generation", "Starting face generation", None, None)

@@ -284,7 +284,7 @@ async def get_poses(
     status_code=status.HTTP_201_CREATED,
     summary="Create Pose from Image (Streaming)",
     description=(
-        "Uses `image_url` with SeedDream 5.0 Lite (image-to-image) to produce a mannequin PNG, "
+        "Uses `image_url` with KIE image-to-image to produce a mannequin PNG, "
         "derives pose prompt with Gemini vision (leading line: FRAMING / VIEW / FOCUS tags from the image "
         "plus your `pose_type`), uploads PNG to R2, saves document. "
         "SSE stream; final `done` has record. Costs the same credits as face generation (2.5)."
@@ -305,10 +305,6 @@ async def create_pose_from_image(
         pose_type_ai: str = "front"
         try:
             yield _sse("initialize", {"step": "initialize", "message": "Initializing custom pose generation"})
-            await asyncio.sleep(0.6)
-            yield _sse("validating_input", {"step": "validating_input", "message": "Validating pose request input"})
-            await asyncio.sleep(0.6)
-            yield _sse("validating_image", {"step": "validating_image", "message": "Checking source image accessibility"})
             await asyncio.sleep(0.6)
             yield _sse("preparing_pipeline", {"step": "preparing_pipeline", "message": "Preparing mannequin generation pipeline"})
             await asyncio.sleep(0.6)
@@ -404,8 +400,6 @@ async def create_pose_from_prompt(
         pose_type_ai: str = "front"
         try:
             yield _sse("initialize", {"step": "initialize", "message": "Initializing custom pose generation"})
-            await asyncio.sleep(0.6)
-            yield _sse("validating_input", {"step": "validating_input", "message": "Validating pose prompt and pose type"})
             await asyncio.sleep(0.6)
             yield _sse("preparing_prompt", {"step": "preparing_prompt", "message": "Preparing structured mannequin generation prompt"})
             await asyncio.sleep(0.6)

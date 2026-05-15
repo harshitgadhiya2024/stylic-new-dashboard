@@ -452,11 +452,11 @@ async def get_all_ethnicity():
     summary="Upload / Create a Model Face (Streaming)",
     description=(
         "Accepts a reference face photo URL. Streams real-time progress via SSE. "
-        "Vision analyzes the image (required: age, ethnicity, gender) and attributes for DB storage only. "
+        "Stored age, ethnicity, gender, and model_configuration use category defaults (no pre-scan of the photo). "
         "Portrait generation uses KIE (nano-banana-2 with retries, then gpt-image-1.5-image-to-image) "
         "with your photo URL plus a fixed passport-style prompt (white background, black crew-neck t-shirt) "
         "to preserve the same face. "
-        "Uploads to Cloudflare R2, saves vision-derived age/ethnicity/gender and merged model_configuration, "
+        "Uploads to Cloudflare R2, saves merged model_configuration, "
         "and deducts 2.5 credits in the background. "
         "Secured — user_id is taken from the auth token. "
         "Response is `text/event-stream`. Final event `done` contains the full model face record."

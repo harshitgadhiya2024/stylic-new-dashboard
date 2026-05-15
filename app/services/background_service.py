@@ -24,23 +24,7 @@ from app.services.r2_service import upload_bytes_to_r2
 
 
 # ---------------------------------------------------------------------------
-# Step 1 — Validate background URL is reachable
-# ---------------------------------------------------------------------------
-
-async def _validate_background_url(background_url: str) -> None:
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.head(background_url, follow_redirects=True)
-            resp.raise_for_status()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Could not reach the provided background_url: {exc}",
-        )
-
-
-# ---------------------------------------------------------------------------
-# Step 2 — Download uploaded/custom image bytes
+# Step 1 — Download uploaded/custom image bytes
 # ---------------------------------------------------------------------------
 
 async def _download_image(image_url: str) -> bytes:
@@ -121,12 +105,6 @@ async def generate_background_stream(
     yield ("initialize", "Initializing custom background processing", None)
     await asyncio.sleep(1)
 
-    yield ("validating_background", "Validating background image URL", None)
-    await _validate_background_url(background_url)
-    await asyncio.sleep(1)
-    yield ("validating_background_done", "Background image validated successfully", None)
-    await asyncio.sleep(1)
-
     yield ("starting_generation", "Starting custom background workflow", None)
     await asyncio.sleep(1)
     yield ("processing", "Processing background — analyzing composition, lighting, color palette and environment", None)
@@ -201,10 +179,8 @@ async def generate_background_with_ai_stream(
     yield ("initialize", "Initializing background generation process", None)
     await asyncio.sleep(1)
 
-    yield ("validating_config", "Validating background configurations", None)
+    yield ("preparing_generation", "Preparing background generation", None)
     await asyncio.sleep(0.5)
-    yield ("validating_config_done", "Background configurations validated", None)
-    await asyncio.sleep(1)
 
     yield ("starting_generation", "Starting background generation", None)
     await asyncio.sleep(1)

@@ -132,7 +132,7 @@ def _normalize_background_type_filter(raw: Optional[str]) -> Optional[str]:
     description=(
         "Accepts a background image URL, name, and background_type (Indoor | Outdoor | Studio; stored lowercase). "
         "Streams real-time progress via SSE. "
-        "Validates the URL, uploads the same custom background image directly to Cloudflare R2, "
+        "Downloads the image from the URL and uploads it to Cloudflare R2, "
         "saves the public URL to DB, and deducts 2.5 credits in the background. "
         "No SeedDream call is made for this endpoint. "
         "Secured — user_id is taken from the auth token. "
