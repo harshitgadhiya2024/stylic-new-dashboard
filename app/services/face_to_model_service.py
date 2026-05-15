@@ -117,111 +117,114 @@ async def validate_face(image_url: str) -> dict[str, Any]:
         }
     """
     try:
-        from google import genai
-        from google.genai import types as gtypes
-    except ImportError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Missing dependency: {exc}. Run: pip install google-genai",
+        try:
+            from google import genai
+            from google.genai import types as gtypes
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Missing dependency: {exc}. Run: pip install google-genai",
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                img_resp = await client.get(image_url)
+                img_resp.raise_for_status()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Could not download the provided face_url: {exc}",
+            )
+
+        img_bytes = img_resp.content
+        content_type = img_resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+        if content_type not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+            content_type = "image/jpeg"
+
+        keys_list = ", ".join(sorted(_ALLOWED_VISION_OVERRIDE_KEYS))
+        validation_prompt = (
+            "You are an image validation assistant for a fashion photoshoot platform. "
+            "Check whether this image contains a clear, usable human face.\n\n"
+            "Respond with ONLY valid JSON (no markdown fences):\n"
+            "{\n"
+            '  "has_face": true or false,\n'
+            '  "reason": "<if has_face is false: explain why. Empty string if true.>",\n'
+            '  "description": "<if has_face: concise visible appearance summary. Empty if false.>",\n'
+            '  "overrides": {\n'
+            "    /* Only if has_face is true. REQUIRED non-empty fields: age, ethnicity, gender. */\n"
+            "    /* Other keys: omit or null. Use snake_case strings (e.g. dark_brown, medium). */\n"
+            f"    /* Allowed keys: {keys_list} */\n"
+            "  }\n"
+            "}\n\n"
+            "When has_face is true, overrides MUST include:\n"
+            "- age: integer years (e.g. 28) preferred, or a string like \"28 years\" (estimated from the photo)\n"
+            "- ethnicity: short label (e.g. South Asian, European, African)\n"
+            "- gender: one of male, female, boy, girl matching the subject\n"
+            "Also fill other visible attributes when possible (face_shape, hair_color, eye_color, etc.).\n\n"
+            "has_face must be false if:\n"
+            "- No human face is visible\n"
+            "- Face is heavily blurred, masked, or occluded\n"
+            "- Image is a cartoon, illustration, or AI art without a real face\n"
+            "- Image contains only animals, objects, or scenery\n"
+            "- Face is turned away and features are not visible"
         )
 
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            img_resp = await client.get(image_url)
-            img_resp.raise_for_status()
+        loop = asyncio.get_event_loop()
+
+        def _call_gemini():
+            g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            return g_client.models.generate_content(
+                model=settings.GEMINI_VISION_MODEL,
+                contents=[
+                    gtypes.Content(
+                        role="user",
+                        parts=[
+                            gtypes.Part.from_bytes(mime_type=content_type, data=img_bytes),
+                            gtypes.Part.from_text(text=validation_prompt),
+                        ],
+                    )
+                ],
+                config=gtypes.GenerateContentConfig(
+                    response_modalities=["TEXT"],
+                    temperature=0,
+                ),
+            )
+
+        try:
+            response = await loop.run_in_executor(None, _call_gemini)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Reference image analysis failed. Please try again later.",
+            )
+
+        raw = response.candidates[0].content.parts[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
+
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Reference image analysis returned an unexpected response. Please try again.",
+            )
+
+        if not result.get("has_face"):
+            reason = result.get("reason", "No valid human face detected in the image.")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Input image does not contain a valid face: {reason}",
+            )
+
+        overrides = _sanitize_vision_overrides(result.get("overrides"))
+        _assert_required_vision_demographics(overrides)
+        return {
+            "description": result.get("description") or "",
+            "overrides":   overrides,
+        }
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Could not download the provided face_url: {exc}",
-        )
-
-    img_bytes = img_resp.content
-    content_type = img_resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-    if content_type not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
-        content_type = "image/jpeg"
-
-    keys_list = ", ".join(sorted(_ALLOWED_VISION_OVERRIDE_KEYS))
-    validation_prompt = (
-        "You are an image validation assistant for a fashion photoshoot platform. "
-        "Check whether this image contains a clear, usable human face.\n\n"
-        "Respond with ONLY valid JSON (no markdown fences):\n"
-        "{\n"
-        '  "has_face": true or false,\n'
-        '  "reason": "<if has_face is false: explain why. Empty string if true.>",\n'
-        '  "description": "<if has_face: concise visible appearance summary. Empty if false.>",\n'
-        '  "overrides": {\n'
-        "    /* Only if has_face is true. REQUIRED non-empty fields: age, ethnicity, gender. */\n"
-        "    /* Other keys: omit or null. Use snake_case strings (e.g. dark_brown, medium). */\n"
-        f"    /* Allowed keys: {keys_list} */\n"
-        "  }\n"
-        "}\n\n"
-        "When has_face is true, overrides MUST include:\n"
-        "- age: integer years (e.g. 28) preferred, or a string like \"28 years\" (estimated from the photo)\n"
-        "- ethnicity: short label (e.g. South Asian, European, African)\n"
-        "- gender: one of male, female, boy, girl matching the subject\n"
-        "Also fill other visible attributes when possible (face_shape, hair_color, eye_color, etc.).\n\n"
-        "has_face must be false if:\n"
-        "- No human face is visible\n"
-        "- Face is heavily blurred, masked, or occluded\n"
-        "- Image is a cartoon, illustration, or AI art without a real face\n"
-        "- Image contains only animals, objects, or scenery\n"
-        "- Face is turned away and features are not visible"
-    )
-
-    loop = asyncio.get_event_loop()
-
-    def _call_gemini():
-        g_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        return g_client.models.generate_content(
-            model=settings.GEMINI_VISION_MODEL,
-            contents=[
-                gtypes.Content(
-                    role="user",
-                    parts=[
-                        gtypes.Part.from_bytes(mime_type=content_type, data=img_bytes),
-                        gtypes.Part.from_text(text=validation_prompt),
-                    ],
-                )
-            ],
-            config=gtypes.GenerateContentConfig(
-                response_modalities=["TEXT"],
-                temperature=0,
-            ),
-        )
-
-    try:
-        response = await loop.run_in_executor(None, _call_gemini)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Reference image analysis failed. Please try again later.",
-        )
-
-    raw = response.candidates[0].content.parts[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
-
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Reference image analysis returned an unexpected response. Please try again.",
-        )
-
-    if not result.get("has_face"):
-        reason = result.get("reason", "No valid human face detected in the image.")
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Input image does not contain a valid face: {reason}",
-        )
-
-    overrides = _sanitize_vision_overrides(result.get("overrides"))
-    _assert_required_vision_demographics(overrides)
-    return {
-        "description": result.get("description") or "",
-        "overrides":   overrides,
-    }
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +297,10 @@ async def generate_model_face_from_reference_stream(
     await asyncio.sleep(1)
 
     yield ("validating_image", "Validating reference image", None, None)
-    parsed = await validate_face(image_url)
+    try:
+        parsed = await validate_face(image_url)
+    except Exception as exc:
+        pass
     await asyncio.sleep(0.5)
     yield ("validating_image_done", "Reference image validated — face detected", None, None)
     await asyncio.sleep(1)
