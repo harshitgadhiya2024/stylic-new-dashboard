@@ -9,7 +9,7 @@ from app.database import get_credit_history_collection, get_user_upscaled_collec
 from app.dependencies import get_current_user
 from app.models.user_upscale import UserUpscaleIdRequest, UserUpscaleIdsRequest, UserUpscaleImageRequest
 from app.services.r2_service import upload_bytes_to_r2
-from app.services.user_upscale_service import run_standalone_kie_upscale
+from app.services.user_upscale_service import run_user_upscale_with_fallback
 
 # KIE work runs in this HTTP request only. No Celery, no Redis job queue, no kie_rate_limiter.
 router = APIRouter(prefix="/api/v1/upscale-image", tags=["Upscale image"])
@@ -35,14 +35,14 @@ def _credit_for_factor(factor: int) -> float:
 @router.post(
     "/",
     status_code=status.HTTP_201_CREATED,
-    summary="Upscale image via KIE (API-1)",
+    summary="Upscale image (API-1)",
     description=(
-        "Standalone KIE ``topaz/image-upscale`` only. ``upscale_factor`` 2, 4, or 8. "
-        "Create-task is retried up to 4 times on failure. Credits: 2x → "
+        "``upscale_factor`` 2, 4, or 8. Provider fallback: **KIE** (topaz/image-upscale) → "
+        "**Modal** (FashionRealism) → **fal.ai Topaz** (``fal-ai/topaz/upscale/image``). "
+        "Credits: 2x → "
         f"{settings.CREDIT_USER_UPSCALE_2X}, 4x → {settings.CREDIT_USER_UPSCALE_4X}, "
         f"8x → {settings.CREDIT_USER_UPSCALE_8X} (configurable via env). "
-        "**Synchronous for the client:** poll + download + R2 + credits complete in one "
-        "request — **no Celery**, **no Redis task queue**, **no** ``kie_rate_limiter``."
+        "**Synchronous for the client:** upscale + R2 + credits complete in one request."
     ),
 )
 async def upscale_image_create(
@@ -66,8 +66,9 @@ async def upscale_image_create(
         )
 
     upscale_id = str(uuid.uuid4())
+    provider_used = "unknown"
     try:
-        png_bytes, resolution_detail = await run_standalone_kie_upscale(
+        png_bytes, resolution_detail, provider_used = await run_user_upscale_with_fallback(
             image_url=url_in,
             upscale_factor=factor,
             trace_id=upscale_id,
@@ -75,7 +76,7 @@ async def upscale_image_create(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"KIE upscale failed: {exc}",
+            detail=f"Upscale failed (KIE, Modal, and fal): {exc}",
         ) from exc
 
     now = datetime.now(timezone.utc)
@@ -124,7 +125,9 @@ async def upscale_image_create(
             "credit_per_image":          credit_cost,
             "type":                      "deduct",
             "thumbnail_image":           "",
-            "notes":                     f"{resolution_detail} | upscale_id={upscale_id}",
+            "notes":                     (
+                f"{resolution_detail} | provider={provider_used} | upscale_id={upscale_id}"
+            ),
             "upscale_id":                upscale_id,
             "output_image_resolution": factor,
             "output_resolution_detail": resolution_detail,

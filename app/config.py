@@ -73,6 +73,13 @@ class Settings(BaseSettings):
 
     # fal.ai (optional — remove-background API falls back after KIE failures)
     FAL_API_KEY: str = ""
+    # fal.ai fallback for standalone user upscale — same Topaz family as ``KIE_UPSCALE_MODEL``.
+    FAL_UPSCALE_MODEL: str = "fal-ai/topaz/upscale/image"
+    # Topaz enhance variant on fal (see fal model schema: Standard V2, High Fidelity V2, …).
+    FAL_TOPAZ_ENHANCE_MODEL: str = "Standard V2"
+    # Dedicated poll tuning for ``/api/v1/upscale-image`` (avoids short global SEEDDREAM_MAX_RETRIES).
+    USER_UPSCALE_POLL_INTERVAL_S: float = 3.0
+    USER_UPSCALE_POLL_MAX_ITERS: int = 200
 
     # Modal GPU enhancement pipeline
     # Class names must match what is currently DEPLOYED on Modal.

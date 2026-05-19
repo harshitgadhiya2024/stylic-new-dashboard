@@ -120,6 +120,10 @@ def get_delete_account_request_collection() -> AsyncIOMotorCollection:
     return get_database()["delete_account_request"]
 
 
+def get_header_meta_tags_collection() -> AsyncIOMotorCollection:
+    return get_database()["header_meta_tags"]
+
+
 async def create_indexes() -> None:
     """Create all collection indexes. Call once at application startup."""
     db = get_database()
@@ -253,3 +257,9 @@ async def create_indexes() -> None:
     )
     await delete_account_request.create_index("user-id")
     await delete_account_request.create_index("created_at")
+
+    header_meta_tags = db["header_meta_tags"]
+    await header_meta_tags.create_index(
+        "meta_tag_id", unique=True, name="meta_tag_id_unique"
+    )
+    await header_meta_tags.create_index("created_at")
