@@ -24,6 +24,13 @@ router = APIRouter(
     dependencies=[Depends(require_admin_roles("superadmin", "admin"))],
 )
 
+# Public (no auth) router — kept under the same Swagger tag so it shows up
+# alongside the admin endpoints in the same section of /docs.
+public_router = APIRouter(
+    prefix="/api/v1/admins/adding-admin-headers",
+    tags=["Admin — Header meta tags"],
+)
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -125,3 +132,23 @@ async def hard_delete_meta_tag(
         "meta_tag_id": meta_tag_id,
         "deleted": _doc_public(doc),
     }
+
+
+# ── Public read ──────────────────────────────────────────────────────────────
+
+
+@public_router.get(
+    "/get-all-header-meta-tags",
+    response_model=HeaderMetaTagListResponse,
+    summary="Get all header meta tags (public)",
+    description=(
+        "Public endpoint — returns every stored header meta tag, newest first. "
+        "No authentication required; intended for the website front-end to inject "
+        "header meta tags into rendered pages."
+    ),
+)
+async def public_get_all_header_meta_tags() -> dict[str, Any]:
+    col = get_header_meta_tags_collection()
+    cur = col.find({}).sort("created_at", -1)
+    items = [_doc_public(d) async for d in cur]
+    return {"total": len(items), "meta_tags": items}

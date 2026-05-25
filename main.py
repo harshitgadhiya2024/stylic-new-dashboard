@@ -79,6 +79,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(promo_codes.admin_router)
 app.include_router(admin_header_meta_tags.router)
+app.include_router(admin_header_meta_tags.public_router)
 app.include_router(admins.router)
 app.include_router(admin_mail.router)
 app.include_router(admin_dashboard_analytics.router)
