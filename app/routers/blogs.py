@@ -51,6 +51,26 @@ def _doc_to_record(doc: dict) -> dict[str, Any]:
     return out
 
 
+def _faqs_to_doc(faqs: Any) -> list[dict[str, Any]] | None:
+    if faqs is None:
+        return None
+    return [f.model_dump() if hasattr(f, "model_dump") else dict(f) for f in faqs]
+
+
+def _toc_to_doc(toc: Any) -> list[dict[str, Any]] | None:
+    if toc is None:
+        return None
+    return [t.model_dump() if hasattr(t, "model_dump") else dict(t) for t in toc]
+
+
+def _date_to_doc(d: Any) -> str | None:
+    return d.isoformat() if d is not None else None
+
+
+def _time_to_doc(t: Any) -> str | None:
+    return t.isoformat() if t is not None else None
+
+
 @admin_router.post(
     "",
     status_code=status.HTTP_201_CREATED,
@@ -69,7 +89,42 @@ async def admin_create_blog(body: CreateBlogRequest) -> dict[str, Any]:
         "blog_hero_image": body.blog_hero_image,
         "author_name": body.author_name,
         "blog_html_content": body.blog_html_content,
+
+        # SEO meta
+        "meta_title": body.meta_title,
+        "meta_description": body.meta_description,
+        "meta_keywords": body.meta_keywords,
+
+        # Open Graph
+        "og_title": body.og_title,
+        "og_description": body.og_description,
+        "og_image": body.og_image,
+        "og_image_alt": body.og_image_alt,
+        "og_url": body.og_url,
+
+        # Twitter
+        "twitter_title": body.twitter_title,
+        "twitter_description": body.twitter_description,
+        "twitter_image": body.twitter_image,
+        "twitter_image_alt": body.twitter_image_alt,
+
+        # Hero image alt
+        "blog_hero_image_alt": body.blog_hero_image_alt,
+
+        # URLs
+        "blog_url": body.blog_url,
+        "canonical_url": body.canonical_url,
+
+        # Schema / TOC / FAQs
+        "schema_org": body.schema_org,
+        "table_of_contents": _toc_to_doc(body.table_of_contents),
+        "faqs": _faqs_to_doc(body.faqs),
+
+        # Date/time (stored as ISO strings)
+        "blog_post_date": _date_to_doc(body.blog_post_date),
+        "blog_post_time": _time_to_doc(body.blog_post_time),
         "blog_post_date_and_time": None,
+
         "status": "draft",
         "created_at": now,
         "updated_at": now,
@@ -182,6 +237,60 @@ async def admin_update_blog(body: UpdateBlogRequest) -> dict[str, Any]:
         set_fields["author_name"] = body.author_name
     if body.blog_html_content is not None:
         set_fields["blog_html_content"] = body.blog_html_content
+
+    # SEO meta
+    if body.meta_title is not None:
+        set_fields["meta_title"] = body.meta_title
+    if body.meta_description is not None:
+        set_fields["meta_description"] = body.meta_description
+    if body.meta_keywords is not None:
+        set_fields["meta_keywords"] = body.meta_keywords
+
+    # Open Graph
+    if body.og_title is not None:
+        set_fields["og_title"] = body.og_title
+    if body.og_description is not None:
+        set_fields["og_description"] = body.og_description
+    if body.og_image is not None:
+        set_fields["og_image"] = body.og_image
+    if body.og_image_alt is not None:
+        set_fields["og_image_alt"] = body.og_image_alt
+    if body.og_url is not None:
+        set_fields["og_url"] = body.og_url
+
+    # Twitter
+    if body.twitter_title is not None:
+        set_fields["twitter_title"] = body.twitter_title
+    if body.twitter_description is not None:
+        set_fields["twitter_description"] = body.twitter_description
+    if body.twitter_image is not None:
+        set_fields["twitter_image"] = body.twitter_image
+    if body.twitter_image_alt is not None:
+        set_fields["twitter_image_alt"] = body.twitter_image_alt
+
+    # Hero image alt
+    if body.blog_hero_image_alt is not None:
+        set_fields["blog_hero_image_alt"] = body.blog_hero_image_alt
+
+    # URLs
+    if body.blog_url is not None:
+        set_fields["blog_url"] = body.blog_url
+    if body.canonical_url is not None:
+        set_fields["canonical_url"] = body.canonical_url
+
+    # Schema / TOC / FAQs
+    if body.schema_org is not None:
+        set_fields["schema_org"] = body.schema_org
+    if body.table_of_contents is not None:
+        set_fields["table_of_contents"] = _toc_to_doc(body.table_of_contents)
+    if body.faqs is not None:
+        set_fields["faqs"] = _faqs_to_doc(body.faqs)
+
+    # Date/time
+    if body.blog_post_date is not None:
+        set_fields["blog_post_date"] = _date_to_doc(body.blog_post_date)
+    if body.blog_post_time is not None:
+        set_fields["blog_post_time"] = _time_to_doc(body.blog_post_time)
 
     if body.status is not None:
         set_fields["status"] = body.status
