@@ -71,6 +71,27 @@ def _time_to_doc(t: Any) -> str | None:
     return t.isoformat() if t is not None else None
 
 
+async def _find_blog_by_identifier(
+    col: Any,
+    identifier: str,
+    *,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Resolve a blog by ``blog_id`` (UUID) or ``blog_url`` (slug/path)."""
+    key = identifier.strip()
+    if not key:
+        return None
+
+    base: dict[str, Any] = {}
+    if status is not None:
+        base["status"] = status
+
+    doc = await col.find_one({**base, "blog_id": key})
+    if doc:
+        return doc
+    return await col.find_one({**base, "blog_url": key})
+
+
 @admin_router.post(
     "",
     status_code=status.HTTP_201_CREATED,
@@ -190,20 +211,28 @@ async def admin_list_blogs(
 
 
 @admin_router.get(
-    "/{blog_id}",
+    "/{blog_identifier:path}",
     response_model=BlogRecord,
     summary="Get one blog (admin)",
-    description="Returns one blog for admin panel by `blog_id` (any status).",
+    description=(
+        "Returns one blog for admin panel by `blog_id` (UUID) or `blog_url` "
+        "(slug/path, any status)."
+    ),
 )
 async def admin_get_blog(
-    blog_id: str = Path(..., min_length=1, max_length=64),
+    blog_identifier: str = Path(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="Blog ID (UUID) or blog_url slug/path.",
+    ),
 ) -> dict[str, Any]:
     col = get_blogs_collection()
-    doc = await col.find_one({"blog_id": blog_id})
+    doc = await _find_blog_by_identifier(col, blog_identifier)
     if not doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Blog not found for this blog_id.",
+            detail="Blog not found for this blog_id or blog_url.",
         )
     return _doc_to_record(doc)
 
@@ -399,16 +428,26 @@ async def public_list_published_blogs(
 
 
 @public_router.get(
-    "/{blog_id}",
+    "/{blog_identifier:path}",
     response_model=BlogRecord,
     summary="Get one blog (public)",
-    description="Full row for a blog that is **published**; other statuses return 404.",
+    description=(
+        "Full row for a **published** blog, looked up by `blog_id` (UUID) or "
+        "`blog_url` (slug/path). Other statuses return 404."
+    ),
 )
 async def public_get_blog(
-    blog_id: str = Path(..., min_length=1, max_length=64),
+    blog_identifier: str = Path(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="Blog ID (UUID) or blog_url slug/path.",
+    ),
 ) -> dict[str, Any]:
     col = get_blogs_collection()
-    doc = await col.find_one({"blog_id": blog_id, "status": "published"})
+    doc = await _find_blog_by_identifier(
+        col, blog_identifier, status="published"
+    )
     if not doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

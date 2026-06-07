@@ -215,6 +215,7 @@ async def create_indexes() -> None:
 
     blogs = db["blogs"]
     await blogs.create_index("blog_id", unique=True, name="blog_id_unique")
+    await blogs.create_index("blog_url", name="blog_url_lookup")
     await blogs.create_index("status")
     await blogs.create_index("blog_post_date_and_time")
     await blogs.create_index("created_at")
